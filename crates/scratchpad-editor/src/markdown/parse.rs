@@ -274,6 +274,8 @@ impl Builder<'_> {
 
     fn item(&mut self, range: Range<usize>) {
         let range = self.trim(range);
+        // The first item of a list indented by up to three spaces starts at the indentation.
+        let range = self.skip(range.start, range.end, b" \t")..range.end;
         let ordered = !matches!(self.byte(range.start), Some(b'-' | b'*' | b'+'));
         let marker_end = if ordered {
             // Digits, then `.` or `)`.

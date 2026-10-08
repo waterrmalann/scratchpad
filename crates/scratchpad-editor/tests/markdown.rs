@@ -192,6 +192,18 @@ fn nested_list_items_contain_their_children() {
 }
 
 #[test]
+fn an_indented_list_is_marked_from_its_bullet() {
+    assert_eq!(
+        describe("  - a\n  - b\n\n   3. c"),
+        [
+            d("Bullet", "- a", "a", &["- "]),
+            d("Bullet", "- b", "b", &["- "]),
+            d("Ordered", "3. c", "c", &["3. "]),
+        ]
+    );
+}
+
+#[test]
 fn thematic_breaks() {
     assert_eq!(
         describe("---\n\n* * *\n\n___"),
