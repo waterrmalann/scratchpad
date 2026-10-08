@@ -356,6 +356,10 @@ impl Notes {
         self.query = query.to_owned();
         if !self.is_searching() {
             self.hits = None;
+            // The cache holds the text of every note searched (up to 64 MiB) and would stay for
+            // the rest of the run. A search after this one reads the notes again, off the UI
+            // thread (~130 ms for 1,000 notes).
+            self.search = Arc::default();
         }
         self.search(cx);
         cx.notify();

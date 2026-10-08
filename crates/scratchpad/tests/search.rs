@@ -121,6 +121,31 @@ fn only_the_latest_query_shows_results(cx: &mut TestAppContext) {
     assert_eq!(hit_titles(&notes, cx), Some(vec!["Groceries".into()]));
 }
 
+// Leaving search frees the note texts it cached, so the next search reads the files again. A
+// change that keeps a file's size and time can only be seen that way.
+#[gpui::test]
+fn a_new_search_reads_the_notes_again(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_notes(dir.path());
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let notes = common::notes(&root, cx);
+
+    cx.simulate_keystrokes("ctrl-p");
+    cx.simulate_input("coffee");
+    assert_eq!(hit_titles(&notes, cx), Some(vec!["Groceries".into()]));
+    cx.simulate_keystrokes("escape");
+
+    write_note(
+        dir.path(),
+        "Groceries",
+        "Milk, eggs, cocoa!",
+        days_ago(2, 10),
+    );
+    cx.simulate_keystrokes("ctrl-p");
+    cx.simulate_input("cocoa");
+    assert_eq!(hit_titles(&notes, cx), Some(vec!["Groceries".into()]));
+}
+
 #[gpui::test]
 fn enter_opens_the_first_hit_and_a_new_note_leaves_search(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
