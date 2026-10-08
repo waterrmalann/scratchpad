@@ -151,3 +151,50 @@ fn leftovers_are_snapshots_from_before_this_run_that_differ_from_their_note() {
     remaining.sort();
     assert_eq!(remaining, [current, gone.path, unsaved.path]);
 }
+
+/// Writes a snapshot file the way `RecoveryStore::write` does, but with a chosen time.
+fn write_snapshot_saved_at(dir: &Path, file: &str, note: &Path, text: &str, secs: u64) {
+    let json = format!(
+        r#"{{"note_path": {note:?}, "text": {text:?}, "saved_at": {{"secs_since_epoch": {secs}, "nanos_since_epoch": 0}}}}"#
+    );
+    fs::create_dir_all(dir).unwrap();
+    fs::write(dir.join(file), json).unwrap();
+}
+
+#[test]
+fn snapshots_are_listed_newest_first() {
+    let (dir, recovery) = recovery_store();
+    let folder = dir.path().join("Scratchpad").join("recovery");
+    // File names are in the opposite order of the times, so sorting by name would fail.
+    write_snapshot_saved_at(&folder, "a.json", Path::new("Oldest.md"), "1", 1_000);
+    write_snapshot_saved_at(&folder, "b.json", Path::new("Newest.md"), "3", 3_000);
+    write_snapshot_saved_at(&folder, "c.json", Path::new("Middle.md"), "2", 2_000);
+
+    let texts: Vec<_> = recovery.list().into_iter().map(|s| s.text).collect();
+    assert_eq!(texts, ["3", "2", "1"]);
+
+    let texts: Vec<_> = recovery
+        .leftovers(SystemTime::now())
+        .into_iter()
+        .map(|s| s.text)
+        .collect();
+    assert_eq!(texts, ["3", "2", "1"]);
+}
+
+#[test]
+fn a_note_that_is_not_utf8_never_counts_as_saved() {
+    let (notes_dir, notes) = temp_store();
+    let (_recovery_dir, recovery) = recovery_store();
+    let path = notes_dir.path().join("Broken.md");
+    fs::write(&path, b"caf\xE9").unwrap();
+    // What reading that note shows, and so what the user may have kept typing after.
+    let shown = notes.read(&path).unwrap();
+    assert!(shown.lossy);
+    recovery.write(&path, &shown.text).unwrap();
+
+    let leftovers = recovery.leftovers(SystemTime::now());
+
+    // Equal text is not proof: saving it would have replaced the original bytes with U+FFFD.
+    assert_eq!(leftovers.len(), 1);
+    assert_eq!(recovery.list().len(), 1, "the snapshot is kept");
+}
