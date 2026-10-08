@@ -70,6 +70,33 @@ fn selection_replaces_text(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn ctrl_arrows_move_and_select_by_word(cx: &mut TestAppContext) {
+    let (input, _, cx) = open_input(cx);
+    cx.simulate_input("one two  three");
+
+    cx.simulate_keystrokes("ctrl-left ctrl-left");
+    cx.simulate_input("X");
+    assert_eq!(text(&input, cx), "one Xtwo  three");
+    cx.simulate_keystrokes("ctrl-right ctrl-right");
+    cx.simulate_input("Y");
+    assert_eq!(text(&input, cx), "one Xtwo  threeY");
+    cx.simulate_keystrokes("home ctrl-shift-right ctrl-shift-right");
+    cx.simulate_input("Z");
+    assert_eq!(text(&input, cx), "Z  threeY");
+}
+
+#[gpui::test]
+fn windows_clipboard_keys_work_too(cx: &mut TestAppContext) {
+    let (input, _, cx) = open_input(cx);
+    cx.simulate_input("ab");
+
+    cx.simulate_keystrokes("shift-left ctrl-insert end shift-insert");
+    assert_eq!(text(&input, cx), "abb");
+    cx.simulate_keystrokes("home shift-right shift-delete end shift-insert");
+    assert_eq!(text(&input, cx), "bba");
+}
+
+#[gpui::test]
 fn clipboard_keeps_the_field_on_one_line(cx: &mut TestAppContext) {
     let (input, _, cx) = open_input(cx);
     cx.write_to_clipboard(ClipboardItem::new_string("two\r\nlines\n".into()));

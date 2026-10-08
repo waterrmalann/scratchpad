@@ -1,8 +1,9 @@
 //! A minimal single-line text field for the note search and inline renaming. See ADR 0052.
 //!
-//! Supports typing (including IME composition through [`EntityInputHandler`]), caret movement,
-//! selection with Shift and the mouse, Ctrl+A, Backspace/Delete, Ctrl+Backspace, and the
-//! clipboard. Enter and Escape are reported as events; the owner decides what they mean.
+//! Supports typing (including IME composition through [`EntityInputHandler`]), caret movement
+//! by character and word, selection with Shift and the mouse, Ctrl+A, Backspace/Delete,
+//! Ctrl+Backspace, and the clipboard (also Ctrl+Insert, Shift+Insert and Shift+Delete). Enter
+//! and Escape are reported as events; the owner decides what they mean.
 
 use std::ops::Range;
 
@@ -25,8 +26,12 @@ actions!(
         DeleteWordLeft,
         Left,
         Right,
+        WordLeft,
+        WordRight,
         SelectLeft,
         SelectRight,
+        SelectWordLeft,
+        SelectWordRight,
         SelectAll,
         Home,
         End,
@@ -52,8 +57,12 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-backspace", DeleteWordLeft, context),
         KeyBinding::new("left", Left, context),
         KeyBinding::new("right", Right, context),
+        KeyBinding::new("ctrl-left", WordLeft, context),
+        KeyBinding::new("ctrl-right", WordRight, context),
         KeyBinding::new("shift-left", SelectLeft, context),
         KeyBinding::new("shift-right", SelectRight, context),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, context),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, context),
         KeyBinding::new("secondary-a", SelectAll, context),
         KeyBinding::new("home", Home, context),
         KeyBinding::new("end", End, context),
@@ -64,8 +73,11 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-home", SelectToHome, context),
         KeyBinding::new("shift-end", SelectToEnd, context),
         KeyBinding::new("secondary-v", Paste, context),
+        KeyBinding::new("shift-insert", Paste, context),
         KeyBinding::new("secondary-c", Copy, context),
+        KeyBinding::new("ctrl-insert", Copy, context),
         KeyBinding::new("secondary-x", Cut, context),
+        KeyBinding::new("shift-delete", Cut, context),
         KeyBinding::new("enter", Confirm, context),
         KeyBinding::new("escape", Cancel, context),
     ]
@@ -193,6 +205,18 @@ impl TextInput {
         start
     }
 
+    /// End of the word after `offset`, skipping whitespace first (Ctrl+Right).
+    fn next_word_end(&self, offset: usize) -> usize {
+        let mut end = offset;
+        for (ix, segment) in self.text[offset..].split_word_bound_indices() {
+            end = offset + ix + segment.len();
+            if !segment.trim().is_empty() {
+                break;
+            }
+        }
+        end
+    }
+
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             self.move_to(self.previous_boundary(self.caret()), cx);
@@ -207,6 +231,22 @@ impl TextInput {
         } else {
             self.move_to(self.selected.end, cx);
         }
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.previous_word_start(self.caret()), cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word_end(self.caret()), cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word_start(self.caret()), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.next_word_end(self.caret()), cx);
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -493,8 +533,12 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::delete_word_left))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_all_action))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
