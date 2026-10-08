@@ -95,7 +95,11 @@ impl LineKey {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum WidgetKind {
     Bullet,
-    TaskBox { checked: bool },
+    /// `column` is the buffer column of the box's `[`.
+    TaskBox {
+        checked: bool,
+        column: usize,
+    },
 }
 
 /// A list marker drawn as a shape in live preview.
@@ -111,7 +115,10 @@ fn widgets(styled: &StyledLine) -> Vec<Widget> {
     for span in &styled.spans {
         let kind = match span.marker {
             Some(MarkerKind::ListBullet) => WidgetKind::Bullet,
-            Some(MarkerKind::TaskBox { checked }) => WidgetKind::TaskBox { checked },
+            Some(MarkerKind::TaskBox { checked }) => WidgetKind::TaskBox {
+                checked,
+                column: span.columns.start,
+            },
             _ => continue,
         };
         match widgets.last_mut() {
@@ -155,6 +162,8 @@ enum Shape {
         color: Hsla,
         /// Colour of the check mark.
         mark: Hsla,
+        /// Buffer column of the box's `[`.
+        column: usize,
     },
 }
 
@@ -469,7 +478,7 @@ impl LineLayout {
                         radius: diameter / 2.,
                     }
                 }
-                WidgetKind::TaskBox { checked } => {
+                WidgetKind::TaskBox { checked, column } => {
                     let side = (font_size * TASK_BOX_SIZE).round();
                     let origin = point(x + px(1.), (top + middle - side / 2.).round());
                     Shape::TaskBox {
@@ -477,6 +486,7 @@ impl LineLayout {
                         checked,
                         color: if checked { theme.accent } else { theme.muted },
                         mark: theme.background,
+                        column,
                     }
                 }
             });
@@ -560,6 +570,18 @@ impl LineLayout {
             display = widget.end;
         }
         self.buffer(display, Bias::Right)
+    }
+
+    /// The buffer column of the `[` of the task box drawn at `position` (relative to the line's
+    /// top-left corner), if any.
+    pub fn task_box_at(&self, position: Point<Pixels>) -> Option<usize> {
+        self.above.iter().find_map(|shape| match shape {
+            // A little slack around the box makes it easier to hit.
+            Shape::TaskBox { bounds, column, .. } if bounds.dilate(px(3.)).contains(&position) => {
+                Some(*column)
+            }
+            _ => None,
+        })
     }
 
     /// Horizontal spans `(row, x_start, x_end)` covered by `columns`, one per row it touches. With

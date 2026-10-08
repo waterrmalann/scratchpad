@@ -454,6 +454,15 @@ impl EditorView {
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
+        // A read-only note's task boxes are text like any other: the click places the cursor.
+        if event.click_count <= 1
+            && !event.modifiers.shift
+            && !self.read_only
+            && let Some(task_box) = self.task_box_at(event.position, window)
+        {
+            self.toggle_task(task_box, cx);
+            return;
+        }
         let offset = self.offset_at(event.position, window);
         let granularity = match event.click_count {
             0 | 1 => Granularity::Character,
@@ -516,6 +525,28 @@ impl EditorView {
 
     fn mouse_up(&mut self) {
         self.drag = None;
+    }
+
+    /// The offset of the `[` of the task box drawn at a window position.
+    fn task_box_at(&mut self, position: Point<Pixels>, window: &Window) -> Option<ByteOffset> {
+        let hit = self.line_at(position, window)?;
+        let column = hit.layout.task_box_at(hit.position)?;
+        Some(self.offset(hit.line, column))
+    }
+
+    /// Checks or unchecks the task whose box starts at `task_box`, as one undo step that leaves the
+    /// selection and the scroll position alone.
+    fn toggle_task(&mut self, task_box: ByteOffset, cx: &mut Context<Self>) {
+        let mark = ByteOffset(task_box.0 + 1)..ByteOffset(task_box.0 + 2);
+        let checked = self.editor.buffer().text_for_range(mark.clone()) != " ";
+        self.edit(cx, |editor| {
+            editor.transact(|editor| {
+                let selection = editor.selection();
+                editor.replace_range(mark, if checked { " " } else { "x" });
+                editor.set_selection(selection);
+            })
+        });
+        self.autoscroll = false;
     }
 
     /// Extends a mouse selection to the pointer, by the unit the drag started with.

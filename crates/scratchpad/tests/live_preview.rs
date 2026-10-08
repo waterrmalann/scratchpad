@@ -27,6 +27,10 @@ fn open_editor<'a>(
     (editor, cx)
 }
 
+fn text(editor: &Entity<EditorView>, cx: &mut VisualTestContext) -> String {
+    editor.read_with(cx, |editor, _| editor.editor().buffer().normalized_text())
+}
+
 fn cursor(editor: &Entity<EditorView>, cx: &mut VisualTestContext) -> usize {
     editor.read_with(cx, |editor, _| editor.editor().selection().head.0)
 }
@@ -198,6 +202,40 @@ fn ime_bounds_and_selections_use_displayed_positions(cx: &mut TestAppContext) {
     // " y" after the hidden closing `**`.
     let y = bounds(&editor, 10..12, cx);
     assert_eq!(y.left() - left, px(6. * ADVANCE));
+}
+
+#[gpui::test]
+fn clicking_a_task_box_toggles_it_without_moving_the_cursor(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "- [ ] task\n- [x] done\nnext");
+    cx.simulate_keystrokes("ctrl-end");
+    let end = cursor(&editor, cx);
+    let task = bounds(&editor, 0..0, cx);
+    let done = bounds(&editor, 11..11, cx);
+
+    click(
+        point(task.left() + px(7.), task.center().y),
+        Modifiers::none(),
+        cx,
+    );
+    assert_eq!(text(&editor, cx), "- [x] task\n- [x] done\nnext");
+    assert_eq!(cursor(&editor, cx), end);
+    click(
+        point(done.left() + px(7.), done.center().y),
+        Modifiers::none(),
+        cx,
+    );
+    assert_eq!(text(&editor, cx), "- [x] task\n- [ ] done\nnext");
+
+    cx.simulate_keystrokes("ctrl-z");
+    assert_eq!(text(&editor, cx), "- [x] task\n- [x] done\nnext");
+    // Clicking the item's text places the cursor as usual.
+    click(
+        point(task.left() + px(40.), task.center().y),
+        Modifiers::none(),
+        cx,
+    );
+    assert_eq!(text(&editor, cx), "- [x] task\n- [x] done\nnext");
+    assert!(cursor(&editor, cx) < 10);
 }
 
 #[gpui::test]
