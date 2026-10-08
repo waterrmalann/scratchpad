@@ -56,3 +56,4 @@ with every new ADR.
 | [0112](0112-undo-history-budget.md) | A size budget for the undo history | Accepted |
 | [0113](0113-where-idle-memory-goes.md) | Where idle memory goes, and what we keep after use | Accepted |
 | [0114](0114-measuring-and-guarding-performance.md) | Measuring performance and guarding against regressions | Accepted |
+| [0120](0120-data-safety-review-and-accepted-risks.md) | Data safety before V1: what the session guarantees and the risks accepted | Accepted |
