@@ -1,5 +1,28 @@
 # scratchpad
 
+## Keyboard shortcuts
+
+Notes save themselves; the usual Windows editing keys work as in Notepad (arrows, Home/End,
+Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Shift+Delete).
+
+| Keys | Action |
+| --- | --- |
+| Ctrl+N | New note |
+| Ctrl+S | Save now |
+| Ctrl+Shift+F, Ctrl+P | Search notes |
+| Ctrl+F | Find in the note; Enter / F3 next, Shift+Enter / Shift+F3 previous, Alt+C match case, Esc close |
+| Ctrl+Z / Ctrl+Y, Ctrl+Shift+Z | Undo / redo |
+| Ctrl+B, Ctrl+I, Ctrl+Shift+X, Ctrl+E | Bold, italic, strikethrough, inline code (again at the end of the text: carry on unformatted) |
+| Ctrl+K | Link |
+| Enter / Shift+Enter | New line continuing the list or quote / plain new line |
+| Tab / Shift+Tab | Nest a list item / move it out (elsewhere Tab inserts four spaces) |
+| Ctrl+Shift+D, Alt+Up/Down | Duplicate lines, move lines |
+| Ctrl+/ | Show all Markdown markers (source mode) |
+| Ctrl+click | Open a link |
+| Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete |
+| Ctrl+, | Settings |
+| Ctrl+W, Ctrl+Q | Close the window, quit |
+
 ## Build
 
 Windows 10/11 with the Rust toolchain (MSVC) and the Windows SDK installed.
