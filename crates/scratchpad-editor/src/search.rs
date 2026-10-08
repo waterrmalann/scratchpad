@@ -2,6 +2,7 @@
 
 use std::ops::Range;
 
+use crate::buffer::TextChange;
 use crate::coords::ByteOffset;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -88,4 +89,24 @@ pub fn prev_match(matches: &[Range<ByteOffset>], before: ByteOffset) -> Option<u
     }
     let index = matches.partition_point(|m| m.start < before);
     Some(index.checked_sub(1).unwrap_or(matches.len() - 1))
+}
+
+/// Keeps the matches of an earlier search valid after `change` until the text is searched again:
+/// matches after the change move with the text, matches it touched are dropped. Matches that end where
+/// the change starts or start where it ends keep their text and stay. New matches the change may have
+/// created are only found by searching again.
+pub fn adjust_matches(matches: &mut Vec<Range<ByteOffset>>, change: &TextChange) {
+    let removed = change.old_end.0 - change.start.0;
+    let inserted = change.new_end.0 - change.start.0;
+    matches.retain_mut(|m| {
+        if m.end <= change.start {
+            true
+        } else if m.start >= change.old_end {
+            m.start = ByteOffset(m.start.0 - removed + inserted);
+            m.end = ByteOffset(m.end.0 - removed + inserted);
+            true
+        } else {
+            false
+        }
+    });
 }

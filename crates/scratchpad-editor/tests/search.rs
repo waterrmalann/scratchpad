@@ -3,8 +3,10 @@
 use std::ops::Range;
 
 use proptest::prelude::*;
-use scratchpad_editor::ByteOffset;
-use scratchpad_editor::search::{CaseSensitivity, find_all, next_match, prev_match};
+use scratchpad_editor::search::{
+    CaseSensitivity, adjust_matches, find_all, next_match, prev_match,
+};
+use scratchpad_editor::{ByteOffset, Editor};
 
 fn ranges(text: &str, query: &str, case: CaseSensitivity) -> Vec<(usize, usize)> {
     find_all(text, query, case)
@@ -110,6 +112,50 @@ fn next_and_previous_match_wrap_around() {
     assert_eq!(prev_match(&[], ByteOffset(0)), None);
 }
 
+/// Searches `text`, applies `edits` (byte range, replacement) one after another and returns the adjusted
+/// matches as strings of the edited text.
+fn matches_after_edits(text: &str, query: &str, edits: &[(Range<usize>, &str)]) -> Vec<String> {
+    let mut editor = Editor::from_text(text);
+    let mut matches = find_all(text, query, CaseSensitivity::Insensitive);
+    for (range, replacement) in edits {
+        let version = editor.buffer().version();
+        editor.replace_range(ByteOffset(range.start)..ByteOffset(range.end), replacement);
+        for change in editor.buffer().changes_since(version).unwrap() {
+            adjust_matches(&mut matches, change);
+        }
+    }
+    let text = editor.buffer().normalized_text();
+    matches
+        .iter()
+        .map(|m| format!("{}@{}", &text[m.start.0..m.end.0], m.start.0))
+        .collect()
+}
+
+#[test]
+fn matches_follow_edits_until_the_next_search() {
+    let text = "cat. Cat? cat!";
+    assert_eq!(
+        matches_after_edits(text, "cat", &[(0..0, "a ")]),
+        ["cat@2", "Cat@7", "cat@12"],
+        "an insertion before every match moves them all"
+    );
+    assert_eq!(
+        matches_after_edits(text, "cat", &[(6..7, "")]),
+        ["cat@0", "cat@9"],
+        "an edit inside a match drops it and moves the ones after it"
+    );
+    assert_eq!(
+        matches_after_edits(text, "cat", &[(3..3, "s"), (6..6, "big ")]),
+        ["cat@0", "Cat@10", "cat@15"],
+        "edits right after or right before a match keep it"
+    );
+    assert_eq!(
+        matches_after_edits(text, "cat", &[(2..12, "")]),
+        Vec::<String>::new(),
+        "a deletion across matches drops them"
+    );
+}
+
 fn fold(s: &str) -> String {
     s.chars().flat_map(char::to_lowercase).collect()
 }
@@ -178,4 +224,81 @@ proptest! {
             prop_assert!(!matches.is_empty());
         }
     }
+
+    /// After any edits, undos and redos, exactly the matches whose text no edit has touched are left,
+    /// where their text moved to, so they can be highlighted until the text is searched again. (A
+    /// match an edit touched stays dropped even if undo brings its text back.)
+    #[test]
+    fn adjusted_matches_are_the_untouched_matches_where_their_text_went(
+        (text, query) in text_and_query(),
+        edits in prop::collection::vec(edit(), 1..8),
+    ) {
+        let mut editor = Editor::from_text(&text);
+        let text = editor.buffer().normalized_text();
+        let original = find_all(&text, &query, CaseSensitivity::Insensitive);
+        let mut matches = original.clone();
+        // For each byte of the text, the offset it had before the edits; `None` if inserted since.
+        let mut origins: Vec<Option<usize>> = (0..text.len()).map(Some).collect();
+        let mut untouched = vec![true; original.len()];
+        for edit in edits {
+            let version = editor.buffer().version();
+            match edit {
+                Edit::Replace(a, b, replacement) => {
+                    let len = editor.buffer().len() + 1;
+                    let (a, b) = (a.index(len), b.index(len));
+                    editor.replace_range(ByteOffset(a.min(b))..ByteOffset(a.max(b)), &replacement);
+                }
+                Edit::Undo => _ = editor.undo(),
+                Edit::Redo => _ = editor.redo(),
+            }
+            for change in editor.buffer().changes_since(version).unwrap() {
+                adjust_matches(&mut matches, change);
+                let inserted = change.new_end.0 - change.start.0;
+                origins.splice(change.start.0..change.old_end.0, std::iter::repeat_n(None, inserted));
+                for (m, untouched) in original.iter().zip(&mut untouched) {
+                    *untouched &= moved_to(m, &origins).is_some();
+                }
+            }
+        }
+        let text = editor.buffer().normalized_text();
+        prop_assert_eq!(origins.len(), text.len());
+        let expected: Vec<_> = original
+            .iter()
+            .zip(untouched)
+            .filter(|(_, untouched)| *untouched)
+            .filter_map(|(m, _)| moved_to(m, &origins))
+            .collect();
+        prop_assert_eq!(&matches, &expected);
+        for m in &matches {
+            prop_assert_eq!(fold(&text[m.start.0..m.end.0]), fold(&query));
+        }
+    }
+}
+
+/// Where the bytes of `m` are now, if they are still side by side and in order.
+fn moved_to(m: &Range<ByteOffset>, origins: &[Option<usize>]) -> Option<Range<ByteOffset>> {
+    let start = origins.iter().position(|&o| o == Some(m.start.0))?;
+    let end = start + (m.end.0 - m.start.0);
+    let bytes = origins.get(start..end)?;
+    bytes
+        .iter()
+        .zip(m.start.0..)
+        .all(|(&o, i)| o == Some(i))
+        .then_some(ByteOffset(start)..ByteOffset(end))
+}
+
+#[derive(Debug, Clone)]
+enum Edit {
+    Replace(prop::sample::Index, prop::sample::Index, String),
+    Undo,
+    Redo,
+}
+
+fn edit() -> impl Strategy<Value = Edit> {
+    prop_oneof![
+        4 => (any::<prop::sample::Index>(), any::<prop::sample::Index>(), case_traps(0..3))
+            .prop_map(|(a, b, replacement)| Edit::Replace(a, b, replacement)),
+        1 => Just(Edit::Undo),
+        1 => Just(Edit::Redo),
+    ]
 }
