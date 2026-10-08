@@ -1,6 +1,6 @@
 # 0071. Live preview layout and column mapping
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted; Up/Down and End amended by ADR 0125
 
 ## Context
 Live preview hides syntax markers away from the selection (ADR 0042). The caret, clicks, selections,

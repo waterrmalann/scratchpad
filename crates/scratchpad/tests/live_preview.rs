@@ -217,6 +217,57 @@ fn double_and_triple_clicks_select_around_the_first_click_although_it_revealed_m
 }
 
 #[gpui::test]
+fn end_stays_on_its_row_when_the_row_ends_in_hidden_markers(cx: &mut TestAppContext) {
+    // 75 characters fit in a row. Displayed, the first row is 14 × "word " and "abc "; with the
+    // cursor touching it, "**abc**" no longer fits and moves to the second row.
+    let line = format!("{}**abc** tail tail tail", "word ".repeat(14));
+    let (editor, cx) = open_editor(cx, &format!("{line}\nnext"));
+    let first_row_top = bounds(&editor, 0..0, cx).top();
+
+    cx.simulate_keystrokes("ctrl-home end");
+    assert_eq!(
+        cursor(&editor, cx),
+        69,
+        "after the last word left on the row"
+    );
+    assert_eq!(bounds(&editor, 69..69, cx).top(), first_row_top);
+    cx.simulate_keystrokes("end");
+    assert_eq!(cursor(&editor, cx), 69, "End again stays");
+
+    cx.simulate_keystrokes("ctrl-home shift-end");
+    let selected = editor.read_with(cx, |editor, _| editor.editor().selection().range());
+    assert_eq!(selected.start.0..selected.end.0, 0..69);
+}
+
+#[gpui::test]
+fn up_and_down_keep_the_caret_x_on_lines_whose_markers_they_reveal(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(
+        cx,
+        "plain text line here\nsome **bold words** here\nmore plain text",
+    );
+    let caret_x = |cx: &mut VisualTestContext| {
+        let head = cursor(&editor, cx);
+        bounds(&editor, head..head, cx).left()
+    };
+    cx.simulate_keystrokes("ctrl-home");
+    for _ in 0..10 {
+        cx.simulate_keystrokes("right");
+    }
+    let x = caret_x(cx);
+
+    // Column 10 of "some bold words" is before "words"; with the `**` shown it is in "bold".
+    cx.simulate_keystrokes("down");
+    assert_eq!(cursor(&editor, cx), 21 + 10, "some **bol|d");
+    assert_eq!(caret_x(cx), x);
+    cx.simulate_keystrokes("down");
+    assert_eq!(caret_x(cx), x);
+    cx.simulate_keystrokes("up");
+    assert_eq!(caret_x(cx), x);
+    cx.simulate_keystrokes("up");
+    assert_eq!(cursor(&editor, cx), 10);
+}
+
+#[gpui::test]
 fn left_and_right_step_through_markers_one_character_at_a_time(cx: &mut TestAppContext) {
     let text = "a **b** `c` d";
     let (editor, cx) = open_editor(cx, text);

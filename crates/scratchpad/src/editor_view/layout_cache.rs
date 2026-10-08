@@ -77,6 +77,27 @@ impl LayoutCache {
         self.shape(line, buffer, text_system, key())
     }
 
+    /// The layout `line` has with `key` rather than its current key, e.g. with the cursor moved
+    /// somewhere else. It replaces the cached layout, but [`line`](Self::line) checks its key again.
+    pub fn line_with_key(
+        &mut self,
+        line: usize,
+        buffer: &Buffer,
+        text_system: &WindowTextSystem,
+        key: LineKey,
+    ) -> Arc<LineLayout> {
+        if let Some(entry) = self.lines.get(&line)
+            && entry.key == key
+        {
+            return entry.layout.clone();
+        }
+        let layout = self.shape(line, buffer, text_system, key);
+        if let Some(entry) = self.lines.get_mut(&line) {
+            entry.checked = self.generation.wrapping_sub(1);
+        }
+        layout
+    }
+
     fn shape(
         &mut self,
         line: usize,

@@ -438,7 +438,7 @@ impl EditorView {
         let selection = self.editor.selection();
         let goal = self.editor.goal();
         let (mut lines, _) = self.lines(window);
-        let (offset, x) = vertical_target(&mut lines, selection.head, goal, distance);
+        let (offset, x) = vertical_target(&mut lines, selection, extend, goal, distance);
         self.editor
             .move_to_with_goal(offset, extend, Goal::Horizontal(x.into()));
         self.autoscroll = Some(Autoscroll::Cursor);
@@ -459,17 +459,13 @@ impl EditorView {
 
     /// Home/End: to the start or end of the cursor's visual row.
     fn move_in_row(&mut self, to_end: bool, extend: bool, window: &Window, cx: &mut Context<Self>) {
-        let head = self.editor.selection().head;
+        let selection = self.editor.selection();
         let (mut lines, _) = self.lines(window);
-        let point = lines.buffer.offset_to_point(head);
-        let layout = lines.layout(point.line);
-        let row = layout.row_of(point.column);
-        let column = if to_end {
-            layout.row_end(row)
+        let offset = if to_end {
+            row_end_target(&mut lines, selection, extend)
         } else {
-            layout.row_start(row)
+            row_start_target(&mut lines, selection.head)
         };
-        let offset = lines.offset(point.line, column);
         self.editor.move_to(offset, extend);
         self.autoscroll = Some(Autoscroll::Cursor);
         self.selection_changed(cx);
@@ -1021,12 +1017,60 @@ impl Lines<'_> {
         })
     }
 
+    /// The layout `line` would have with `selection` instead of the current selection: moving the
+    /// cursor can reveal or hide markers and so move the line's text.
+    fn layout_with(&mut self, line: usize, selection: Selection) -> Arc<LineLayout> {
+        if self.selection.is_none() {
+            return self.layout(line);
+        }
+        let key = LineKey::new(self.markdown, self.buffer, line, Some(selection));
+        self.cache
+            .line_with_key(line, self.buffer, self.text_system, key)
+    }
+
     /// The buffer offset of `column` in `line`, on a grapheme boundary.
     fn offset(&self, line: usize, column: usize) -> ByteOffset {
         let start = self.buffer.line_start(line);
         self.buffer
             .clip_offset(ByteOffset(start.0 + column), Bias::Left)
     }
+}
+
+/// How often a cursor target is checked against the layout its line gets with the cursor there.
+/// Revealing markers changes that layout once, so two rounds settle in practice.
+const SETTLE_ROUNDS: usize = 3;
+
+/// The selection after the head moves to `head`, the anchor staying with `extend`.
+fn moved(selection: Selection, head: ByteOffset, extend: bool) -> Selection {
+    Selection::new(if extend { selection.anchor } else { head }, head)
+}
+
+/// Where Home goes: the start of the cursor's row.
+fn row_start_target(lines: &mut Lines, head: ByteOffset) -> ByteOffset {
+    let point = lines.buffer.offset_to_point(head);
+    let layout = lines.layout(point.line);
+    let column = layout.row_start(layout.row_of(point.column));
+    lines.offset(point.line, column)
+}
+
+/// Where End goes: the end of the cursor's row. A cursor there may reveal markers that push the
+/// row's last word onto the next row; then End stops at the end of what is left of the row, so
+/// that it never takes the cursor to another row (ADR 0125).
+fn row_end_target(lines: &mut Lines, selection: Selection, extend: bool) -> ByteOffset {
+    let point = lines.buffer.offset_to_point(selection.head);
+    let layout = lines.layout(point.line);
+    let row_start = layout.row_start(layout.row_of(point.column));
+    let mut column = layout.row_end(layout.row_of(point.column));
+    for _ in 0..SETTLE_ROUNDS {
+        let offset = lines.offset(point.line, column);
+        let layout = lines.layout_with(point.line, moved(selection, offset, extend));
+        let row = layout.row_of(row_start);
+        if layout.row_of(column) == row {
+            break;
+        }
+        column = layout.row_end(row);
+    }
+    lines.offset(point.line, column)
 }
 
 impl LineHeights for Lines<'_> {
@@ -1040,16 +1084,18 @@ impl LineHeights for Lines<'_> {
 }
 
 /// Where vertical movement by `distance` lands: walks visual rows from the cursor until at least
-/// `distance` has been covered, then picks the column nearest the goal x. Past the first or last
-/// row it goes to the document start or end, like the engine's logical-line motion.
+/// `distance` has been covered, then picks the column nearest the goal x in the layout the line
+/// gets with the cursor there (ADR 0125). Past the first or last row it goes to the document
+/// start or end, like the engine's logical-line motion.
 fn vertical_target(
     lines: &mut Lines,
-    head: ByteOffset,
+    selection: Selection,
+    extend: bool,
     goal: Goal,
     distance: Pixels,
 ) -> (ByteOffset, Pixels) {
     let buffer = lines.buffer;
-    let point = buffer.offset_to_point(head);
+    let point = buffer.offset_to_point(selection.head);
     let mut line = point.line;
     let mut layout = lines.layout(line);
     let mut row = layout.row_of(point.column);
@@ -1080,7 +1126,29 @@ fn vertical_target(
         }
         covered += layout.line_height();
     }
-    (lines.offset(line, layout.column_at(row, x)), x)
+    // The cursor reveals the markers it lands next to, which moves the text after them. Each
+    // candidate is judged in the layout it gives: on the row, and as close to x as possible.
+    let mut column = layout.column_at(row, x);
+    let mut best: Option<((bool, Pixels), usize)> = None;
+    for _ in 0..SETTLE_ROUNDS {
+        let offset = lines.offset(line, column);
+        let layout = lines.layout_with(line, moved(selection, offset, extend));
+        let row = row.min(layout.row_count() - 1);
+        let miss = (
+            layout.row_of(column) != row,
+            (layout.x_for(column) - x).abs(),
+        );
+        if best.is_none_or(|(best_miss, _)| miss < best_miss) {
+            best = Some((miss, column));
+        }
+        let next = layout.column_at(row, x);
+        if next == column {
+            break;
+        }
+        column = next;
+    }
+    let column = best.map_or(column, |(_, column)| column);
+    (lines.offset(line, column), x)
 }
 
 /// A new document's engine and Markdown structure. The only place either is created: a

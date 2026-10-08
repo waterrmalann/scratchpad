@@ -42,7 +42,7 @@ with every new ADR.
 | [0065](0065-settings-persistence-and-startup-order.md) | Remembered settings and the startup order | Accepted |
 | [0066](0066-notes-that-are-not-utf8.md) | Notes that are not valid UTF-8 open read-only until the user agrees | Accepted |
 | [0070](0070-markdown-typography-in-the-editor-view.md) | Markdown typography in the editor view | Accepted |
-| [0071](0071-live-preview-layout-and-column-mapping.md) | Live preview layout and column mapping | Accepted |
+| [0071](0071-live-preview-layout-and-column-mapping.md) | Live preview layout and column mapping | Accepted; amended by 0125 |
 | [0072](0072-markdown-shortcuts-tasks-and-links.md) | Markdown shortcuts, task boxes and links | Accepted |
 | [0080](0080-a-small-settings-panel.md) | A small settings panel with two settings | Accepted |
 | [0081](0081-changing-the-notes-folder.md) | Changing the notes folder | Accepted |
@@ -57,3 +57,4 @@ with every new ADR.
 | [0113](0113-where-idle-memory-goes.md) | Where idle memory goes, and what we keep after use | Accepted |
 | [0114](0114-measuring-and-guarding-performance.md) | Measuring performance and guarding against regressions | Accepted |
 | [0120](0120-data-safety-review-and-accepted-risks.md) | Data safety before V1: what the session guarantees and the risks accepted | Accepted |
+| [0125](0125-cursor-targets-settle-on-revealed-markers.md) | Cursor targets settle on the markers they reveal | Accepted |
