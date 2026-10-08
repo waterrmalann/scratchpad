@@ -240,9 +240,9 @@ impl Editor {
         self.edit(self.selection.range(), text, EditKind::Other, None);
     }
 
-    /// Replaces `range` with `text` as its own undo step and puts the cursor after the inserted text. Line
-    /// breaks in `text` are normalized. The building block for programmatic edits such as Markdown
-    /// formatting.
+    /// Replaces `range` with `text` as its own undo step (unless inside [`Editor::transact`]) and puts the
+    /// cursor after the inserted text. Line breaks in `text` are normalized. The building block for
+    /// programmatic edits such as Markdown formatting.
     pub fn replace_range(&mut self, range: Range<ByteOffset>, text: &str) {
         self.edit(range, text, EditKind::Other, None);
     }
@@ -314,6 +314,19 @@ impl Editor {
 
     pub fn can_redo(&self) -> bool {
         self.history.can_redo()
+    }
+
+    /// Runs `f` as one undo step: undo reverts every edit `f` makes and restores the selection from before
+    /// it ran; redo restores the selection `f` left. For commands that edit several places at once, such as
+    /// Markdown formatting toggles. Nested calls join the outermost step. `f` must not undo or redo.
+    pub fn transact<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        if self.history.in_transaction() {
+            return f(self);
+        }
+        self.history.begin_transaction(self.selection);
+        let result = f(self);
+        self.history.end_transaction(self.selection);
+        result
     }
 
     /// Makes the next edit start a new undo step even if it would otherwise merge with the previous one.

@@ -30,5 +30,5 @@ later features (Markdown toggles, list continuation) need a generic undoable pri
 - Undo granularity is coarse for long uninterrupted typing; a pause does not split it.
 - A whole IME composition, including its commit, is one undo step that restores the pre-composition
   selection.
-- Multi-edit transactions for future Markdown commands only need a new public entry point; the history
-  already stores edit lists.
+- `Editor::transact(|editor| ...)` groups every edit made inside it into one step, whatever its kind, for
+  multi-range commands (Markdown formatting toggles, list continuation, bracket pairing).

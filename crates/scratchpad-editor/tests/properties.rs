@@ -81,10 +81,19 @@ enum Op {
     SelectWordAt(usize),
     SelectLineAt(usize),
     SelectAll,
+    /// Edits grouped with `Editor::transact`.
+    Transaction(Vec<Op>),
 }
 
-/// Edits and selection changes; no undo/redo.
+/// Edits and selection changes, sometimes grouped into a transaction; no undo/redo.
 fn op() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        20 => single_op(),
+        1 => prop::collection::vec(single_op(), 0..6).prop_map(Op::Transaction),
+    ]
+}
+
+fn single_op() -> impl Strategy<Value = Op> {
     let offset = 0..120usize;
     prop_oneof![
         4 => prop::sample::select(ATOMS).prop_map(|s| Op::Type(s.to_string())),
@@ -139,6 +148,11 @@ fn apply(editor: &mut Editor, op: &Op) {
         Op::SelectWordAt(offset) => editor.select_word_at(ByteOffset(*offset)),
         Op::SelectLineAt(offset) => editor.select_line_at(ByteOffset(*offset)),
         Op::SelectAll => editor.select_all(),
+        Op::Transaction(ops) => editor.transact(|editor| {
+            for op in ops {
+                apply(editor, op);
+            }
+        }),
     }
 }
 

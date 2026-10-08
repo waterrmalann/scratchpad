@@ -73,11 +73,19 @@ pub(crate) struct History {
     redo: Vec<Transaction>,
     /// Whether the next edit may join the last transaction.
     group_open: bool,
+    /// Whether an explicit transaction is open, which takes every edit whatever its kind.
+    in_transaction: bool,
 }
 
 impl History {
     pub fn record(&mut self, edit: Edit, kind: EditKind, before: Selection, after: Selection) {
         self.redo.clear();
+        if self.in_transaction
+            && let Some(last) = self.undo.last_mut()
+        {
+            last.push(edit);
+            return;
+        }
         let mergeable = kind != EditKind::Other;
         match self.undo.last_mut() {
             Some(last)
@@ -103,6 +111,34 @@ impl History {
             }),
         }
         self.group_open = mergeable;
+    }
+
+    pub fn in_transaction(&self) -> bool {
+        self.in_transaction
+    }
+
+    /// Opens an explicit transaction: every edit until [`History::end_transaction`] joins one undo step.
+    pub fn begin_transaction(&mut self, selection_before: Selection) {
+        self.undo.push(Transaction {
+            edits: Vec::new(),
+            kind: EditKind::Other,
+            selection_before,
+            selection_after: selection_before,
+        });
+        self.in_transaction = true;
+    }
+
+    pub fn end_transaction(&mut self, selection_after: Selection) {
+        self.in_transaction = false;
+        self.group_open = false;
+        if let Some(last) = self.undo.pop()
+            && !last.edits.is_empty()
+        {
+            self.undo.push(Transaction {
+                selection_after,
+                ..last
+            });
+        }
     }
 
     /// Makes the next edit start a new undo step.

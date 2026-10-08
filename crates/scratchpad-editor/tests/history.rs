@@ -3,7 +3,7 @@
 mod common;
 
 use common::{editor, state};
-use scratchpad_editor::{ByteOffset, Editor, Motion};
+use scratchpad_editor::{ByteOffset, Editor, Motion, Selection};
 
 fn type_chars(editor: &mut Editor, text: &str) {
     for c in text.chars() {
@@ -263,4 +263,48 @@ fn an_ime_selection_past_the_composed_text_is_clamped_to_it() {
     let mut ed = editor("a|b");
     ed.replace_and_mark(None, "に", Some(0..10));
     assert_eq!(state(&ed), "a^に|b");
+}
+
+#[test]
+fn a_transaction_of_several_edits_undoes_in_one_step() {
+    // Making the selected word bold: two insertions, then reselecting the word between the markers.
+    let mut ed = editor("make ^bold| text");
+    ed.transact(|ed| {
+        let word = ed.selection().range();
+        ed.replace_range(word.end..word.end, "**");
+        ed.replace_range(word.start..word.start, "**");
+        ed.set_selection(Selection::new(
+            ByteOffset(word.start.0 + 2),
+            ByteOffset(word.end.0 + 2),
+        ));
+    });
+    assert_eq!(state(&ed), "make **^bold|** text");
+    type_chars(&mut ed, "!");
+    assert_eq!(
+        undo_all(&mut ed),
+        ["make **^bold|** text", "make ^bold| text"]
+    );
+    ed.redo();
+    assert_eq!(state(&ed), "make **^bold|** text");
+}
+
+#[test]
+fn a_transaction_without_edits_leaves_nothing_to_undo() {
+    let mut ed = editor("ab|");
+    type_chars(&mut ed, "c");
+    ed.transact(|ed| ed.move_cursor(Motion::Left, false));
+    type_chars(&mut ed, "x");
+    assert_eq!(undo_all(&mut ed), ["ab|c", "ab|"]);
+}
+
+#[test]
+fn nested_transactions_join_the_outer_one() {
+    let mut ed = editor("|");
+    ed.transact(|ed| {
+        ed.insert_text("a");
+        ed.transact(|ed| ed.insert_newline());
+        ed.insert_text("b");
+    });
+    assert_eq!(state(&ed), "a\nb|");
+    assert_eq!(undo_all(&mut ed), ["|"]);
 }
