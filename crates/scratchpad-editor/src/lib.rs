@@ -6,6 +6,7 @@ mod editor;
 mod graphemes;
 mod history;
 mod motion;
+pub mod search;
 mod selection;
 
 pub use buffer::{Buffer, LineEnding, TextChange};
