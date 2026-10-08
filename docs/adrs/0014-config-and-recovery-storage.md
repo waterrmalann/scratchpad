@@ -25,4 +25,7 @@ recover unsaved text after a crash (PLAN §40), without adding metadata files to
 - A hand-edited config with one bad value still loads; a downgrade drops keys it does not know on
   its next save.
 - Snapshots of renamed or deleted notes are orphaned unless the app removes them under the old
-  path; at startup the app should ignore snapshots whose text equals the file on disk.
+  path. `RecoveryStore::leftovers` returns the snapshots from before this run that the app should
+  offer: it removes those whose text equals the note on disk, and keeps those of a missing note or
+  of one that is not valid UTF-8 (saving its lossily decoded text would have replaced the original
+  bytes).
