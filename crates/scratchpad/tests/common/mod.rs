@@ -65,12 +65,14 @@ pub fn open_main_window_in<'a>(
 }
 
 /// Where the app keeps its files in a test: notes in `notes_dir`, the config and recovery
-/// snapshots in `data_dir`.
+/// snapshots in `data_dir`, and no real file watcher (tests pass events to
+/// [`Session::disk_events`] themselves).
 pub fn storage(notes_dir: &Path, data_dir: &Path) -> Storage {
     Storage {
         notes: location(notes_dir),
         config_path: Some(data_dir.join("config.json")),
         recovery_dir: Some(data_dir.join("recovery")),
+        watch: false,
     }
 }
 

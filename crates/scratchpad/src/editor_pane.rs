@@ -8,7 +8,8 @@ use crate::session::{Choice, Notice, Session};
 use crate::theme::ActiveTheme;
 
 /// Hosts the editor for the open note (PLAN §42), with a bar above it for decisions about the
-/// note: unreadable characters, or text recovered after a crash.
+/// note: a conflict with another program, a deleted file, unreadable characters, or text
+/// recovered after a crash.
 pub struct EditorPane {
     editor: Entity<EditorView>,
     session: Entity<Session>,
@@ -40,6 +41,22 @@ impl EditorPane {
                  Editing it replaces them when it is saved."
                     .into(),
                 &[(Choice::EditAnyway, "Edit Anyway")],
+            ),
+            Notice::ChangedOnDisk => (
+                "notice:changed",
+                "This note was changed by another program while you were editing it.".into(),
+                &[
+                    (Choice::KeepMine, "Keep My Version"),
+                    (Choice::LoadDisk, "Load Their Version"),
+                ],
+            ),
+            Notice::DeletedOnDisk => (
+                "notice:deleted",
+                "This note was deleted by another program.".into(),
+                &[
+                    (Choice::KeepDeleted, "Keep Note"),
+                    (Choice::CloseDeleted, "Close Note"),
+                ],
             ),
             Notice::Recovered { title, new_note } => (
                 "notice:recovered",

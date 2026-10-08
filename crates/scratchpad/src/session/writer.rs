@@ -1,8 +1,9 @@
 //! The session's file operations, run one at a time in the order they were asked for (ADR 0060).
 //!
-//! Loading, saving, renaming and recovery snapshots all go through one queue. Each job sees the
-//! effects of every job before it, so an older save can never land after a newer one and a load
-//! never reads a file that a queued save is about to replace.
+//! Loading, saving, checking the open note against the disk, renaming and recovery snapshots
+//! all go through one queue. Each job sees the effects of every job before it, so an older save
+//! can never land after a newer one, a load never reads a file that a queued save is about to
+//! replace, and a check of the disk always compares against the text we saved last.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -16,9 +17,14 @@ use scratchpad_core::{Note, NoteStore, NoteText, RecoveryStore};
 pub(super) enum Job {
     /// Read a note to show it.
     Load(PathBuf),
+    /// Read the open note to see whether another program changed it.
+    Check(PathBuf),
+    /// Write `text` to the note, unless the file no longer holds `expected` (what we last read
+    /// or wrote): then another program changed it since and nothing is written.
     Save {
         path: PathBuf,
         text: Arc<str>,
+        expected: Option<Arc<str>>,
     },
     /// Rename the note after its title. Runs on the UI thread, through the notes model.
     Rename {
@@ -43,6 +49,7 @@ impl Job {
     fn path(&self) -> &Path {
         match self {
             Job::Load(path)
+            | Job::Check(path)
             | Job::Save { path, .. }
             | Job::Rename { path, .. }
             | Job::RemoveIfUnchanged { path, .. }
@@ -54,6 +61,7 @@ impl Job {
     fn path_mut(&mut self) -> &mut PathBuf {
         match self {
             Job::Load(path)
+            | Job::Check(path)
             | Job::Save { path, .. }
             | Job::Rename { path, .. }
             | Job::RemoveIfUnchanged { path, .. }
@@ -67,7 +75,9 @@ impl Job {
     fn replaces(&self, queued: &Job) -> bool {
         let same_kind = matches!(
             (self, queued),
-            (Job::Save { .. }, Job::Save { .. }) | (Job::Snapshot { .. }, Job::Snapshot { .. })
+            (Job::Check(_), Job::Check(_))
+                | (Job::Save { .. }, Job::Save { .. })
+                | (Job::Snapshot { .. }, Job::Snapshot { .. })
         );
         same_kind && self.path() == queued.path()
     }
@@ -76,7 +86,12 @@ impl Job {
 /// What a job found or did.
 pub(super) enum Outcome {
     Loaded(scratchpad_core::Result<NoteText>),
+    /// The note's content, or `None` if it no longer exists.
+    Checked(io::Result<Option<NoteText>>),
     Saved(scratchpad_core::Result<Note>),
+    /// Another program changed (`Some`) or deleted (`None`) the note since we last read or
+    /// wrote it, so the save was not done. The text is in a recovery snapshot.
+    ChangedOnDisk(Option<NoteText>),
     Done,
     /// A synchronous flush already wrote newer content (see [`Writer::flush_marker`]).
     Skipped,
@@ -111,10 +126,10 @@ pub(super) struct Writer {
 }
 
 impl Writer {
-    /// Queues `job`. A queued save or snapshot of the same file is updated in place
+    /// Queues `job`. A queued save, snapshot or check of the same file is updated in place
     /// (so a save stays before a rename queued after it); only the latest of several notes
     /// opened in quick succession is loaded, after everything queued before it.
-    pub fn push(&mut self, job: Job) {
+    pub fn push(&mut self, mut job: Job) {
         // A newer snapshot must not take the place of one queued before this removal.
         if let Job::RemoveSnapshot(key) = &job {
             self.queue.retain(
@@ -124,10 +139,47 @@ impl Writer {
         if matches!(job, Job::Load(_)) {
             self.queue.retain(|queued| !matches!(queued, Job::Load(_)));
         } else if let Some(queued) = self.queue.iter_mut().find(|queued| job.replaces(queued)) {
+            // The file still holds what it held before the save being replaced.
+            if let (
+                Job::Save { expected, .. },
+                Job::Save {
+                    expected: before, ..
+                },
+            ) = (&mut job, &*queued)
+            {
+                *expected = before.clone();
+            }
             *queued = job;
             return;
         }
         self.queue.push_back(job);
+    }
+
+    /// The text of the latest save of `path` that has not finished: what the file will hold
+    /// when a save queued now runs.
+    pub fn pending_save(&self, path: &Path) -> Option<Arc<str>> {
+        let running = self.running.as_ref().map(|running| &running.job);
+        self.queue
+            .iter()
+            .rev()
+            .chain(running)
+            .find_map(|job| match job {
+                Job::Save { path: p, text, .. } if p == path => Some(text.clone()),
+                _ => None,
+            })
+    }
+
+    /// After a save of `path` failed, the file still holds what that save expected.
+    pub fn save_failed(&mut self, path: &Path, failed_expected: Option<Arc<str>>) {
+        for job in &mut self.queue {
+            if let Job::Save {
+                path: p, expected, ..
+            } = job
+                && p == path
+            {
+                *expected = failed_expected.clone();
+            }
+        }
     }
 
     pub fn pop(&mut self) -> Option<Job> {
@@ -137,6 +189,12 @@ impl Writer {
     /// Removes the queued jobs for `path` that `keep` rejects.
     pub fn retain_for(&mut self, path: &Path, mut keep: impl FnMut(&Job) -> bool) {
         self.queue.retain(|job| job.path() != path || keep(job));
+    }
+
+    pub fn has_save_for(&self, path: &Path) -> bool {
+        self.queue
+            .iter()
+            .any(|job| matches!(job, Job::Save { path: p, .. } if p == path))
     }
 
     /// Points queued jobs for `from` at `to` after a rename.
@@ -198,7 +256,25 @@ pub(super) fn run(
 ) -> Outcome {
     match job {
         Job::Load(path) => Outcome::Loaded(store_or_error(store, path).and_then(|s| s.read(path))),
-        Job::Save { path, text } => {
+        Job::Check(path) => Outcome::Checked(check(store, path)),
+        Job::Save {
+            path,
+            text,
+            expected,
+        } => {
+            if let Some(expected) = expected {
+                match check(store, path) {
+                    Ok(Some(disk)) if *disk.text == **expected => {}
+                    Ok(disk) => {
+                        if let Some(recovery) = recovery {
+                            log_recovery_error(recovery.write(path, text));
+                        }
+                        return Outcome::ChangedOnDisk(disk);
+                    }
+                    // Unreadable: the save will most likely fail and report why.
+                    Err(_) => {}
+                }
+            }
             let saved = store_or_error(store, path)
                 .and_then(|store| store.save(path, text).and(store.note(path)));
             if let Some(recovery) = recovery {
@@ -231,6 +307,14 @@ pub(super) fn run(
             Outcome::Done
         }
         Job::Rename { .. } => Outcome::Done,
+    }
+}
+
+fn check(store: Option<&NoteStore>, path: &Path) -> io::Result<Option<NoteText>> {
+    match store_or_error(store, path).and_then(|store| store.read(path)) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.io_kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(scratchpad_core::Error::Io { source, .. }) => Err(source),
     }
 }
 

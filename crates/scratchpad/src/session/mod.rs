@@ -1,27 +1,32 @@
 //! The open note's lifecycle: loading it into the editor, autosave, giving new notes a file,
-//! keeping file names in step with titles and crash recovery (PLAN §7, §9, §40, §44, §56). See
-//! ADRs 0060-0062, 0064 and 0066.
+//! keeping file names in step with titles, changes made by other programs and crash recovery
+//! (PLAN §7, §9, §30, §40, §44, §56). See ADRs 0060-0064 and 0066.
 //!
 //! [`Session`] follows the notes model's [`NotesEvent`]s and the editor's
 //! [`EditorEvent::Changed`]. Every file operation goes through one ordered queue (see
 //! [`writer`]), so the editor never waits for the disk and the disk never sees writes out of
 //! order.
 
+mod watch;
 mod writer;
 
 use std::collections::VecDeque;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext, Context, Entity, Focusable, Subscription, Task, Window};
-use scratchpad_core::{Note, NoteText, RecoveryStore, Snapshot, UNTITLED, title_from_content};
+use scratchpad_core::{
+    Note, NoteEvent, NoteText, RecoveryStore, Snapshot, UNTITLED, title_from_content,
+};
 use scratchpad_editor::Buffer;
 
 use crate::app::Storage;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::notes::{DraftId, Notes, NotesEvent, title_of};
 use crate::toast;
+pub use watch::POLL_INTERVAL;
 use writer::{Job, Moved, Outcome, Running, Writer};
 
 /// Quiet time after the last edit before the note is saved (PLAN §7).
@@ -31,6 +36,8 @@ pub const MAX_AUTOSAVE_DELAY: Duration = Duration::from_secs(2);
 /// While the user keeps typing, unsaved text goes to a recovery snapshot this often, so a crash
 /// loses at most about this much typing; a pause saves it sooner (PLAN §40, ADR 0064).
 pub const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(500);
+/// Quiet time after changes by other programs before the note list is re-read.
+const REFRESH_DELAY: Duration = Duration::from_millis(250);
 /// Titles are looked for this far into a note, so a keystroke never scans a huge document.
 const TITLE_SEARCH_LINES: usize = 200;
 /// Recovery snapshots of new notes that have no file yet are keyed by a path in the notes
@@ -56,12 +63,18 @@ struct Document {
     target: Target,
     /// Edits not yet handed to the writer (or whose save failed).
     dirty: bool,
+    /// The note's content as we last read or wrote it, to tell other programs' changes from
+    /// our own saves.
+    disk_text: Arc<str>,
     /// The title as loaded or as last renamed to. The file is renamed only when the title line
     /// is changed (ADR 0061).
     title: Option<String>,
     notice: Option<DocumentNotice>,
     /// A recovery snapshot of this note may exist.
     snapshot: bool,
+    /// The next save writes even if the file changed since we last read or wrote it: the user
+    /// chose their version.
+    overwrite: bool,
 }
 
 impl Document {
@@ -69,9 +82,11 @@ impl Document {
         Self {
             target,
             dirty: false,
+            disk_text: Arc::from(""),
             title: None,
             notice: None,
             snapshot: false,
+            overwrite: false,
         }
     }
 
@@ -85,12 +100,19 @@ impl Document {
 enum DocumentNotice {
     /// Not valid UTF-8: read-only until the user agrees to replace the unreadable bytes.
     NotUtf8,
+    /// Another program changed the file while there were unsaved edits. `lossy`: their
+    /// version is not valid UTF-8.
+    Conflict { disk: Arc<str>, lossy: bool },
+    /// Another program deleted the file.
+    Deleted,
 }
 
 /// What the notice bar above the editor shows, most urgent first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
     NotUtf8,
+    ChangedOnDisk,
+    DeletedOnDisk,
     /// Unsaved text from a run that crashed. `title` is the note's, or the new note's first
     /// line.
     Recovered {
@@ -103,6 +125,10 @@ pub enum Notice {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
     EditAnyway,
+    KeepMine,
+    LoadDisk,
+    KeepDeleted,
+    CloseDeleted,
     Restore,
     Discard,
 }
@@ -127,6 +153,7 @@ pub struct Session {
     /// When the oldest unsaved edit must be saved by, however busy the typing.
     autosave_deadline: Option<Instant>,
     snapshot_timer: Option<Task<()>>,
+    refresh: Option<Task<()>>,
     /// Unsaved text from crashed runs, or that could not be saved to a note the user left,
     /// offered one at a time.
     recovered: VecDeque<Snapshot>,
@@ -164,6 +191,9 @@ impl Session {
         if let Some(recovery) = recovery.clone() {
             tasks.push(Self::find_recovered(recovery, cx));
         }
+        if storage.watch {
+            tasks.push(watch::start(storage.notes.dir.clone(), cx));
+        }
         Self {
             notes,
             editor,
@@ -174,6 +204,7 @@ impl Session {
             autosave: None,
             autosave_deadline: None,
             snapshot_timer: None,
+            refresh: None,
             recovered: VecDeque::new(),
             restore: None,
             first_load: None,
@@ -203,6 +234,8 @@ impl Session {
     pub fn notices(&self) -> Vec<Notice> {
         let document = self.doc.notice.as_ref().map(|notice| match notice {
             DocumentNotice::NotUtf8 => Notice::NotUtf8,
+            DocumentNotice::Conflict { .. } => Notice::ChangedOnDisk,
+            DocumentNotice::Deleted => Notice::DeletedOnDisk,
         });
         let recovered = self.recovered.front().map(|snapshot| {
             let new_note = is_draft_key(&snapshot.note_path);
@@ -225,15 +258,34 @@ impl Session {
     ) {
         match event {
             NotesEvent::OpenNote(path) => {
-                self.flush(cx);
+                self.leave(cx);
                 self.open(path.clone(), cx);
             }
             NotesEvent::OpenDraft(id) => {
-                self.flush(cx);
+                self.leave(cx);
                 self.start_draft(*id, window, cx);
             }
             NotesEvent::Renamed { from, to } => self.renamed(from, to, cx),
             NotesEvent::Deleted(path) => self.deleted(path, cx),
+        }
+    }
+
+    /// Saves the open note before another one opens. Edits waiting for the user's decision
+    /// about a change by another program are offered like recovered text: the question goes
+    /// with the note, and their snapshot alone would be removed by the note's next save.
+    fn leave(&mut self, cx: &mut Context<Self>) {
+        self.flush(cx);
+        let undecided = matches!(
+            self.doc.notice,
+            Some(DocumentNotice::Conflict { .. } | DocumentNotice::Deleted)
+        );
+        if let Target::Note(path) = &self.doc.target
+            && self.doc.dirty
+            && undecided
+        {
+            let path = path.clone();
+            let text = self.editor.read(cx).text();
+            self.offer_unsaved(path, text, cx);
         }
     }
 
@@ -264,6 +316,7 @@ impl Session {
                 });
                 self.doc = Document {
                     title: self.current_title(cx),
+                    disk_text: note.text.into(),
                     notice: note.lossy.then_some(DocumentNotice::NotUtf8),
                     ..Document::new(Target::Note(path.clone()))
                 };
@@ -397,10 +450,18 @@ impl Session {
                 return;
             }
             self.doc.dirty = false;
+            let expected = if mem::take(&mut self.doc.overwrite) {
+                None
+            } else {
+                // What the file holds once the saves before this one are done.
+                let pending = self.writer.pending_save(&path);
+                Some(pending.unwrap_or_else(|| self.doc.disk_text.clone()))
+            };
             self.enqueue(
                 Job::Save {
                     path: path.clone(),
                     text,
+                    expected,
                 },
                 cx,
             );
@@ -460,6 +521,7 @@ impl Session {
                     Job::Save {
                         path: note.path,
                         text,
+                        expected: Some(Arc::from("")),
                     },
                     cx,
                 );
@@ -480,6 +542,7 @@ impl Session {
         &mut self,
         path: PathBuf,
         text: Arc<str>,
+        expected: Option<Arc<str>>,
         result: scratchpad_core::Result<Note>,
         moved: Option<Moved>,
         cx: &mut Context<Self>,
@@ -493,11 +556,14 @@ impl Session {
                     && self.doc.is_note(&to)
                 {
                     self.doc.dirty = true;
+                    // The renamed file holds the old or the new text, depending on which won.
+                    self.doc.overwrite = true;
                     self.persist(false, cx);
                 }
             }
             (Ok(note), None) => {
                 if self.doc.is_note(&path) {
+                    self.doc.disk_text = text;
                     self.doc.snapshot = false;
                 }
                 self.notes
@@ -505,6 +571,7 @@ impl Session {
             }
             (Err(error), moved) => {
                 toast::show_file_error(&title_of(&path), &error, cx);
+                self.writer.save_failed(&path, expected);
                 let open = match &moved {
                     Some(Moved::Renamed(to)) => self.doc.is_note(to),
                     // Dropped, as the delete asked.
@@ -582,6 +649,122 @@ impl Session {
         }
     }
 
+    // --- Changes by other programs ---
+
+    /// Filesystem events from the watcher (tests inject them here). Changes to the open note
+    /// are checked against the disk; others re-read the note list.
+    pub fn disk_events(&mut self, events: Vec<NoteEvent>, cx: &mut Context<Self>) {
+        let open = match &self.doc.target {
+            Target::Note(path) => Some(path.clone()),
+            _ => None,
+        };
+        let (open_changed, others): (Vec<_>, Vec<_>) = events
+            .iter()
+            .partition(|event| Some(event.path()) == open.as_deref());
+        if let (Some(open), false) = (open, open_changed.is_empty()) {
+            self.enqueue(Job::Check(open), cx);
+        }
+        if !others.is_empty() {
+            self.refresh_list(cx);
+        }
+    }
+
+    fn refresh_list(&mut self, cx: &mut Context<Self>) {
+        let timer = cx.background_executor().timer(REFRESH_DELAY);
+        let notes = self.notes.clone();
+        self.refresh = Some(cx.spawn(async move |_, cx| {
+            timer.await;
+            notes.update(cx, |notes, cx| notes.refresh(cx)).ok();
+        }));
+    }
+
+    fn checked(
+        &mut self,
+        path: PathBuf,
+        result: std::io::Result<Option<NoteText>>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.doc.is_note(&path) {
+            return;
+        }
+        let disk = match result {
+            Ok(Some(disk)) => disk,
+            Ok(None) => {
+                self.doc.notice = Some(DocumentNotice::Deleted);
+                self.refresh_list(cx);
+                cx.notify();
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "could not check the open note");
+                return;
+            }
+        };
+        if self.doc.notice == Some(DocumentNotice::Deleted) {
+            // It came back.
+            self.doc.notice = None;
+        }
+        let disk_text: Arc<str> = disk.text.into();
+        if disk_text == self.doc.disk_text {
+            // Our own save, or a change that was undone: nothing to reload.
+            if matches!(self.doc.notice, Some(DocumentNotice::Conflict { .. })) {
+                self.doc.notice = None;
+            }
+            if self.doc.dirty {
+                self.schedule_autosave(cx);
+            }
+        } else if self.doc.dirty || self.writer.has_save_for(&path) {
+            // Never overwrite either version without asking (PLAN §30).
+            self.writer
+                .retain_for(&path, |job| !matches!(job, Job::Save { .. }));
+            self.doc.dirty = true;
+            self.doc.notice = Some(DocumentNotice::Conflict {
+                disk: disk_text,
+                lossy: disk.lossy,
+            });
+            self.persist(false, cx);
+            self.refresh_list(cx);
+        } else {
+            self.editor.update(cx, |editor, cx| {
+                editor.reload_text(&disk_text, cx);
+                editor.set_read_only(disk.lossy);
+            });
+            self.doc.disk_text = disk_text;
+            self.doc.title = self.current_title(cx);
+            self.doc.notice = disk.lossy.then_some(DocumentNotice::NotUtf8);
+            self.refresh_list(cx);
+        }
+        cx.notify();
+    }
+
+    /// A save found the file changed or deleted by another program since we last read or wrote
+    /// it, so it did not write (and kept the text in a snapshot instead).
+    fn changed_before_save(
+        &mut self,
+        path: PathBuf,
+        text: Arc<str>,
+        disk: Option<NoteText>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.doc.is_note(&path) {
+            self.writer
+                .retain_for(&path, |job| !matches!(job, Job::Save { .. }));
+            self.doc.dirty = true;
+            self.doc.snapshot = true;
+            self.doc.notice = Some(match disk {
+                Some(disk) => DocumentNotice::Conflict {
+                    disk: disk.text.into(),
+                    lossy: disk.lossy,
+                },
+                None => DocumentNotice::Deleted,
+            });
+        } else {
+            self.offer_unsaved(path, text.to_string(), cx);
+        }
+        self.refresh_list(cx);
+        cx.notify();
+    }
+
     // --- Decisions ---
 
     /// Acts on a button of the notice bar.
@@ -592,6 +775,40 @@ impl Session {
                 self.doc.notice = None;
                 self.editor
                     .update(cx, |editor, _| editor.set_read_only(false));
+            }
+            (Choice::KeepMine, Some(DocumentNotice::Conflict { disk, .. })) => {
+                // Their version stays one undo away.
+                let mine = self.editor.read(cx).text();
+                self.editor.update(cx, |editor, cx| {
+                    editor.replace_text(&disk, cx);
+                    editor.replace_text(&mine, cx);
+                });
+                self.save_over_disk(cx);
+            }
+            (Choice::KeepDeleted, Some(DocumentNotice::Deleted)) => self.save_over_disk(cx),
+            (Choice::LoadDisk, Some(DocumentNotice::Conflict { disk, lossy })) => {
+                // Like opening it: their version is read-only if not valid UTF-8 (ADR 0066).
+                self.doc.notice = lossy.then_some(DocumentNotice::NotUtf8);
+                self.doc.dirty = false;
+                // My version stays one undo away.
+                self.editor.update(cx, |editor, cx| {
+                    editor.replace_text(&disk, cx);
+                    editor.set_read_only(lossy);
+                });
+                self.doc.disk_text = disk;
+                self.doc.title = self.current_title(cx);
+                if let (Target::Note(path), true) = (&self.doc.target, self.doc.snapshot) {
+                    self.doc.snapshot = false;
+                    self.enqueue(Job::RemoveSnapshot(path.clone()), cx);
+                }
+                self.show_title(cx);
+            }
+            (Choice::CloseDeleted, Some(DocumentNotice::Deleted)) => {
+                if let Target::Note(path) = self.doc.target.clone() {
+                    self.enqueue(Job::RemoveSnapshot(path.clone()), cx);
+                    self.close_document(cx);
+                    self.notes.update(cx, |notes, cx| notes.forget(&path, cx));
+                }
             }
             (Choice::Restore, _) => {
                 if let Some(snapshot) = self.recovered.pop_front() {
@@ -610,6 +827,14 @@ impl Session {
         }
         window.focus(&self.editor.focus_handle(cx));
         cx.notify();
+    }
+
+    /// Saves the editor's text over whatever the file holds now, or recreates it.
+    fn save_over_disk(&mut self, cx: &mut Context<Self>) {
+        self.doc.notice = None;
+        self.doc.dirty = true;
+        self.doc.overwrite = true;
+        self.persist(false, cx);
     }
 
     // --- Crash recovery ---
@@ -720,7 +945,7 @@ impl Session {
                         Err(error) => tracing::warn!(%error, "could not rename on exit"),
                     }
                 }
-                Job::Load(_) => {}
+                Job::Load(_) | Job::Check(_) => {}
                 job => {
                     if let Outcome::Saved(Err(error)) =
                         writer::run(&job, store.as_ref(), self.recovery.as_ref())
@@ -795,9 +1020,29 @@ impl Session {
         };
         match (job, outcome) {
             (Job::Load(path), Outcome::Loaded(result)) => self.loaded(path, result, cx),
-            (Job::Save { path, text }, Outcome::Saved(result)) => {
-                self.saved(path, text, result, moved, cx)
-            }
+            (Job::Check(path), Outcome::Checked(result)) => self.checked(path, result, cx),
+            (
+                Job::Save {
+                    path,
+                    text,
+                    expected,
+                },
+                Outcome::Saved(result),
+            ) => self.saved(path, text, expected, result, moved, cx),
+            (Job::Save { path, text, .. }, Outcome::ChangedOnDisk(disk)) => match moved {
+                // Renamed or deleted from the sidebar meanwhile, so nothing was written; the
+                // text goes to the new name with the next save.
+                Some(moved) => {
+                    self.enqueue(Job::RemoveSnapshot(path), cx);
+                    if let Moved::Renamed(to) = moved
+                        && self.doc.is_note(&to)
+                    {
+                        self.doc.dirty = true;
+                        self.persist(false, cx);
+                    }
+                }
+                None => self.changed_before_save(path, text, disk, cx),
+            },
             _ => {}
         }
     }

@@ -27,6 +27,9 @@ pub struct Storage {
     pub config_path: Option<PathBuf>,
     /// The folder for crash recovery snapshots. `None` turns recovery off.
     pub recovery_dir: Option<PathBuf>,
+    /// Watch the notes folder for changes by other programs. Tests turn this off and pass
+    /// events to [`Session::disk_events`](crate::session::Session::disk_events) themselves.
+    pub watch: bool,
 }
 
 /// Entry point used by `main`: starts the platform event loop and opens the main window.
@@ -42,6 +45,7 @@ pub fn run() {
         notes: NotesLocation::new(notes_dir(std::env::var_os(NOTES_DIR_ENV), &config)),
         config_path,
         recovery_dir: RecoveryStore::default_dir(),
+        watch: true,
     };
     tracing::info!(dir = %storage.notes.dir.display(), "notes folder");
 
