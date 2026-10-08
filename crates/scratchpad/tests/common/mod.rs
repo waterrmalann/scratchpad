@@ -15,6 +15,7 @@ use gpui::{
 };
 use scratchpad::editor_view::EditorView;
 use scratchpad::notes::{DraftId, Notes, NotesEvent, NotesLocation};
+use scratchpad::session::Session;
 use scratchpad::{AppWindow, Storage};
 use scratchpad_core::Config;
 use tempfile::TempDir;
@@ -118,6 +119,10 @@ fn move_to_test_trash(path: &Path) -> io::Result<()> {
 
 pub fn notes(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Entity<Notes> {
     root.read_with(cx, |root, _| root.notes().clone())
+}
+
+pub fn session(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Entity<Session> {
+    root.read_with(cx, |root, _| root.session().clone())
 }
 
 pub fn editor(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Entity<EditorView> {

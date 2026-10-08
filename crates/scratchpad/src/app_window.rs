@@ -1,9 +1,11 @@
 use gpui::{Context, Entity, FocusHandle, Focusable, Subscription, Window, div, prelude::*, px};
 
-use crate::actions::{CloseWindow, NewNote, SearchNotes};
+use crate::actions::{CloseWindow, NewNote, SaveNote, SearchNotes};
 use crate::app::Storage;
 use crate::editor_pane::EditorPane;
+use crate::editor_view::EditorView;
 use crate::notes::{Notes, Selection};
+use crate::session::Session;
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::theme::{self, ActiveTheme, typography};
 use crate::{settings, toast};
@@ -14,6 +16,7 @@ pub struct AppWindow {
     notes: Entity<Notes>,
     sidebar: Entity<Sidebar>,
     editor_pane: Entity<EditorPane>,
+    session: Entity<Session>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -24,8 +27,10 @@ impl AppWindow {
         let reopen = config.last_opened_note.clone();
         let sidebar_width = config.sidebar_width;
         let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
-        let editor_pane = cx.new(|cx| EditorPane::new(window, cx));
-        editor_pane.focus_handle(cx).focus(window);
+        let editor = cx.new(|cx| EditorView::new("", window, cx));
+        let session = cx.new(|cx| Session::new(notes.clone(), editor.clone(), window, cx));
+        let editor_pane = cx.new(|cx| EditorPane::new(editor.clone(), session.clone(), cx));
+        window.focus(&editor.focus_handle(cx));
         let sidebar = cx.new(|cx| {
             let mut sidebar = Sidebar::new(notes.clone(), window, cx);
             if let Some(width) = sidebar_width {
@@ -72,6 +77,7 @@ impl AppWindow {
             sidebar,
             notes,
             editor_pane,
+            session,
             _subscriptions: subscriptions,
         }
     }
@@ -89,8 +95,21 @@ impl AppWindow {
         &self.sidebar
     }
 
-    /// Writes the settings before the window goes away.
+    /// The open note's loading, saving and recovery.
+    pub fn session(&self) -> &Entity<Session> {
+        &self.session
+    }
+
+    /// Calls `callback` once, when the first note opened has been loaded into the editor.
+    pub fn on_first_note_shown(&self, cx: &mut Context<Self>, callback: impl FnOnce() + 'static) {
+        self.session
+            .update(cx, |session, _| session.on_first_load(callback));
+    }
+
+    /// Writes the open note, pending saves and the settings before the window goes away.
     fn save_all(&mut self, cx: &mut Context<Self>) {
+        self.session
+            .update(cx, |session, cx| session.flush_sync(cx));
         settings::save_now(cx);
     }
 
@@ -98,6 +117,10 @@ impl AppWindow {
     fn new_note(&mut self, _: &NewNote, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.new_note(window, cx));
+    }
+
+    fn save_note(&mut self, _: &SaveNote, _: &mut Window, cx: &mut Context<Self>) {
+        self.session.update(cx, |session, cx| session.flush(cx));
     }
 
     fn search_notes(&mut self, _: &SearchNotes, window: &mut Window, cx: &mut Context<Self>) {
@@ -142,6 +165,7 @@ impl Render for AppWindow {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::new_note))
+            .on_action(cx.listener(Self::save_note))
             .on_action(cx.listener(Self::search_notes))
             .relative()
             .size_full()

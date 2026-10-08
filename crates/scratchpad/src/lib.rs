@@ -10,6 +10,7 @@ pub mod editor_pane;
 pub mod editor_view;
 mod logging;
 pub mod notes;
+pub mod session;
 pub mod settings;
 pub mod sidebar;
 pub mod text_input;

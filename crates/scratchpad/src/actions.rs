@@ -21,6 +21,8 @@ actions!(
         CloseWindow,
         /// Start a new note (PLAN §9).
         NewNote,
+        /// Save the open note now (PLAN §35); it is also saved automatically.
+        SaveNote,
         /// Move focus to the note search (PLAN §28).
         SearchNotes,
         /// Open the note above the open one in the note list.
@@ -41,6 +43,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, None),
         KeyBinding::new("secondary-n", NewNote, None),
+        KeyBinding::new("secondary-s", SaveNote, None),
         KeyBinding::new("secondary-p", SearchNotes, None),
         KeyBinding::new("secondary-shift-f", SearchNotes, None),
         KeyBinding::new("up", SelectPreviousNote, Some("NoteList")),

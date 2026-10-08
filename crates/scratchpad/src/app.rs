@@ -54,11 +54,14 @@ pub fn run() {
         };
         tracing::info!(elapsed = ?started.elapsed(), "main window created");
         window
-            .update(cx, |_, window, _| {
+            .update(cx, |root, window, cx| {
                 // Next-frame callbacks run at the top of the first frame request, which
                 // presents the scene drawn by `open_window`, so this is "first pixels".
                 window.on_next_frame(move |_, _| {
                     tracing::info!(elapsed = ?started.elapsed(), "first frame shown");
+                });
+                root.on_first_note_shown(cx, move || {
+                    tracing::info!(elapsed = ?started.elapsed(), "first note shown");
                 });
             })
             .ok();
