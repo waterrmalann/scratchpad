@@ -6,6 +6,7 @@ mod error;
 mod grouping;
 mod naming;
 mod note;
+mod recovery;
 mod search;
 mod store;
 
@@ -14,5 +15,6 @@ pub use error::{Error, Result};
 pub use grouping::{DateGroup, NaiveDate, group_notes, local_date};
 pub use naming::{UNTITLED, sanitize_file_stem, title_from_content};
 pub use note::Note;
+pub use recovery::{RecoveryStore, Snapshot};
 pub use search::{NoteSearch, SearchHit};
 pub use store::{NoteStore, NoteText};
