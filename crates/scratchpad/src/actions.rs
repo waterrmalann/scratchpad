@@ -10,6 +10,8 @@
 
 use gpui::{App, KeyBinding, actions};
 
+use crate::text_input;
+
 actions!(
     scratchpad,
     [
@@ -23,11 +25,14 @@ actions!(
 );
 
 pub fn key_bindings() -> Vec<KeyBinding> {
-    vec![
+    let mut bindings = vec![
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, None),
         KeyBinding::new("secondary-n", NewNote, None),
-    ]
+    ];
+    // Components that own their actions, scoped to their key context.
+    bindings.extend(text_input::key_bindings());
+    bindings
 }
 
 /// Handlers for actions that act on the whole application rather than one window.

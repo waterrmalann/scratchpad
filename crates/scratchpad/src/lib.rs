@@ -11,6 +11,7 @@ pub mod editor_view;
 mod logging;
 pub mod notes;
 pub mod sidebar;
+pub mod text_input;
 pub mod theme;
 pub mod toast;
 
