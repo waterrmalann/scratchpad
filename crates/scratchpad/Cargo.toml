@@ -1,0 +1,13 @@
+[package]
+name = "scratchpad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+scratchpad-core.workspace = true
+scratchpad-editor.workspace = true
+
+[lints]
+workspace = true
