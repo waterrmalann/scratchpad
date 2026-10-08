@@ -193,3 +193,20 @@ pub mod editor {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    #[test]
+    fn no_two_bindings_share_keys_in_one_context() {
+        let mut seen = HashSet::new();
+        for binding in super::key_bindings()
+            .iter()
+            .chain(&super::editor::key_bindings())
+        {
+            let keys = format!("{:?} in {:?}", binding.keystrokes(), binding.predicate());
+            assert!(seen.insert(keys.clone()), "{keys} is bound twice");
+        }
+    }
+}

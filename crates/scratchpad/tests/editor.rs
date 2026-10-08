@@ -189,6 +189,16 @@ fn copy_keeps_the_document_and_paste_normalizes_line_breaks(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn windows_clipboard_keys_cut_copy_and_paste(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "ab");
+
+    cx.simulate_keystrokes("shift-right ctrl-insert end shift-insert");
+    assert_eq!(text(&editor, cx), "aba");
+    cx.simulate_keystrokes("home shift-right shift-right shift-delete end shift-insert");
+    assert_eq!(text(&editor, cx), "aab");
+}
+
+#[gpui::test]
 fn undo_and_redo_whole_typing_runs(cx: &mut TestAppContext) {
     let (editor, cx) = open_editor(cx, "");
 
