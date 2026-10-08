@@ -25,9 +25,12 @@ heights differ, so a pixel scroll offset over the whole document would require s
   512 entries the cache keeps only lines within 256 of the anchor.
 - One function, `line_style`, decides font, size, line height and coloured runs per line; everything else
   works with per-line heights, ready for Markdown decorations.
+- The scrollbar thumb maps a fractional line position, sized from the visible lines' average height.
 - The caret blinks every 530 ms by repainting from cached layouts; nothing is re-shaped. GPUI has no partial
   invalidation, so a blink repaints the window's visible glyphs.
 
 ## Consequences
+- The thumb's size and position are estimates; they can drift slightly while scrolling past lines of very
+  different heights (e.g. long wrapped paragraphs next to short lines).
 - A single huge line (megabytes without a line break) is still shaped as a whole; only its visible rows
   are painted.

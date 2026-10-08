@@ -11,8 +11,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    Bounds, ClipboardItem, Entity, EntityInputHandler, Focusable, Pixels, TestAppContext,
-    VisualTestContext, point, px, size,
+    Bounds, ClipboardItem, Entity, EntityInputHandler, Focusable, Modifiers, MouseButton,
+    MouseDownEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, TestAppContext,
+    TouchPhase, VisualTestContext, point, px, size,
 };
 use scratchpad::editor_view::{EditorEvent, EditorView};
 
@@ -69,6 +70,38 @@ fn char_bounds(
             .bounds_for_range(offset..offset + 1, Bounds::default(), window, cx)
             .expect("offset is visible")
     })
+}
+
+/// A point on the row of `offset`, `dx` px right of the cursor position before it.
+fn point_at(
+    editor: &Entity<EditorView>,
+    offset: usize,
+    dx: f32,
+    cx: &mut VisualTestContext,
+) -> Point<Pixels> {
+    let bounds = char_bounds(editor, offset, cx);
+    point(bounds.left() + px(dx), bounds.center().y)
+}
+
+fn click(
+    position: Point<Pixels>,
+    click_count: usize,
+    modifiers: Modifiers,
+    cx: &mut VisualTestContext,
+) {
+    cx.simulate_event(MouseDownEvent {
+        position,
+        modifiers,
+        button: MouseButton::Left,
+        click_count,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        position,
+        modifiers,
+        button: MouseButton::Left,
+        click_count,
+    });
 }
 
 fn numbered_lines(count: usize) -> String {
@@ -564,4 +597,207 @@ fn layouts_follow_edits_and_renumbered_lines(cx: &mut TestAppContext) {
     let column_80 = 1 + "ab123\n".len() + 80;
     let position = char_bounds(&editor, column_80, cx).origin;
     assert_eq!(position - origin, point(px(5. * ADVANCE), row * 3.));
+}
+
+#[gpui::test]
+fn clicking_places_the_cursor_at_the_nearest_character_boundary(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "hello world\nsecond line");
+
+    // 3 px into "l" (offset 2..3) is nearer its left edge; 6 px is nearer its right edge.
+    let position = point_at(&editor, 2, 3., cx);
+    click(position, 1, Modifiers::none(), cx);
+    assert_eq!(cursor(&editor, cx), 2);
+    let position = point_at(&editor, 2, 6., cx);
+    click(position, 1, Modifiers::none(), cx);
+    assert_eq!(cursor(&editor, cx), 3);
+
+    // Far right of the first line: its end. Below the text: the last line.
+    let position = point_at(&editor, 0, 500., cx);
+    click(position, 1, Modifiers::none(), cx);
+    assert_eq!(cursor(&editor, cx), 11);
+    let below = point_at(&editor, 12, 5. * ADVANCE, cx) + point(px(0.), px(300.));
+    click(below, 1, Modifiers::shift(), cx);
+    assert_eq!(selection(&editor, cx), (11, 17), "shift-click extends");
+}
+
+#[gpui::test]
+fn double_click_selects_a_word_and_triple_click_a_line(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "hello world\nsecond line");
+
+    let position = point_at(&editor, 7, 2., cx);
+    click(position, 2, Modifiers::none(), cx);
+    assert_eq!(selection(&editor, cx), (6, 11));
+    click(position, 3, Modifiers::none(), cx);
+    assert_eq!(selection(&editor, cx), (0, 12));
+}
+
+#[gpui::test]
+fn dragging_selects_by_the_unit_of_the_first_click(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "hello world\nsecond line");
+    let start = point_at(&editor, 2, 1., cx);
+    let end = point_at(&editor, 14, 1., cx);
+
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    assert_eq!(selection(&editor, cx), (2, 14));
+
+    // Released outside the window, no mouse-up arrives: moving without the button ends the drag.
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(start, None, Modifiers::none());
+    assert_eq!(selection(&editor, cx), (2, 14));
+
+    // Double-click on "world", then drag back into "hello": both whole words.
+    let world = point_at(&editor, 7, 1., cx);
+    cx.simulate_event(MouseDownEvent {
+        position: world,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_mouse_move(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(start, MouseButton::Left, Modifiers::none());
+    assert_eq!(selection(&editor, cx), (11, 0));
+}
+
+#[gpui::test]
+fn dragging_past_the_bottom_edge_scrolls_and_extends_the_selection(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, &numbered_lines(300));
+    let pane = cx.debug_bounds("editor-pane").unwrap();
+    let start = point_at(&editor, 0, 1., cx);
+
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    let below = point(start.x, pane.bottom() + px(40.));
+    cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::none());
+    let line_at_edge = line_of_cursor(&editor, cx);
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+
+    assert!(visible_lines(&editor, cx).start > 10);
+    assert!(line_of_cursor(&editor, cx) > line_at_edge + 10);
+    assert_eq!(selection(&editor, cx).0, 0);
+
+    cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::none());
+    let scrolled = visible_lines(&editor, cx);
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(
+        visible_lines(&editor, cx),
+        scrolled,
+        "releasing the button stops scrolling"
+    );
+}
+
+#[gpui::test]
+fn the_wheel_scrolls_without_moving_the_cursor(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, &numbered_lines(500));
+    let pane = cx.debug_bounds("editor-pane").unwrap();
+    let wheel = |delta_y: f32, cx: &mut VisualTestContext| {
+        cx.simulate_event(ScrollWheelEvent {
+            position: pane.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta_y))),
+            modifiers: Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+        })
+    };
+
+    wheel(-450., cx);
+    let visible = visible_lines(&editor, cx);
+    assert!((15..25).contains(&visible.start), "{visible:?}");
+    assert_eq!(cursor(&editor, cx), 0);
+
+    wheel(10_000., cx);
+    assert_eq!(visible_lines(&editor, cx).start, 0, "clamped at the top");
+    wheel(-1_000_000., cx);
+    let visible = visible_lines(&editor, cx);
+    assert_eq!(
+        visible.end, 501,
+        "the last line stays on screen: {visible:?}"
+    );
+    assert!(
+        visible.len() < 20,
+        "but can scroll up to mid-screen: {visible:?}"
+    );
+}
+
+#[gpui::test]
+fn dragging_the_scrollbar_thumb_scrolls_through_the_document(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, &numbered_lines(1_000));
+    let pane = cx.debug_bounds("editor-pane").unwrap();
+    let track_x = pane.right() - px(6.);
+
+    cx.simulate_mouse_down(
+        point(track_x, pane.top() + px(5.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(
+        point(track_x, pane.center().y),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    let middle = visible_lines(&editor, cx).start;
+    assert!((400..600).contains(&middle), "{middle}");
+    let bottom = point(track_x, pane.bottom());
+    cx.simulate_mouse_move(bottom, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(bottom, MouseButton::Left, Modifiers::none());
+
+    assert!(visible_lines(&editor, cx).contains(&1_000));
+    assert_eq!(
+        cursor(&editor, cx),
+        0,
+        "the scrollbar does not move the cursor"
+    );
+}
+
+#[gpui::test]
+fn clicking_where_the_ime_reports_a_grapheme_puts_the_cursor_there(cx: &mut TestAppContext) {
+    use unicode_segmentation::UnicodeSegmentation;
+    let (editor, cx) = open_editor(cx, ADVERSARIAL);
+
+    let boundaries = ADVERSARIAL.grapheme_indices(true).map(|(i, _)| i);
+    for offset in boundaries.chain([ADVERSARIAL.len()]) {
+        let position = point_at(&editor, utf16_len(&ADVERSARIAL[..offset]), 1., cx);
+        click(position, 1, Modifiers::none(), cx);
+        assert_eq!(cursor(&editor, cx), offset, "clicked at {position:?}");
+    }
+
+    // Clicks anywhere, including the margins and between the glyphs of one grapheme.
+    let pane = cx.debug_bounds("editor-pane").unwrap();
+    for y in (0..40).map(|i| pane.top() + px(5. * i as f32)) {
+        for x in (0..120).map(|i| pane.left() + px(7. * i as f32)) {
+            click(point(x, y), 1, Modifiers::none(), cx);
+            assert!(ADVERSARIAL.is_char_boundary(cursor(&editor, cx)));
+        }
+    }
+}
+
+#[gpui::test]
+fn a_megabyte_long_line_can_be_navigated_and_edited(cx: &mut TestAppContext) {
+    let long = "word ".repeat(210_000);
+    let (editor, cx) = open_editor(cx, &format!("{long}\nlast"));
+
+    cx.simulate_keystrokes("ctrl-end up");
+    assert_eq!(line_of_cursor(&editor, cx), 0);
+    assert!(
+        cursor(&editor, cx) > long.len() - CHARS_PER_ROW,
+        "on the last row"
+    );
+    cx.simulate_input("!");
+    let pane = cx.debug_bounds("editor-pane").unwrap();
+    click(pane.center(), 1, Modifiers::none(), cx);
+    let middle = cursor(&editor, cx);
+    assert!(middle > long.len() - 40 * CHARS_PER_ROW && middle < long.len());
+
+    cx.simulate_keystrokes("pageup home");
+    let row_start = cursor(&editor, cx);
+    assert_eq!(
+        row_start % CHARS_PER_ROW,
+        0,
+        "start of a row in the middle of the line"
+    );
+    assert!(row_start > long.len() / 2);
+    assert_eq!(text(&editor, cx).len(), long.len() + "!\nlast".len());
 }

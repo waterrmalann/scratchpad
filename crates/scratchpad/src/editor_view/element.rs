@@ -5,19 +5,25 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, ContentMask, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Style, Window, fill, point, px, relative, size,
+    App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
+    Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent,
+    Style, Window, fill, point, px, relative, size,
 };
 use scratchpad_editor::ByteOffset;
 
 use super::line_layout::LineLayout;
+use super::scroll::{LineHeights, ScrollAnchor};
 use super::{AUTOSCROLL_MARGIN_ROWS, EditorView, base_style, text_column};
 use crate::theme::ActiveTheme;
 
 /// Lines shaped beyond each edge of the viewport so that they are ready when scrolled in.
 const OVERSCAN_LINES: usize = 4;
 const CARET_WIDTH: Pixels = px(2.);
+/// Width of the right-edge strip that takes scrollbar clicks.
+const SCROLLBAR_TRACK_WIDTH: Pixels = px(12.);
+const SCROLLBAR_THUMB_WIDTH: Pixels = px(6.);
+const SCROLLBAR_MIN_THUMB: Pixels = px(24.);
 
 pub(super) struct EditorElement {
     view: Entity<EditorView>,
@@ -29,12 +35,38 @@ impl EditorElement {
     }
 }
 
+/// The scrollbar as last laid out, for hit testing and dragging.
+///
+/// The document's real height is never known (ADR 0030), so the thumb maps a fractional line
+/// position estimated from the visible lines' average height.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ScrollbarLayout {
+    pub track: Bounds<Pixels>,
+    pub thumb: Bounds<Pixels>,
+    /// The fractional line position at which the thumb reaches the bottom of the track.
+    max_position: f32,
+}
+
+impl ScrollbarLayout {
+    /// The fractional line position at the top of the viewport when the thumb's top is at `top`.
+    pub fn position_for_thumb_top(&self, top: Pixels) -> f32 {
+        let travel = self.track.size.height - self.thumb.size.height;
+        let fraction = if travel > px(0.) {
+            ((top - self.track.top()) / travel).clamp(0., 1.)
+        } else {
+            0.
+        };
+        fraction * self.max_position
+    }
+}
+
 pub(super) struct Frame {
     lines: Vec<(Arc<LineLayout>, gpui::Point<Pixels>)>,
     selection: Vec<Bounds<Pixels>>,
     /// Underlines of IME composition text.
     marked: Vec<Bounds<Pixels>>,
     cursor: Option<Bounds<Pixels>>,
+    scrollbar: Option<ScrollbarLayout>,
     colors: FrameColors,
 }
 
@@ -42,12 +74,14 @@ struct FrameColors {
     selection: Hsla,
     caret: Hsla,
     composition: Hsla,
+    scrollbar: Hsla,
 }
 
 pub(super) struct PrepaintState {
     started: Instant,
     frame: Frame,
     hitbox: Hitbox,
+    scrollbar_hitbox: Option<Hitbox>,
 }
 
 impl EditorView {
@@ -81,14 +115,17 @@ impl EditorView {
             selection: Vec::new(),
             marked: Vec::new(),
             cursor: None,
+            scrollbar: None,
             colors: FrameColors {
                 selection: cx.theme().selection,
                 caret: cx.theme().accent,
                 composition: cx.theme().foreground,
+                scrollbar: cx.theme().muted.opacity(0.45),
             },
         };
         let mut y = -anchor.offset;
         let mut line = anchor.line;
+        let mut painted_height = px(0.);
         while line < buffer.line_count() && y < vp.height {
             let layout = lines.layout(line);
             let origin = point(left, bounds.top() + y);
@@ -119,11 +156,15 @@ impl EditorView {
                 let (text_top, text_height) = layout.text_extent();
                 frame.cursor = Some(rect(row, x, x + CARET_WIDTH, text_top, text_height));
             }
-            y += layout.height();
+            let height = layout.height();
             frame.lines.push((layout, origin));
+            painted_height += height;
+            y += height;
             line += 1;
         }
         let visible_lines = anchor.line..line;
+        let fits =
+            anchor == ScrollAnchor::top(&vp) && line == buffer.line_count() && y <= vp.height;
 
         for ahead in line..(line + OVERSCAN_LINES).min(buffer.line_count()) {
             lines.layout(ahead);
@@ -132,9 +173,52 @@ impl EditorView {
             lines.layout(behind);
         }
 
+        if !fits {
+            let visible = frame.lines.len().max(1) as f32;
+            let average_height = (painted_height / visible).max(px(1.));
+            let viewport_lines = vp.height / average_height;
+            let position = anchor.line as f32
+                + (anchor.offset / lines.height(anchor.line).max(px(1.))).max(0.);
+            // The last line can scroll up to the middle of the viewport (see `ScrollAnchor::clamped`).
+            let max_position = (buffer.line_count() as f32 - viewport_lines / 2.).max(1.);
+            frame.scrollbar = Some(scrollbar_layout(
+                bounds,
+                position,
+                max_position,
+                viewport_lines,
+            ));
+        }
         self.visible_lines = visible_lines;
+        self.scrollbar = frame.scrollbar;
         self.layouts.trim_around(anchor.line);
         frame
+    }
+}
+
+fn scrollbar_layout(
+    bounds: Bounds<Pixels>,
+    position: f32,
+    max_position: f32,
+    viewport_lines: f32,
+) -> ScrollbarLayout {
+    let track = Bounds::new(
+        point(bounds.right() - SCROLLBAR_TRACK_WIDTH, bounds.top()),
+        size(SCROLLBAR_TRACK_WIDTH, bounds.size.height),
+    );
+    let content_lines = max_position + viewport_lines;
+    let thumb_height = (track.size.height * (viewport_lines / content_lines).min(1.))
+        .max(SCROLLBAR_MIN_THUMB)
+        .min(track.size.height);
+    let travel = track.size.height - thumb_height;
+    let thumb_top = track.top() + travel * (position / max_position).clamp(0., 1.);
+    let inset = (SCROLLBAR_TRACK_WIDTH - SCROLLBAR_THUMB_WIDTH) / 2.;
+    ScrollbarLayout {
+        track,
+        thumb: Bounds::new(
+            point(track.left() + inset, thumb_top),
+            size(SCROLLBAR_THUMB_WIDTH, thumb_height),
+        ),
+        max_position,
     }
 }
 
@@ -195,10 +279,14 @@ impl Element for EditorElement {
             .view
             .update(cx, |view, cx| view.layout_frame(bounds, window, cx));
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let scrollbar_hitbox = frame.scrollbar.map(|scrollbar| {
+            window.insert_hitbox(scrollbar.track, HitboxBehavior::BlockMouseExceptScroll)
+        });
         PrepaintState {
             started,
             frame,
             hitbox,
+            scrollbar_hitbox,
         }
     }
 
@@ -224,6 +312,10 @@ impl Element for EditorElement {
             cx,
         );
         window.set_cursor_style(CursorStyle::IBeam, &state.hitbox);
+        if let Some(scrollbar) = &state.scrollbar_hitbox {
+            window.set_cursor_style(CursorStyle::Arrow, scrollbar);
+        }
+        self.register_mouse_listeners(state, window);
 
         let frame = &state.frame;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
@@ -239,6 +331,12 @@ impl Element for EditorElement {
             if let Some(cursor) = frame.cursor.filter(|_| show_caret) {
                 window.paint_quad(fill(cursor, frame.colors.caret));
             }
+            if let Some(scrollbar) = &frame.scrollbar {
+                window.paint_quad(
+                    fill(scrollbar.thumb, frame.colors.scrollbar)
+                        .corner_radii(SCROLLBAR_THUMB_WIDTH / 2.),
+                );
+            }
         });
 
         // Typing latency budget (PLAN §37): `latency` runs from the input event to here, including
@@ -247,6 +345,54 @@ impl Element for EditorElement {
         self.view.update(cx, |view, _| {
             if let Some(input_at) = view.input_at.take() {
                 tracing::trace!(latency = ?input_at.elapsed(), frame = ?frame_time, "input painted");
+            }
+        });
+    }
+}
+
+impl EditorElement {
+    fn register_mouse_listeners(&self, state: &PrepaintState, window: &mut Window) {
+        let view = self.view.clone();
+        let hitbox = state.hitbox.clone();
+        let scrollbar = state.scrollbar_hitbox.clone();
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                return;
+            }
+            if scrollbar
+                .as_ref()
+                .is_some_and(|hitbox| hitbox.is_hovered(window))
+            {
+                view.update(cx, |view, cx| {
+                    view.scrollbar_mouse_down(event.position, window, cx)
+                });
+                cx.stop_propagation();
+            } else if hitbox.is_hovered(window) {
+                view.update(cx, |view, cx| view.mouse_down(event, window, cx));
+                cx.stop_propagation();
+            }
+        });
+
+        let view = self.view.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && view.read(cx).drag.is_some() {
+                view.update(cx, |view, cx| view.mouse_move(event, window, cx));
+            }
+        });
+
+        let view = self.view.clone();
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                view.update(cx, |view, _| view.mouse_up());
+            }
+        });
+
+        let view = self.view.clone();
+        let hitbox = state.hitbox.clone();
+        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
+                view.update(cx, |view, cx| view.scroll_wheel(event, window, cx));
+                cx.stop_propagation();
             }
         });
     }

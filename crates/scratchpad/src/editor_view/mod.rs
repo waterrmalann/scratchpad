@@ -2,7 +2,7 @@
 //!
 //! [`EditorView`] owns the engine's [`Editor`], which is the source of truth for text, selection and
 //! history. The view only adds what is about presentation: the scroll position, shaped line layouts,
-//! caret blinking. [`element::EditorElement`] lays out and paints the visible lines.
+//! caret blinking and mouse drags. [`element::EditorElement`] lays out and paints the visible lines.
 
 mod element;
 mod geometry;
@@ -16,14 +16,14 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    Pixels, Point, Subscription, Task, UTF16Selection, Window, WindowTextSystem, div, font,
-    prelude::*, px,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, Subscription,
+    Task, UTF16Selection, Window, WindowTextSystem, div, font, prelude::*, px,
 };
-use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Utf16Offset};
+use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Selection, Utf16Offset};
 
 use crate::actions::editor::*;
 use crate::theme::{ActiveTheme, typography};
-use element::EditorElement;
+use element::{EditorElement, ScrollbarLayout};
 use layout_cache::LayoutCache;
 use line_layout::{BaseStyle, LineLayout};
 use scroll::{LineHeights, ScrollAnchor, Viewport};
@@ -37,6 +37,8 @@ const MIN_SIDE_PADDING: Pixels = px(32.);
 const TOP_PADDING: Pixels = px(32.);
 /// Rows kept between the cursor and the viewport edge when the view scrolls to the cursor.
 const AUTOSCROLL_MARGIN_ROWS: f32 = 2.;
+/// How often the view scrolls while a selection is dragged past its top or bottom edge.
+const DRAG_SCROLL_INTERVAL: Duration = Duration::from_millis(16);
 /// Inserted by the Tab key: spaces look the same in every font and Markdown reads them as
 /// indentation (ADR 0031).
 const TAB: &str = "    ";
@@ -62,12 +64,35 @@ pub struct EditorView {
     /// Element bounds from the last layout; `None` until the first frame.
     bounds: Option<Bounds<Pixels>>,
     visible_lines: Range<usize>,
+    scrollbar: Option<ScrollbarLayout>,
     cursor_visible: bool,
     /// Running while the editor is focused in an active window.
     blink_task: Option<Task<()>>,
+    drag: Option<Drag>,
     /// When the input being processed arrived, for the input-to-paint trace (PLAN §37).
     input_at: Option<Instant>,
     _subscriptions: Vec<Subscription>,
+}
+
+enum Drag {
+    /// Selecting with the mouse, by the unit the drag started with.
+    Select {
+        granularity: Granularity,
+        /// What the initial click selected.
+        initial: Range<ByteOffset>,
+        position: Point<Pixels>,
+        /// Scrolls while the pointer is above or below the editor.
+        autoscroll: Option<Task<()>>,
+    },
+    /// Dragging the scrollbar thumb, grabbed `grab` below its top.
+    Scrollbar { grab: Pixels },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Granularity {
+    Character,
+    Word,
+    Line,
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -96,8 +121,10 @@ impl EditorView {
             autoscroll: false,
             bounds: None,
             visible_lines: 0..0,
+            scrollbar: None,
             cursor_visible: true,
             blink_task: None,
+            drag: None,
             input_at: None,
             _subscriptions: subscriptions,
         }
@@ -110,6 +137,7 @@ impl EditorView {
         self.layouts.clear();
         self.synced_version = self.editor.buffer().version();
         self.scroll = ScrollAnchor::top(&viewport(self.bounds));
+        self.drag = None;
         cx.notify();
     }
 
@@ -312,6 +340,180 @@ impl EditorView {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.edit(cx, |editor| editor.paste(&text));
         }
+    }
+
+    // --- Mouse ---
+
+    fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus_handle);
+        let offset = self.offset_at(event.position, window);
+        let granularity = match event.click_count {
+            0 | 1 => Granularity::Character,
+            2 => Granularity::Word,
+            _ => Granularity::Line,
+        };
+        match granularity {
+            Granularity::Character => self.editor.move_to(offset, event.modifiers.shift),
+            Granularity::Word => self.editor.select_word_at(offset),
+            Granularity::Line => self.editor.select_line_at(offset),
+        }
+        self.drag = Some(Drag::Select {
+            granularity,
+            initial: self.editor.selection().range(),
+            position: event.position,
+            autoscroll: None,
+        });
+        self.selection_changed(cx);
+    }
+
+    fn mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // The button may have been released outside the window, where no mouse-up reaches us.
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.drag = None;
+            return;
+        }
+        match &mut self.drag {
+            Some(Drag::Select {
+                position,
+                autoscroll,
+                ..
+            }) => {
+                *position = event.position;
+                let outside = self
+                    .bounds
+                    .is_some_and(|b| event.position.y < b.top() || event.position.y > b.bottom());
+                if !outside {
+                    *autoscroll = None;
+                } else if autoscroll.is_none() {
+                    *autoscroll = Some(cx.spawn_in(window, async move |this, cx| {
+                        loop {
+                            cx.background_executor().timer(DRAG_SCROLL_INTERVAL).await;
+                            let scrolled =
+                                this.update_in(cx, |this, window, cx| this.drag_scroll(window, cx));
+                            if !matches!(scrolled, Ok(true)) {
+                                break;
+                            }
+                        }
+                    }));
+                }
+                self.extend_drag_selection(window, cx);
+            }
+            Some(Drag::Scrollbar { grab }) => {
+                let grab = *grab;
+                self.drag_scrollbar(event.position.y - grab, window, cx);
+            }
+            None => {}
+        }
+    }
+
+    fn mouse_up(&mut self) {
+        self.drag = None;
+    }
+
+    /// Extends a mouse selection to the pointer, by the unit the drag started with.
+    fn extend_drag_selection(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let (
+            Some(bounds),
+            Some(Drag::Select {
+                granularity,
+                initial,
+                position,
+                ..
+            }),
+        ) = (self.bounds, &self.drag)
+        else {
+            return;
+        };
+        let (granularity, initial) = (*granularity, initial.clone());
+        // Past the top or bottom edge the selection follows the first or last visible row.
+        let y = position.y.clamp(bounds.top(), bounds.bottom() - px(1.));
+        let offset = self.offset_at(Point { x: position.x, y }, window);
+        let unit = match granularity {
+            Granularity::Character => {
+                self.editor.move_to(offset, true);
+                self.selection_changed(cx);
+                return;
+            }
+            Granularity::Word => self.editor.word_range_at(offset),
+            Granularity::Line => self.editor.line_range_at(offset),
+        };
+        let selection = if unit.start < initial.start {
+            Selection::new(initial.end, unit.start)
+        } else {
+            Selection::new(initial.start, unit.end.max(initial.end))
+        };
+        self.editor.set_selection(selection);
+        self.selection_changed(cx);
+    }
+
+    /// One step of scrolling while a selection is dragged outside the editor. Returns false once
+    /// the pointer is back inside.
+    fn drag_scroll(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        let (Some(bounds), Some(Drag::Select { position, .. })) = (self.bounds, &self.drag) else {
+            return false;
+        };
+        let overshoot = if position.y < bounds.top() {
+            position.y - bounds.top()
+        } else if position.y > bounds.bottom() {
+            position.y - bounds.bottom()
+        } else {
+            return false;
+        };
+        let vp = self.viewport();
+        let (mut lines, scroll) = self.lines(window);
+        // Faster the further the pointer is from the edge.
+        *scroll = scroll.scrolled_by(overshoot / 2., &mut lines, &vp);
+        self.extend_drag_selection(window, cx);
+        true
+    }
+
+    fn scroll_wheel(&mut self, event: &ScrollWheelEvent, window: &Window, cx: &mut Context<Self>) {
+        self.input_at.get_or_insert_with(Instant::now);
+        let delta = event.delta.pixel_delta(self.layouts.style().line_height);
+        let vp = self.viewport();
+        let (mut lines, scroll) = self.lines(window);
+        *scroll = scroll.scrolled_by(-delta.y, &mut lines, &vp);
+        if matches!(self.drag, Some(Drag::Select { .. })) {
+            self.extend_drag_selection(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn scrollbar_mouse_down(
+        &mut self,
+        position: Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(scrollbar) = self.scrollbar else {
+            return;
+        };
+        // Grabbing the thumb keeps it under the pointer; clicking the track centres it there.
+        let grab = if scrollbar.thumb.contains(&position) {
+            position.y - scrollbar.thumb.top()
+        } else {
+            scrollbar.thumb.size.height / 2.
+        };
+        self.drag = Some(Drag::Scrollbar { grab });
+        self.drag_scrollbar(position.y - grab, window, cx);
+    }
+
+    /// Scrolls so the scrollbar thumb's top is at `thumb_top`.
+    fn drag_scrollbar(&mut self, thumb_top: Pixels, window: &Window, cx: &mut Context<Self>) {
+        let Some(scrollbar) = self.scrollbar else {
+            return;
+        };
+        let position = scrollbar.position_for_thumb_top(thumb_top);
+        let vp = self.viewport();
+        let (mut lines, scroll) = self.lines(window);
+        *scroll = if position <= 0. {
+            ScrollAnchor::top(&vp)
+        } else {
+            let line = (position as usize).min(lines.line_count() - 1);
+            let offset = lines.height(line) * position.fract();
+            ScrollAnchor { line, offset }.clamped(&mut lines, &vp)
+        };
+        cx.notify();
     }
 
     // --- IME (UTF-16 offsets at this boundary) ---

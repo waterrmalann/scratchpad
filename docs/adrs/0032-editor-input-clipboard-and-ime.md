@@ -1,9 +1,9 @@
-# 0032. Editor input: keys, clipboard and IME
+# 0032. Editor input: keys, clipboard, IME and mouse
 Date: 2026-10-08
 Status: Accepted
 
 ## Context
-The editor must behave like a native Windows text control (PLAN §15, §35) on top of an engine that
+The editor must behave like a native Windows text control (PLAN §15, §35, §46) on top of an engine that
 works in LF-normalised byte offsets (ADR 0002, 0003), while platform text input speaks UTF-16.
 
 ## Decision
@@ -22,6 +22,9 @@ works in LF-normalised byte offsets (ADR 0002, 0003), while platform text input 
   away also ends the step, and the caret stops blinking and hides until focus returns.
 - `EditorEvent::Changed` is emitted after any input that changed the text, never for `set_text`, so loading
   a note does not look like an edit to autosave.
+- Mouse: click places the cursor at the nearest character boundary, Shift+click extends, double- and
+  triple-click select a word or line, and dragging extends by the unit of the first click. Dragging past
+  the top or bottom edge scrolls every 16 ms by half the overshoot.
 
 ## Consequences
 - Copying on Windows and pasting into the same note round-trips exactly (CRLF back to LF).
