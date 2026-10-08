@@ -7,6 +7,7 @@
 
 mod blocks;
 mod format;
+mod lists;
 mod parse;
 mod style;
 
