@@ -5,13 +5,13 @@
 //! stop (dragging the sidebar edge changes the width on every mouse move) and when the window
 //! closes or the app quits.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui::{App, Global, Task};
 use scratchpad_core::{Config, ThemePreference};
 
-use crate::theme::{ActiveTheme, ThemeMode};
+use crate::theme::{self, ActiveTheme, ThemeMode};
 
 /// How long changes settle before the config file is written.
 pub const SAVE_DELAY: Duration = Duration::from_secs(1);
@@ -37,6 +37,17 @@ pub fn init(config: Config, path: Option<PathBuf>, cx: &mut App) {
 
 pub fn get(cx: &App) -> &Config {
     &cx.global::<Settings>().config
+}
+
+/// The config file, if settings are kept between runs.
+pub fn path(cx: &App) -> Option<&Path> {
+    cx.global::<Settings>().path.as_deref()
+}
+
+/// Applies the user's theme choice to every window and remembers it.
+pub fn set_theme_mode(mode: ThemeMode, cx: &mut App) {
+    theme::set_mode(mode, cx);
+    update(cx, |config| config.theme = theme_preference(mode));
 }
 
 /// Changes the settings and writes them to disk after [`SAVE_DELAY`] if anything changed.

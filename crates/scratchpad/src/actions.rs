@@ -10,7 +10,7 @@
 
 use gpui::{App, KeyBinding, actions};
 
-use crate::text_input;
+use crate::{settings_panel, text_input};
 
 actions!(
     scratchpad,
@@ -35,6 +35,8 @@ actions!(
         RenameNote,
         /// Move the open note to the recycle bin.
         DeleteNote,
+        /// Show the settings (PLAN §35).
+        OpenSettings,
     ]
 );
 
@@ -51,9 +53,11 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", FocusOpenNote, Some("NoteList")),
         KeyBinding::new("f2", RenameNote, Some("NoteList")),
         KeyBinding::new("delete", DeleteNote, Some("NoteList")),
+        KeyBinding::new("secondary-,", OpenSettings, None),
     ];
     // Components that own their actions, scoped to their key context.
     bindings.extend(text_input::key_bindings());
+    bindings.extend(settings_panel::key_bindings());
     bindings
 }
 

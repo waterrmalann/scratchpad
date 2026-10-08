@@ -1,11 +1,12 @@
 use gpui::{Context, Entity, FocusHandle, Focusable, Subscription, Window, div, prelude::*, px};
 
-use crate::actions::{CloseWindow, NewNote, SaveNote, SearchNotes};
+use crate::actions::{CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes};
 use crate::app::Storage;
 use crate::editor_pane::EditorPane;
 use crate::editor_view::EditorView;
 use crate::notes::{Notes, Selection};
 use crate::session::Session;
+use crate::settings_panel::{SettingsPanel, SettingsPanelEvent};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::theme::{self, ActiveTheme, typography};
 use crate::{settings, toast};
@@ -17,7 +18,14 @@ pub struct AppWindow {
     sidebar: Entity<Sidebar>,
     editor_pane: Entity<EditorPane>,
     session: Entity<Session>,
+    settings: Option<OpenSettingsPanel>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The settings panel while it is shown.
+struct OpenSettingsPanel {
+    panel: Entity<SettingsPanel>,
+    _subscriptions: [Subscription; 2],
 }
 
 impl AppWindow {
@@ -79,8 +87,14 @@ impl AppWindow {
             notes,
             editor_pane,
             session,
+            settings: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The settings panel, while it is open.
+    pub fn settings_panel(&self) -> Option<&Entity<SettingsPanel>> {
+        self.settings.as_ref().map(|settings| &settings.panel)
     }
 
     pub fn editor_pane(&self) -> &Entity<EditorPane> {
@@ -133,6 +147,39 @@ impl AppWindow {
         self.save_all(cx);
         window.remove_window();
     }
+
+    // --- Settings ---
+
+    fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.is_some() {
+            return;
+        }
+        let panel = cx.new(|cx| SettingsPanel::new(window, cx));
+        let panel_focus = panel.focus_handle(cx);
+        let subscriptions = [
+            cx.subscribe_in(&panel, window, |this, _, event, window, cx| match event {
+                SettingsPanelEvent::Close => this.close_settings(window, cx),
+            }),
+            // E.g. Ctrl+N or Ctrl+P while it is open: the panel goes and focus stays there.
+            cx.on_focus_out(&panel_focus, window, |this, _, _, cx| {
+                this.settings = None;
+                cx.notify();
+            }),
+        ];
+        self.settings = Some(OpenSettingsPanel {
+            panel,
+            _subscriptions: subscriptions,
+        });
+        cx.notify();
+    }
+
+    /// Closes the settings panel, if open, and puts the caret back in the note.
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.take().is_some() {
+            window.focus(&self.editor_pane.focus_handle(cx));
+            cx.notify();
+        }
+    }
 }
 
 /// The window's restorable bounds (the normal size and position even while maximized).
@@ -168,6 +215,7 @@ impl Render for AppWindow {
             .on_action(cx.listener(Self::new_note))
             .on_action(cx.listener(Self::save_note))
             .on_action(cx.listener(Self::search_notes))
+            .on_action(cx.listener(Self::open_settings))
             .relative()
             .size_full()
             .flex()
@@ -178,6 +226,7 @@ impl Render for AppWindow {
             .text_size(typography::UI_FONT_SIZE)
             .child(self.sidebar.clone())
             .child(self.editor_pane.clone())
+            .children(self.settings_panel().cloned())
             .children(toast::render(cx))
     }
 }
