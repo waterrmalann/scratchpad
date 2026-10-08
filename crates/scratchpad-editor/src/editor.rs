@@ -79,15 +79,25 @@ impl Editor {
 
     /// Selects the word, punctuation run or whitespace run at `offset` (double-click).
     pub fn select_word_at(&mut self, offset: ByteOffset) {
-        let offset = self.buffer.clip_offset(offset, Bias::Left);
-        let range = motion::word_range_at(&self.buffer, offset);
+        let range = self.word_range_at(offset);
         self.set_selection(Selection::new(range.start, range.end));
     }
 
     /// Selects the line at `offset` including its line break (triple-click).
     pub fn select_line_at(&mut self, offset: ByteOffset) {
-        let range = motion::line_range_at(&self.buffer, offset);
+        let range = self.line_range_at(offset);
         self.set_selection(Selection::new(range.start, range.end));
+    }
+
+    /// The range [`Editor::select_word_at`] selects; dragging after a double-click extends by these.
+    pub fn word_range_at(&self, offset: ByteOffset) -> Range<ByteOffset> {
+        let offset = self.buffer.clip_offset(offset, Bias::Left);
+        motion::word_range_at(&self.buffer, offset)
+    }
+
+    /// The range [`Editor::select_line_at`] selects; dragging after a triple-click extends by these.
+    pub fn line_range_at(&self, offset: ByteOffset) -> Range<ByteOffset> {
+        motion::line_range_at(&self.buffer, offset)
     }
 
     /// Every selection change that is not an edit goes through here. Moving the cursor ends the current
