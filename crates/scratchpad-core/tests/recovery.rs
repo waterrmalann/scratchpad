@@ -38,6 +38,19 @@ fn snapshots_round_trip_and_stay_out_of_the_notes_folder() {
     assert_eq!(notes.read(&first.path).unwrap().text, "");
 }
 
+/// The file name is a hash of the note path. A different hash in a later version would orphan the
+/// snapshots an earlier version left behind, so the value is pinned.
+#[test]
+fn snapshot_file_names_are_stable_across_versions() {
+    let (dir, recovery) = recovery_store();
+    recovery
+        .write(Path::new("C:/Notes/Draft.md"), "text")
+        .unwrap();
+
+    let folder = dir.path().join("Scratchpad").join("recovery");
+    assert_eq!(file_names(&folder), ["5ca43ed72c936d45.json"]);
+}
+
 #[test]
 fn writing_again_replaces_the_snapshot_of_that_note() {
     let (_dir, recovery) = recovery_store();

@@ -63,6 +63,18 @@ fn list_is_sorted_by_modification_time_newest_first() {
 }
 
 #[test]
+fn notes_modified_at_the_same_time_are_listed_by_title_ignoring_case() {
+    // Synced or extracted folders often hold many files with one modification time.
+    let (_dir, store) = temp_store();
+    for title in ["beta", "Alpha", "gamma", "Beta2"] {
+        let note = store.create(Some(title)).unwrap();
+        set_modified(&note.path, at(1_000));
+    }
+
+    assert_eq!(titles(&store), ["Alpha", "beta", "Beta2", "gamma"]);
+}
+
+#[test]
 fn list_only_reports_visible_markdown_files_in_the_folder() {
     let (dir, store) = temp_store();
     fs::write(path_in(&dir, "Plain.md"), "x").unwrap();
