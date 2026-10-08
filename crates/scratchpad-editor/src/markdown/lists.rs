@@ -1,9 +1,11 @@
-//! Markdown-aware Enter (PLAN §49, ADR 0043): continuing list items and block quotes.
+//! Markdown-aware Enter (PLAN §49, ADR 0043): continuing list items and block quotes; and Tab and
+//! Shift+Tab nesting list items (ADR 0126).
 
 use super::{DecorationKind, MarkdownState};
 use crate::buffer::Buffer;
 use crate::coords::ByteOffset;
 use crate::editor::Editor;
+use crate::selection::Selection;
 
 impl Editor {
     /// Enter in a Markdown document. On a list item or quote line it continues the item on the new line
@@ -54,6 +56,135 @@ impl Editor {
             }
         });
     }
+}
+
+impl Editor {
+    /// Tab on list items: if every line the selection touches is a list item, nests each one level
+    /// deeper (indented by the width of its marker, so it belongs to the item above), with the
+    /// lines below it that are indented further (its children), and returns true. Otherwise, and
+    /// in code blocks, it does nothing and returns false. One undo step; the selection keeps
+    /// covering the same text.
+    pub fn indent_list_items(&mut self, markdown: &mut MarkdownState) -> bool {
+        self.shift_list_items(markdown, true)
+    }
+
+    /// Shift+Tab on list items: like [`Editor::indent_list_items`], but moves each item out to its
+    /// parent item's indentation, or at the top level removes its indentation.
+    pub fn outdent_list_items(&mut self, markdown: &mut MarkdownState) -> bool {
+        self.shift_list_items(markdown, false)
+    }
+
+    fn shift_list_items(&mut self, markdown: &mut MarkdownState, deeper: bool) -> bool {
+        let buffer = self.buffer();
+        let range = self.selection().range();
+        let first = buffer.line_of(range.start);
+        let mut last = buffer.line_of(range.end);
+        // A selection of whole lines ends at the start of the line after them.
+        if last > first && buffer.line_start(last) == range.end {
+            last -= 1;
+        }
+        let lines = buffer.line_start(first)..buffer.line_end(last);
+        if markdown
+            .decorations(buffer, lines)
+            .iter()
+            .any(|d| matches!(d.kind, DecorationKind::CodeBlock { .. }))
+        {
+            return false;
+        }
+        // Where each changed line's indentation starts, and the spaces added (or removed if negative).
+        let mut edits: Vec<(ByteOffset, isize)> = Vec::new();
+        // Shift+Tab: the parent indentation of the item handled last, with its indentation and quotes. The
+        // next item at the same level has the same parent, since only its children are between them;
+        // looking it up again for every item would be quadratic in a long list.
+        let mut last_parent: Option<(usize, String, usize)> = None;
+        let mut line = first;
+        while line <= last {
+            let text = buffer.line_text(line);
+            if text.trim().is_empty() {
+                line += 1;
+                continue;
+            }
+            let Some(item) = continuation(&text).filter(|item| item.item_indent.is_some()) else {
+                return false;
+            };
+            let quotes = quotes_end(&text);
+            let indent = item.item_indent.unwrap_or(quotes);
+            let shift = if deeper {
+                marker_width(&text, indent) as isize
+            } else if indent == quotes {
+                last_parent = None;
+                0
+            } else {
+                let parent = match last_parent.take() {
+                    Some((at, prefix, parent)) if at == indent && prefix == text[..quotes] => {
+                        parent
+                    }
+                    _ => parent_item(buffer, line, &text, &item)
+                        .and_then(|parent| parent.item_indent)
+                        .unwrap_or(quotes),
+                };
+                last_parent = Some((indent, text[..quotes].to_string(), parent));
+                parent as isize - indent as isize
+            };
+            edits.push((ByteOffset(buffer.line_start(line).0 + quotes), shift));
+            // Its children move with it, including selected ones. After a blank line, only lines indented
+            // as far as its text still belong to it.
+            let text_column = indent + marker_width(&text, indent);
+            let mut after_blank = false;
+            line += 1;
+            while line < buffer.line_count() {
+                let child = buffer.line_text(line);
+                if child.trim().is_empty() {
+                    after_blank = true;
+                    line += 1;
+                    continue;
+                }
+                let child_quotes = quotes_end(&child);
+                let child_indent = blanks(child.as_bytes(), child_quotes);
+                if child_indent <= indent || (after_blank && child_indent < text_column) {
+                    break;
+                }
+                let available = (child_indent - child_quotes) as isize;
+                let start = ByteOffset(buffer.line_start(line).0 + child_quotes);
+                edits.push((start, shift.max(-available)));
+                line += 1;
+            }
+        }
+        if edits.is_empty() {
+            return false;
+        }
+        let map = |offset: ByteOffset| {
+            let mut mapped = offset.0 as isize;
+            for &(at, shift) in &edits {
+                if offset >= at {
+                    mapped += shift.max(at.0 as isize - offset.0 as isize);
+                }
+            }
+            ByteOffset(mapped as usize)
+        };
+        let selection = self.selection();
+        let after = Selection::new(map(selection.anchor), map(selection.head));
+        self.transact(|editor| {
+            // Back to front, so that earlier offsets stay valid.
+            for &(at, shift) in edits.iter().rev() {
+                if shift > 0 {
+                    editor.replace_range(at..at, &" ".repeat(shift as usize));
+                } else if shift < 0 {
+                    editor.replace_range(at..ByteOffset(at.0 + shift.unsigned_abs()), "");
+                }
+            }
+            editor.set_selection(after);
+        });
+        true
+    }
+}
+
+/// The width of the list marker starting at `start` with the spaces after it, e.g. 2 for `- ` and
+/// 3 for `1. `.
+fn marker_width(line: &str, start: usize) -> usize {
+    let bytes = line.as_bytes();
+    let digits = count(&bytes[start..], |b| b.is_ascii_digit());
+    blanks(bytes, start + digits + 1) - start
 }
 
 /// The container markers a line starts with, and what the next line should start with.

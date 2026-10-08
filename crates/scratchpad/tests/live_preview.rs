@@ -386,6 +386,22 @@ fn enter_continues_a_list_and_ends_it_on_an_empty_item(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn tab_and_shift_tab_nest_list_items_while_typing_a_list(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "");
+
+    cx.simulate_input("- one");
+    cx.simulate_keystrokes("enter tab");
+    cx.simulate_input("two");
+    cx.simulate_keystrokes("enter shift-tab");
+    cx.simulate_input("three");
+    assert_eq!(text(&editor, cx), "- one\n  - two\n- three");
+
+    // Outside lists Tab inserts spaces and Shift+Tab does nothing.
+    cx.simulate_keystrokes("enter enter shift-tab tab");
+    assert_eq!(text(&editor, cx), "- one\n  - two\n- three\n\n    ");
+}
+
+#[gpui::test]
 fn typed_brackets_pair_and_backspace_removes_an_empty_pair(cx: &mut TestAppContext) {
     let (editor, cx) = open_editor(cx, "");
 

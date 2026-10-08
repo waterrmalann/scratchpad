@@ -139,3 +139,88 @@ fn enter_in_a_code_block_keeps_the_indentation_and_enclosing_quotes() {
     // Code that only looks like a quote is not one.
     assert_eq!(enter("```\n>>> x|\n```"), "```\n>>> x\n|\n```");
 }
+
+/// Presses Tab (`deeper`) or Shift+Tab on marked text; `None` if it was not taken as list nesting.
+fn nest(marked: &str, deeper: bool) -> Option<String> {
+    let mut ed = editor(marked);
+    let mut markdown = MarkdownState::new(ed.buffer());
+    let nested = if deeper {
+        ed.indent_list_items(&mut markdown)
+    } else {
+        ed.outdent_list_items(&mut markdown)
+    };
+    nested.then(|| state(&ed))
+}
+
+#[test]
+fn tab_nests_a_list_item_under_the_one_above_and_shift_tab_moves_it_back() {
+    assert_eq!(nest("- a\n- b|", true).as_deref(), Some("- a\n  - b|"));
+    assert_eq!(nest("- a\n  - b|", false).as_deref(), Some("- a\n- b|"));
+    // By the width of the item's own marker; the cursor can be anywhere on the line.
+    assert_eq!(nest("1. a\n2. |b", true).as_deref(), Some("1. a\n   2. |b"));
+    assert_eq!(
+        nest("> - [ ] a\n> - [ ] |b", true).as_deref(),
+        Some("> - [ ] a\n>   - [ ] |b")
+    );
+    // Shift+Tab goes to the parent's indentation, or at the top level to none.
+    assert_eq!(nest("- a\n    - b|", false).as_deref(), Some("- a\n- b|"));
+    assert_eq!(nest("  - a|", false).as_deref(), Some("- a|"));
+    assert_eq!(nest("- a|", false).as_deref(), Some("- a|"));
+}
+
+#[test]
+fn nesting_moves_the_item_with_its_children_and_keeps_the_selection() {
+    let mut ed = editor("- a\n- b|\n  - c\n    d\n- e");
+    let mut markdown = MarkdownState::new(ed.buffer());
+    assert!(ed.indent_list_items(&mut markdown));
+    assert_eq!(state(&ed), "- a\n  - b|\n    - c\n      d\n- e");
+    assert!(ed.undo());
+    assert_eq!(state(&ed), "- a\n- b|\n  - c\n    d\n- e", "one undo step");
+
+    // Selected items move together; a selected child moves once, with its parent.
+    assert_eq!(
+        nest("- a\n- ^b\n  - c\n- d|\n", true).as_deref(),
+        Some("- a\n  - ^b\n    - c\n  - d|\n")
+    );
+    assert_eq!(
+        nest("- a\n  - ^b\n    - c\n  - d|", false).as_deref(),
+        Some("- a\n- ^b\n  - c\n- d|")
+    );
+    // A selection of whole lines ends at the start of the next one, which is not touched.
+    assert_eq!(
+        nest("- a\n^- b\n|text", true).as_deref(),
+        Some("- a\n  ^- b\n|text")
+    );
+    // Blank lines between selected items are left alone.
+    assert_eq!(
+        nest("- ^a\n\n- b|", true).as_deref(),
+        Some("  - ^a\n\n  - b|")
+    );
+}
+
+#[test]
+fn the_text_of_an_item_after_a_blank_line_moves_with_it() {
+    // In a loose list an item's later paragraphs and children follow a blank line, indented to its text.
+    assert_eq!(
+        nest("- a\n- b|\n\n  more of b\n\n  - c\n- d", true).as_deref(),
+        Some("- a\n  - b|\n\n    more of b\n\n    - c\n- d")
+    );
+    assert_eq!(
+        nest("- a\n  - b|\n\n    more of b\n- c", false).as_deref(),
+        Some("- a\n- b|\n\n  more of b\n- c")
+    );
+    // Indented less than its text, a line after a blank one is not part of the item.
+    assert_eq!(
+        nest("1. a|\n\n  - b", true).as_deref(),
+        Some("   1. a|\n\n  - b")
+    );
+}
+
+#[test]
+fn tab_outside_list_items_is_left_to_the_caller() {
+    assert_eq!(nest("text|", true), None);
+    assert_eq!(nest("- a\n^text|", true), None, "not every line is an item");
+    assert_eq!(nest("^\n\n|", true), None, "blank lines are no items");
+    assert_eq!(nest("```\n- a|\n```", true), None, "code is not a list");
+    assert_eq!(nest("* * *|", true), None);
+}

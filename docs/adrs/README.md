@@ -22,7 +22,7 @@ with every new ADR.
 | [0021](0021-build-profiles.md) | Build profiles and panic strategy | Accepted |
 | [0022](0022-theme-and-typography.md) | Theme tokens and typography | Accepted |
 | [0030](0030-virtualized-editor-rendering.md) | Virtualized editor rendering with an anchor scroll position | Accepted |
-| [0031](0031-soft-wrapping-and-visual-navigation.md) | Soft wrapping and navigation by visual rows | Accepted |
+| [0031](0031-soft-wrapping-and-visual-navigation.md) | Soft wrapping and navigation by visual rows | Accepted; amended by 0126 |
 | [0032](0032-editor-input-clipboard-and-ime.md) | Editor input: keys, clipboard, IME and mouse | Accepted |
 | [0040](0040-markdown-decorations-with-pulldown-cmark.md) | Markdown decorations parsed with pulldown-cmark | Accepted |
 | [0041](0041-block-regions-and-incremental-markdown-parsing.md) | Block regions with lazy, incremental Markdown parsing | Accepted |

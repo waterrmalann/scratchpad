@@ -109,7 +109,10 @@ pub mod editor {
             DeleteWordLeft,
             DeleteWordRight,
             Newline,
+            /// Nests the list items the selection touches one level deeper, or inserts four spaces.
             Tab,
+            /// Moves the list items the selection touches one level out.
+            Outdent,
             DuplicateLines,
             MoveLinesUp,
             MoveLinesDown,
@@ -168,6 +171,7 @@ pub mod editor {
             KeyBinding::new("enter", Newline, context),
             KeyBinding::new("shift-enter", PlainNewline, context),
             KeyBinding::new("tab", Tab, context),
+            KeyBinding::new("shift-tab", Outdent, context),
             KeyBinding::new("secondary-shift-d", DuplicateLines, context),
             KeyBinding::new("alt-up", MoveLinesUp, context),
             KeyBinding::new("alt-down", MoveLinesDown, context),

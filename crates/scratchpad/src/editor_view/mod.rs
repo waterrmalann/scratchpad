@@ -872,7 +872,18 @@ impl Render for EditorView {
             .on_action(
                 cx.listener(|this, _: &PlainNewline, _, cx| this.edit(cx, Editor::insert_newline)),
             )
-            .on_action(cx.listener(|this, _: &Tab, _, cx| this.edit(cx, |e| e.insert_text(TAB))))
+            .on_action(cx.listener(|this, _: &Tab, _, cx| {
+                this.edit_markdown(cx, |editor, markdown| {
+                    if !editor.indent_list_items(markdown) {
+                        editor.insert_text(TAB);
+                    }
+                })
+            }))
+            .on_action(cx.listener(|this, _: &Outdent, _, cx| {
+                this.edit_markdown(cx, |editor, markdown| {
+                    editor.outdent_list_items(markdown);
+                })
+            }))
             .on_action(
                 cx.listener(|this, _: &DuplicateLines, _, cx| {
                     this.edit(cx, Editor::duplicate_lines)

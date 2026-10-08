@@ -137,3 +137,17 @@ fn keeping_a_million_find_matches_in_step_with_a_keystroke() {
     let time = median(11, || adjust_matches(&mut matches, &change));
     assert_under("moving the matches", time, Duration::from_millis(20));
 }
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing limits are for release builds")]
+fn shift_tab_on_a_whole_long_list() {
+    // Each item's parent used to be looked up through every line above it: 8 s for 4,000 items.
+    let list: String = (0..5_000).map(|i| format!("  - item {i}\n")).collect();
+    let time = median(5, || {
+        let mut editor = Editor::from_text(&list);
+        editor.set_selection(Selection::new(ByteOffset(0), editor.buffer().end()));
+        let mut markdown = MarkdownState::new(editor.buffer());
+        assert!(editor.outdent_list_items(&mut markdown));
+    });
+    assert_under("Shift+Tab on 5,000 items", time, Duration::from_millis(300));
+}
