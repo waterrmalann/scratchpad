@@ -15,7 +15,8 @@ scratchpad-editor = { path = "crates/scratchpad-editor" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 dirs = "7"
-gpui = "0.2.2"
+# Features are chosen per platform in crates/scratchpad (ADR 0110).
+gpui = { version = "0.2.2", default-features = false }
 notify = "8"
 proptest = "1"
 pulldown-cmark = { version = "0.13.4", default-features = false }

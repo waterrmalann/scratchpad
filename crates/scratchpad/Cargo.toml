@@ -10,15 +10,20 @@ scratchpad-core.workspace = true
 scratchpad-editor.workspace = true
 chrono.workspace = true
 dirs.workspace = true
-gpui.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-segmentation.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# GPUI's default features are its Linux backends, and they still build Vulkan and naga crates for
+# Windows (never linked). Only the manifest (DPI awareness, common controls) applies here.
+gpui = { workspace = true, features = ["windows-manifest"] }
 # Only to load fonts while GPUI creates its Direct3D device (src/warm_up.rs, ADR 0110). GPUI
 # depends on the same version with this feature enabled, so this adds nothing to the build.
-[target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Win32_Graphics_DirectWrite"] }
+
+[target.'cfg(not(windows))'.dependencies]
+gpui = { workspace = true, features = ["font-kit", "wayland", "x11"] }
 
 [features]
 # Test seams for the app's end-to-end tests (in `tests/`), which turn it on below.
