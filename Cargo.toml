@@ -18,6 +18,7 @@ dirs = "7"
 gpui = "0.2.2"
 notify = "8"
 proptest = "1"
+pulldown-cmark = { version = "0.13.4", default-features = false }
 # Line breaks are normalized to LF on load (ADR 0003), so ropey only needs to recognise LF.
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 serde = { version = "1", features = ["derive"] }

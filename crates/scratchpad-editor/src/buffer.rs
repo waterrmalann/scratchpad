@@ -191,6 +191,12 @@ impl Buffer {
         ByteOffset(self.graphemes(offset).next().unwrap_or(self.len()))
     }
 
+    /// The lines from `line` (clamped) to the end, each including its line break; text ending in `\n` yields an
+    /// empty last line.
+    pub(crate) fn lines_from(&self, line: usize) -> impl Iterator<Item = RopeSlice<'_>> {
+        self.rope.lines_at(line.min(self.last_line()))
+    }
+
     /// A grapheme walker starting at `offset`, which is clamped to the buffer and rounded down to a char.
     pub(crate) fn graphemes(&self, offset: ByteOffset) -> Graphemes<'_> {
         Graphemes::at(&self.rope, self.clip_to_char(offset.0))

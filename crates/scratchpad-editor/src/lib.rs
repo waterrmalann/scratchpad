@@ -5,6 +5,7 @@ mod coords;
 mod editor;
 mod graphemes;
 mod history;
+pub mod markdown;
 mod motion;
 pub mod search;
 mod selection;
