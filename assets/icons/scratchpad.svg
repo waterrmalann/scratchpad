@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Master for the app icon. generate-icon.ps1 draws the same shapes into scratchpad.ico;
+       keep the two in sync (the script lays the text lines out on whole pixels for sizes up to 32 px). -->
+  <title>Scratchpad</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7c555"/>
+      <stop offset="1" stop-color="#d99a00"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="244" height="244" rx="56" fill="url(#tile)"/>
+  <path d="M78 44H148L192 88V198A14 14 0 0 1 178 212H78A14 14 0 0 1 64 198V58A14 14 0 0 1 78 44Z" fill="#ffffff"/>
+  <path d="M148 44L192 88H148Z" fill="#ecdcae"/>
+  <rect x="90" y="92" width="70" height="14" rx="7" fill="#3a3326"/>
+  <rect x="90" y="126" width="76" height="10" rx="5" fill="#b9b2a0"/>
+  <rect x="90" y="150" width="76" height="10" rx="5" fill="#b9b2a0"/>
+  <rect x="90" y="174" width="44" height="10" rx="5" fill="#b9b2a0"/>
+</svg>
