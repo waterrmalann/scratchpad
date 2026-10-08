@@ -1039,6 +1039,10 @@ impl Session {
         self.leave(cx);
         self.flush_sync(cx);
         self.close_document(cx);
+        if let Some(restore) = self.restore.take() {
+            // Its note never opened; it is offered again in the new folder.
+            self.recovered.push_front(restore.offer);
+        }
         self.refresh = None;
         if self.watcher.is_some() {
             // Replacing the task stops the old watcher.

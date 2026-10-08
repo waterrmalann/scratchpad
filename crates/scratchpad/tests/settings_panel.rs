@@ -11,7 +11,7 @@ use gpui::{
     VisualTestContext, point, px,
 };
 use scratchpad::notes::Selection;
-use scratchpad::session::{AUTOSAVE_DELAY, Notice};
+use scratchpad::session::{AUTOSAVE_DELAY, Choice, Notice};
 use scratchpad::settings::SAVE_DELAY;
 use scratchpad::settings_panel::PickFolderForTests;
 use scratchpad::theme::{ActiveTheme, Appearance, ThemeMode};
@@ -509,5 +509,41 @@ fn a_failed_save_heard_of_after_the_folder_changed_does_not_replace_newer_text(
     assert_eq!(
         fs::read_to_string(new.path().join("Ideas.md")).unwrap(),
         "Ideas\nbody one two"
+    );
+}
+
+#[gpui::test]
+fn recovered_text_still_waiting_for_its_note_is_offered_again_in_the_new_folder(
+    cx: &mut TestAppContext,
+) {
+    let old = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    write_note(old.path(), "Ideas", "Ideas", days_ago(0, 10));
+    let other = write_note(old.path(), "Other", "Other", days_ago(0, 9));
+    RecoveryStore::new(data.path().join("recovery"))
+        .write(&other, "Other\nunsaved")
+        .unwrap();
+    let (root, cx) = common::open_with(common::storage(old.path(), data.path()), cx);
+    let session = common::session(&root, cx);
+
+    // Restoring opens the note; the folder changes before it has loaded.
+    session.update_in(cx, |session, window, cx| {
+        session.choose(Choice::Restore, window, cx)
+    });
+    switch_folder(&root, new.path(), cx);
+    cx.run_until_parked();
+
+    assert_eq!(
+        notices(&root, cx),
+        [Notice::Recovered {
+            title: "Other".into(),
+            new_note: false
+        }]
+    );
+    click("choice:Restore", cx);
+    assert_eq!(
+        fs::read_to_string(new.path().join("Other.md")).unwrap(),
+        "Other\nunsaved"
     );
 }
