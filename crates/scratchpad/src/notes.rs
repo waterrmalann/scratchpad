@@ -1,15 +1,15 @@
-//! The notes shown in the sidebar: the folder, the note list, which note is open and the new
-//! note that has not been saved yet. See ADR 0050.
+//! The notes shown in the sidebar: the folder, the note list, which note is open, the new note
+//! that has not been saved yet and the note search. See ADR 0050.
 //!
 //! Views and the editor integration react to [`NotesEvent`]s; they never touch the folder
 //! directly, so the list always matches what is on disk.
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use gpui::{AppContext, Context, EventEmitter, Task};
-use scratchpad_core::{Note, NoteStore};
+use scratchpad_core::{Note, NoteSearch, NoteStore, SearchHit};
 
 use crate::toast;
 
@@ -77,6 +77,14 @@ pub struct Notes {
     /// The id of the most recent draft.
     last_draft: u64,
     refresh_task: Option<Task<()>>,
+    query: String,
+    /// Results for `query`; `None` while not searching or until the first results arrive.
+    hits: Option<Vec<SearchHit>>,
+    /// Shared with the background search, which keeps note contents cached between searches.
+    search: Arc<Mutex<NoteSearch>>,
+    /// The running search. Replacing it drops (cancels) the previous one, so results of an
+    /// older query can never overwrite newer ones.
+    search_task: Option<Task<()>>,
 }
 
 impl EventEmitter<NotesEvent> for Notes {}
@@ -93,6 +101,10 @@ impl Notes {
             selection: Selection::None,
             last_draft: 0,
             refresh_task: None,
+            query: String::new(),
+            hits: None,
+            search: Arc::default(),
+            search_task: None,
         };
         notes.refresh(cx);
         notes
@@ -118,6 +130,7 @@ impl Notes {
                     Ok((store, notes)) => {
                         this.store = Some(store);
                         this.notes = Arc::new(notes);
+                        this.search(cx);
                     }
                     Err(error) => toast::show_file_error(&this.folder_name(), &error, cx),
                 }
@@ -146,6 +159,59 @@ impl Notes {
         matches!(self.selection, Selection::Draft(_))
     }
 
+    /// The search text as typed.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// Whether the sidebar shows search results instead of the note list.
+    pub fn is_searching(&self) -> bool {
+        !self.query.trim().is_empty()
+    }
+
+    /// Matches for [`query`](Self::query), title matches first. `None` until the first results
+    /// for a new search arrive.
+    pub fn search_hits(&self) -> Option<&[SearchHit]> {
+        self.hits.as_deref()
+    }
+
+    /// Searches titles and contents for `query` in the background (PLAN §28). An empty query
+    /// returns to the note list.
+    pub fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        if self.query == query {
+            return;
+        }
+        self.query = query.to_owned();
+        if !self.is_searching() {
+            self.hits = None;
+        }
+        self.search(cx);
+        cx.notify();
+    }
+
+    fn search(&mut self, cx: &mut Context<Self>) {
+        let (Some(store), true) = (self.store.clone(), self.is_searching()) else {
+            self.search_task = None;
+            return;
+        };
+        let notes = self.notes.clone();
+        let query = self.query.clone();
+        let search = self.search.clone();
+        // The first search reads every note, so it must not block the UI thread.
+        let searching = cx.background_spawn(async move {
+            let mut search = search.lock().unwrap_or_else(PoisonError::into_inner);
+            search.search(&store, &notes, &query)
+        });
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let hits = searching.await;
+            this.update(cx, |this, cx| {
+                this.hits = Some(hits);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     pub fn note(&self, path: &Path) -> Option<&Note> {
         self.notes.iter().find(|note| note.path == path)
     }
@@ -163,6 +229,8 @@ impl Notes {
     /// Starts a new note in memory and asks for it to be opened. Nothing is written until
     /// [`save_draft`](Self::save_draft), so pressing Ctrl+N and leaving leaves no empty file.
     pub fn new_note(&mut self, cx: &mut Context<Self>) {
+        // The draft is shown in the note list, not among search results.
+        self.set_query("", cx);
         self.last_draft += 1;
         let draft = DraftId(self.last_draft);
         self.selection = Selection::Draft(draft);
@@ -187,6 +255,7 @@ impl Notes {
         if self.selection == Selection::Draft(draft) {
             self.selection = Selection::Note(note.path.clone());
         }
+        self.search(cx);
         cx.notify();
         Ok(note)
     }

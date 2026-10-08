@@ -21,6 +21,8 @@ actions!(
         CloseWindow,
         /// Start a new note (PLAN §9).
         NewNote,
+        /// Move focus to the note search (PLAN §28).
+        SearchNotes,
     ]
 );
 
@@ -29,6 +31,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, None),
         KeyBinding::new("secondary-n", NewNote, None),
+        KeyBinding::new("secondary-p", SearchNotes, None),
+        KeyBinding::new("secondary-shift-f", SearchNotes, None),
     ];
     // Components that own their actions, scoped to their key context.
     bindings.extend(text_input::key_bindings());

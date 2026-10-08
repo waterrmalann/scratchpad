@@ -1,6 +1,6 @@
 use gpui::{Context, Entity, FocusHandle, Focusable, Subscription, Window, div, prelude::*};
 
-use crate::actions::{CloseWindow, NewNote};
+use crate::actions::{CloseWindow, NewNote, SearchNotes};
 use crate::editor_pane::EditorPane;
 use crate::notes::{Notes, NotesLocation};
 use crate::sidebar::Sidebar;
@@ -53,6 +53,11 @@ impl AppWindow {
             .update(cx, |sidebar, cx| sidebar.new_note(window, cx));
     }
 
+    fn search_notes(&mut self, _: &SearchNotes, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.focus_search(window, cx));
+    }
+
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
         window.remove_window();
     }
@@ -72,6 +77,7 @@ impl Render for AppWindow {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::new_note))
+            .on_action(cx.listener(Self::search_notes))
             .relative()
             .size_full()
             .flex()
