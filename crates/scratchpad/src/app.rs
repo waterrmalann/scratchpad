@@ -42,6 +42,9 @@ pub fn run() {
     let started = Instant::now();
     logging::init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting Scratchpad");
+    // Shortens GPUI's platform initialisation, which takes most of the time to the first frame.
+    #[cfg(windows)]
+    crate::warm_up::load_fonts();
 
     // Only the tiny config file is read before the window opens (PLAN §39).
     let config_dir = config_dir_override();
@@ -64,6 +67,8 @@ pub fn run() {
     tracing::info!(dir = %storage.notes.dir.display(), "notes folder");
 
     Application::new().run(move |cx| {
+        // GPUI's platform (Direct3D device, DirectWrite) is ready; none of our views exist yet.
+        tracing::info!(elapsed = ?started.elapsed(), "platform initialised");
         init(cx);
         let window = match open_main_window(storage, config, cx) {
             Ok(window) => window,

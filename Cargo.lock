@@ -5072,6 +5072,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
+ "windows 0.61.3",
  "winresource",
 ]
 

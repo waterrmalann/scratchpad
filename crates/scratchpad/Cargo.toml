@@ -15,6 +15,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-segmentation.workspace = true
 
+# Only to load fonts while GPUI creates its Direct3D device (src/warm_up.rs, ADR 0110). GPUI
+# depends on the same version with this feature enabled, so this adds nothing to the build.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Graphics_DirectWrite"] }
+
 [features]
 # Test seams for the app's end-to-end tests (in `tests/`), which turn it on below.
 test-support = []

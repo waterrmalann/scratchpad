@@ -18,6 +18,8 @@ pub mod sidebar;
 pub mod text_input;
 pub mod theme;
 pub mod toast;
+#[cfg(windows)]
+mod warm_up;
 
 pub use app::{Storage, init, open_main_window, run};
 pub use app_window::AppWindow;
