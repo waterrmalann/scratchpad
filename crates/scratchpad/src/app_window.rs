@@ -1,10 +1,15 @@
-use gpui::{Context, Entity, FocusHandle, Focusable, Subscription, Window, div, prelude::*, px};
+use std::path::PathBuf;
+
+use gpui::{
+    Context, Entity, FocusHandle, Focusable, Subscription, Task, Window, div, prelude::*, px,
+};
+use scratchpad_core::NoteStore;
 
 use crate::actions::{CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes};
 use crate::app::Storage;
 use crate::editor_pane::EditorPane;
 use crate::editor_view::EditorView;
-use crate::notes::{Notes, Selection};
+use crate::notes::{Notes, NotesLocation, Selection, folder_name};
 use crate::session::Session;
 use crate::settings_panel::{SettingsPanel, SettingsPanelEvent};
 use crate::sidebar::{Sidebar, SidebarEvent};
@@ -18,7 +23,10 @@ pub struct AppWindow {
     sidebar: Entity<Sidebar>,
     editor_pane: Entity<EditorPane>,
     session: Entity<Session>,
+    notes_dir_overridden: bool,
     settings: Option<OpenSettingsPanel>,
+    /// Opening a newly picked notes folder; a newer pick replaces (cancels) it.
+    folder_change: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -87,7 +95,9 @@ impl AppWindow {
             notes,
             editor_pane,
             session,
+            notes_dir_overridden: storage.notes_dir_overridden,
             settings: None,
+            folder_change: None,
             _subscriptions: subscriptions,
         }
     }
@@ -154,16 +164,25 @@ impl AppWindow {
         if self.settings.is_some() {
             return;
         }
-        let panel = cx.new(|cx| SettingsPanel::new(window, cx));
+        let panel = cx.new(|cx| {
+            SettingsPanel::new(self.notes.clone(), self.notes_dir_overridden, window, cx)
+        });
         let panel_focus = panel.focus_handle(cx);
         let subscriptions = [
             cx.subscribe_in(&panel, window, |this, _, event, window, cx| match event {
                 SettingsPanelEvent::Close => this.close_settings(window, cx),
+                SettingsPanelEvent::NotesFolderPicked(dir) => {
+                    this.change_notes_folder(dir.clone(), window, cx)
+                }
             }),
             // E.g. Ctrl+N or Ctrl+P while it is open: the panel goes and focus stays there.
-            cx.on_focus_out(&panel_focus, window, |this, _, _, cx| {
-                this.settings = None;
-                cx.notify();
+            // Another window becoming active (such as the folder dialog, whose answer the
+            // panel waits for) leaves it open.
+            cx.on_focus_out(&panel_focus, window, |this, _, window, cx| {
+                if window.is_window_active() {
+                    this.settings = None;
+                    cx.notify();
+                }
             }),
         ];
         self.settings = Some(OpenSettingsPanel {
@@ -179,6 +198,53 @@ impl AppWindow {
             window.focus(&self.editor_pane.focus_handle(cx));
             cx.notify();
         }
+    }
+
+    /// Switches to the notes in `dir` if notes can be written there; otherwise shows why and
+    /// stays on the current folder. The folder is opened off the UI thread: it may be slow,
+    /// e.g. on a network drive.
+    fn change_notes_folder(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.notes.read(cx).location();
+        if dir == current.dir {
+            // Also the last word on a slow switch to another folder that is still running.
+            self.folder_change = None;
+            self.close_settings(window, cx);
+            return;
+        }
+        let location = NotesLocation {
+            dir,
+            ..current.clone()
+        };
+        let opening = cx.background_spawn({
+            let location = location.clone();
+            async move { location.open_writable() }
+        });
+        self.folder_change = Some(cx.spawn_in(window, async move |this, cx| {
+            let opened = opening.await;
+            this.update_in(cx, |this, window, cx| match opened {
+                Ok(store) => this.switch_notes_folder(location, store, window, cx),
+                Err(error) => toast::show_file_error(&folder_name(&location.dir), &error, cx),
+            })
+            .ok();
+        }));
+    }
+
+    fn switch_notes_folder(
+        &mut self,
+        location: NotesLocation,
+        store: NoteStore,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dir = location.dir.clone();
+        tracing::info!(dir = %dir.display(), "changing the notes folder");
+        // The open note, new notes and pending renames go to the old folder first.
+        self.session
+            .update(cx, |session, cx| session.change_folder(dir.clone(), cx));
+        self.notes
+            .update(cx, |notes, cx| notes.change_folder(location, store, cx));
+        settings::update(cx, |config| config.notes_dir = Some(dir));
+        self.close_settings(window, cx);
     }
 }
 

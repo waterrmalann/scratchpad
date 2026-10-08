@@ -4,6 +4,7 @@
 //! Views and the editor integration react to [`NotesEvent`]s; they never touch the folder
 //! directly, so the list always matches what is on disk.
 
+use std::fs;
 use std::io;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,24 @@ impl NotesLocation {
             Some(deleter) => NoteStore::with_deleter(&self.dir, deleter),
             None => NoteStore::open(&self.dir),
         }
+    }
+
+    /// Opens the folder (creating it if needed) and checks that notes can be written there, so
+    /// the user hears about a folder that cannot hold notes before switching to it rather than
+    /// with the first save. Blocks on the disk: call it off the UI thread.
+    pub fn open_writable(&self) -> scratchpad_core::Result<NoteStore> {
+        let store = self.open()?;
+        // Hidden and named like the store's temporary files, which it removes if one is left.
+        let probe = self
+            .dir
+            .join(format!(".scratchpad-check-{}.tmp", std::process::id()));
+        let written = fs::write(&probe, b"").and_then(|()| fs::remove_file(&probe));
+        written.map_err(|source| scratchpad_core::Error::Io {
+            action: "write to",
+            path: self.dir.clone(),
+            source,
+        })?;
+        Ok(store)
     }
 }
 
@@ -210,6 +229,38 @@ impl Notes {
         }));
     }
 
+    /// Shows the notes of another folder, whose `store` the caller has opened (see
+    /// [`NotesLocation::open_writable`]). The caller must have saved the open note first: the
+    /// selection is cleared without an event. Once the folder is listed its newest note opens,
+    /// or a new note if it has none.
+    pub fn change_folder(
+        &mut self,
+        location: NotesLocation,
+        store: NoteStore,
+        cx: &mut Context<Self>,
+    ) {
+        self.location = location;
+        self.store = Some(store);
+        self.notes = Arc::default();
+        self.loaded = false;
+        self.changes += 1;
+        self.selection = Selection::None;
+        self.open_title = None;
+        self.open_after_listing = true;
+        self.query.clear();
+        self.hits = None;
+        // Its cache holds the texts of the other folder's notes.
+        self.search = Arc::default();
+        self.search_task = None;
+        // Replaces (and so cancels) a listing of the old folder.
+        self.refresh(cx);
+        cx.notify();
+    }
+
+    pub fn location(&self) -> &NotesLocation {
+        &self.location
+    }
+
     /// Notes on disk, most recently modified first.
     pub fn notes(&self) -> &[Note] {
         &self.notes
@@ -247,6 +298,10 @@ impl Notes {
     /// Records that the note was just saved: updates its metadata and moves it to the top,
     /// adding it back if it was missing (e.g. deleted by another program and saved again).
     pub fn note_saved(&mut self, note: Note, cx: &mut Context<Self>) {
+        if note.path.parent() != Some(self.location.dir.as_path()) {
+            // A save of the previous folder that finished after the switch.
+            return;
+        }
         self.changes += 1;
         let notes = Arc::make_mut(&mut self.notes);
         notes.retain(|listed| listed.path != note.path);
@@ -476,13 +531,16 @@ impl Notes {
     }
 
     fn folder_name(&self) -> String {
-        self.location
-            .dir
-            .file_name()
-            .unwrap_or(self.location.dir.as_os_str())
-            .to_string_lossy()
-            .into_owned()
+        folder_name(&self.location.dir)
     }
+}
+
+/// The name a folder is shown by in messages: its last component.
+pub fn folder_name(dir: &Path) -> String {
+    dir.file_name()
+        .unwrap_or(dir.as_os_str())
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The title of the note at `path`: its file stem (ADR 0013).

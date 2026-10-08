@@ -15,8 +15,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-segmentation.workspace = true
 
+[features]
+# Test seams for the app's end-to-end tests (in `tests/`), which turn it on below.
+test-support = []
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+scratchpad = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 
 # Embeds the icon and version info (build.rs). Chosen over writing `.rc` files by hand because it

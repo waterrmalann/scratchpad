@@ -160,7 +160,9 @@ pub struct Session {
     restore: Option<Restore>,
     /// Called once the first note (or new note) is in the editor, to log startup timing.
     first_load: Option<Box<dyn FnOnce()>>,
-    _tasks: Vec<Task<()>>,
+    /// Watches the notes folder; `None` when [`Storage::watch`] is off.
+    watcher: Option<Task<()>>,
+    _find_recovered: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -187,13 +189,12 @@ impl Session {
             }),
         ];
         let recovery = storage.recovery_dir.clone().map(RecoveryStore::new);
-        let mut tasks = Vec::new();
-        if let Some(recovery) = recovery.clone() {
-            tasks.push(Self::find_recovered(recovery, cx));
-        }
-        if storage.watch {
-            tasks.push(watch::start(storage.notes.dir.clone(), cx));
-        }
+        let find_recovered = recovery
+            .clone()
+            .map(|recovery| Self::find_recovered(recovery, cx));
+        let watcher = storage
+            .watch
+            .then(|| watch::start(storage.notes.dir.clone(), cx));
         Self {
             notes,
             editor,
@@ -208,7 +209,8 @@ impl Session {
             recovered: VecDeque::new(),
             restore: None,
             first_load: None,
-            _tasks: tasks,
+            watcher,
+            _find_recovered: find_recovered,
             _subscriptions: subscriptions,
         }
     }
@@ -270,23 +272,28 @@ impl Session {
         }
     }
 
-    /// Saves the open note before another one opens. Edits waiting for the user's decision
-    /// about a change by another program are offered like recovered text: the question goes
-    /// with the note, and their snapshot alone would be removed by the note's next save.
+    /// Saves the open note before another one opens. Text that cannot go to a file is offered
+    /// like recovered text: edits waiting for the user's decision about a change by another
+    /// program (the question goes with the note, and their snapshot alone would be removed by
+    /// the note's next save), and a new note whose file could not be created (its snapshot
+    /// alone would only be offered after a restart).
     fn leave(&mut self, cx: &mut Context<Self>) {
         self.flush(cx);
+        if !self.doc.dirty {
+            return;
+        }
         let undecided = matches!(
             self.doc.notice,
             Some(DocumentNotice::Conflict { .. } | DocumentNotice::Deleted)
         );
-        if let Target::Note(path) = &self.doc.target
-            && self.doc.dirty
-            && undecided
-        {
-            let path = path.clone();
-            let text = self.editor.read(cx).text();
-            self.offer_unsaved(path, text, cx);
-        }
+        let key = match &self.doc.target {
+            Target::Note(path) if undecided => path.clone(),
+            // Still a draft after the flush: creating its file failed.
+            Target::Draft { key, .. } => key.clone(),
+            _ => return,
+        };
+        let text = self.editor.read(cx).text();
+        self.offer_unsaved(key, text, cx);
     }
 
     fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -858,7 +865,11 @@ impl Session {
 
     fn restore(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
         let path = snapshot.note_path;
-        let into_note = !is_draft_key(&path) && path.is_file();
+        // A note of a folder used before the notes folder was changed is not opened from
+        // there: renaming it would move it into this folder. Its text becomes a new note here.
+        let into_note = !is_draft_key(&path)
+            && path.parent() == Some(self.notes_dir.as_path())
+            && path.is_file();
         let restore = Restore {
             path: into_note.then(|| path.clone()),
             text: snapshot.text,
@@ -947,16 +958,43 @@ impl Session {
                 }
                 Job::Load(_) | Job::Check(_) => {}
                 job => {
-                    if let Outcome::Saved(Err(error)) =
-                        writer::run(&job, store.as_ref(), self.recovery.as_ref())
-                    {
-                        // The text is in a recovery snapshot and offered on the next start.
-                        tracing::error!(%error, "could not save on exit");
+                    let outcome = writer::run(&job, store.as_ref(), self.recovery.as_ref());
+                    // The text is in a recovery snapshot, so it is offered on the next start;
+                    // and now, in case the app goes on with another notes folder.
+                    if let Job::Save { path, text, .. } = job {
+                        match outcome {
+                            Outcome::Saved(Err(error)) => {
+                                tracing::error!(%error, "could not save while flushing");
+                                toast::show_file_error(&title_of(&path), &error, cx);
+                            }
+                            Outcome::ChangedOnDisk(_) => {}
+                            _ => continue,
+                        }
+                        self.offer_unsaved(path, text.to_string(), cx);
                     }
                 }
             }
         }
         self.doc.dirty = false;
+    }
+
+    // --- Changing the notes folder ---
+
+    /// Writes everything for the current folder, on this thread, and closes the open note before
+    /// the notes model switches to `dir`: saves, renames and new notes' files must land in the
+    /// folder they belong to. Edits waiting for a decision about a change by another program
+    /// are offered like recovered text, as when switching notes. See ADR 0081.
+    pub fn change_folder(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        self.leave(cx);
+        self.flush_sync(cx);
+        self.close_document(cx);
+        self.refresh = None;
+        if self.watcher.is_some() {
+            // Replacing the task stops the old watcher.
+            self.watcher = Some(watch::start(dir.clone(), cx));
+        }
+        self.notes_dir = dir;
+        cx.notify();
     }
 
     // --- Writer ---

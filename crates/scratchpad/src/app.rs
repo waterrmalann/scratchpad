@@ -23,6 +23,8 @@ const NOTES_DIR_ENV: &str = "SCRATCHPAD_NOTES_DIR";
 #[derive(Clone, Debug)]
 pub struct Storage {
     pub notes: NotesLocation,
+    /// The notes folder was set by `SCRATCHPAD_NOTES_DIR`, so the settings cannot change it.
+    pub notes_dir_overridden: bool,
     /// The config file. `None` keeps settings for this run only.
     pub config_path: Option<PathBuf>,
     /// The folder for crash recovery snapshots. `None` turns recovery off.
@@ -41,8 +43,10 @@ pub fn run() {
     // Only the tiny config file is read before the window opens (PLAN §39).
     let config_path = default_config_path();
     let config = config_path.as_deref().map(Config::load).unwrap_or_default();
+    let notes_dir_env = env_var(NOTES_DIR_ENV);
     let storage = Storage {
-        notes: NotesLocation::new(notes_dir(std::env::var_os(NOTES_DIR_ENV), &config)),
+        notes_dir_overridden: notes_dir_env.is_some(),
+        notes: NotesLocation::new(notes_dir(notes_dir_env, &config)),
         config_path,
         recovery_dir: RecoveryStore::default_dir(),
         watch: true,
@@ -82,6 +86,11 @@ pub fn init(cx: &mut App) {
     cx.bind_keys(actions::key_bindings());
     cx.bind_keys(actions::editor::key_bindings());
     actions::register_app_handlers(cx);
+}
+
+/// The environment variable `name`, unless it is unset or empty.
+fn env_var(name: &str) -> Option<OsString> {
+    std::env::var_os(name).filter(|value| !value.is_empty())
 }
 
 /// The folder from `SCRATCHPAD_NOTES_DIR` (`env`), else from the config, else

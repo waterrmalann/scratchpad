@@ -70,6 +70,7 @@ pub fn open_main_window_in<'a>(
 pub fn storage(notes_dir: &Path, data_dir: &Path) -> Storage {
     Storage {
         notes: location(notes_dir),
+        notes_dir_overridden: false,
         config_path: Some(data_dir.join("config.json")),
         recovery_dir: Some(data_dir.join("recovery")),
         watch: false,

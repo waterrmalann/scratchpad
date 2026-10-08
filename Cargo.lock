@@ -5065,6 +5065,7 @@ dependencies = [
  "chrono",
  "dirs 7.0.0",
  "gpui",
+ "scratchpad",
  "scratchpad-core",
  "scratchpad-editor",
  "tempfile",
