@@ -57,5 +57,26 @@ after opening: empty note 48 MB working set / 75 MB private, 1 MB note 52 / 78 M
 63 / 89 MB. The release binary is 6.1 MB.
 
 To reproduce: run with `SCRATCHPAD_LOG=info,scratchpad::editor_view=trace` and read the
-`input painted` lines from the log. Until notes are wired in, loading a large document needs a
-temporary change that passes its text to `EditorView::new` in `EditorPane::new`.
+`input painted` lines from the log. To open a large document, put it in a folder and start the
+app with `SCRATCHPAD_NOTES_DIR` pointing there.
+
+## Startup with notes
+
+Release build with the note session wired in (open the last note, autosave, watcher, recovery
+scan), on a folder with two small notes; warm starts while other builds were running on the
+machine, so absolute numbers are noisy. From the log (`main window created`, `first frame shown`,
+`first note shown`, all measured from the start of `main`):
+
+| Run | Window created | First frame | First note in editor |
+| --- | --- | --- | --- |
+| 3 | 759 ms | 766 ms | 764 ms |
+| 4 | 630 ms | 635 ms | 635 ms |
+| 5 | 542 ms | 546 ms | 544 ms |
+| 6 | 586 ms | 590 ms | 589 ms |
+
+(The first two runs, 1.15-1.36 s, were cold after the binary was rebuilt.) Nothing note-related
+runs before the window exists: only the config file is read. Once it does, the folder is opened
+and the last note read on the background executor; the note is in the editor 2-10 ms after the
+window, so it is painted in the first or second frame. Listing the folder and the recovery scan
+follow in the background. Startup time is still dominated by GPUI/Direct3D
+initialisation (see above).
