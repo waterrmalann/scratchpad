@@ -20,5 +20,9 @@ criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
+[[bench]]
+name = "search"
+harness = false
+
 [lints]
 workspace = true
