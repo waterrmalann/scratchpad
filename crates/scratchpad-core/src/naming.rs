@@ -3,6 +3,8 @@
 //! In V1 a note's title is its file stem, so a typed title has to survive the trip through
 //! [`sanitize_file_stem`] and a collision check before it can become a file name.
 
+use std::collections::HashSet;
+
 /// Title (and file stem) used when nothing meaningful is available.
 pub const UNTITLED: &str = "Untitled";
 
@@ -139,4 +141,22 @@ fn is_reserved_device_name(name: &str) -> bool {
     // Windows 10+ also reserves the superscript digits.
     let mut chars = suffix.chars();
     matches!(chars.next(), Some('1'..='9' | '¹' | '²' | '³')) && chars.next().is_none()
+}
+
+/// Picks `stem`, `stem 2`, `stem 3`, ... followed by `extension`, the first whose file name is
+/// not in `taken`. `taken` holds lower-cased file names: the comparison is case-insensitive on
+/// every platform so notes stay portable between Windows, macOS and Linux.
+pub(crate) fn unique_file_name(stem: &str, extension: &str, taken: &HashSet<String>) -> String {
+    let mut n = 1u32;
+    loop {
+        let name = if n == 1 {
+            format!("{stem}{extension}")
+        } else {
+            format!("{stem} {n}{extension}")
+        };
+        if !taken.contains(&name.to_lowercase()) {
+            return name;
+        }
+        n += 1;
+    }
 }
