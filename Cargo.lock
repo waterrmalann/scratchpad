@@ -5080,6 +5080,7 @@ dependencies = [
 name = "scratchpad-editor"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "proptest",
  "ropey",
  "unicode-segmentation",
