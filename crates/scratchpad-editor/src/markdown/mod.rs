@@ -13,7 +13,6 @@ mod style;
 
 pub use style::{MarkerKind, SpanStyle, StyledLine, StyledSpan};
 
-use std::borrow::Cow;
 use std::ops::Range;
 
 use crate::buffer::{Buffer, TextChange};
@@ -87,15 +86,11 @@ pub struct MarkdownState {
     /// The buffer version and length the regions describe.
     version: u64,
     len: usize,
-    /// Block regions covering the document in order. Never empty; the first starts at 0.
-    regions: Vec<Region>,
-}
-
-#[derive(Debug, Clone)]
-struct Region {
-    start: usize,
-    /// Parsed on first use, with offsets relative to `start`.
-    decorations: Option<Vec<Decoration>>,
+    /// Starts of the block regions covering the document, in order. Never empty; the first is 0. Kept apart
+    /// from `parsed` because every edit shifts the starts after it, and a dense array shifts fastest.
+    starts: Vec<usize>,
+    /// Each region's decorations, parsed on first use, with offsets relative to its start.
+    parsed: Vec<Option<Vec<Decoration>>>,
 }
 
 impl MarkdownState {
@@ -103,7 +98,8 @@ impl MarkdownState {
         let mut state = Self {
             version: buffer.version(),
             len: buffer.len(),
-            regions: Vec::new(),
+            starts: Vec::new(),
+            parsed: Vec::new(),
         };
         state.rescan_all(buffer);
         state
@@ -134,8 +130,8 @@ impl MarkdownState {
         self.sync(buffer);
         let mut found = Vec::new();
         let first = self.region_index(range.start.0);
-        for index in first..self.regions.len() {
-            let start = self.regions[index].start;
+        for index in first..self.starts.len() {
+            let start = self.starts[index];
             if start > range.end.0 {
                 break;
             }
@@ -164,10 +160,8 @@ impl MarkdownState {
     }
 
     fn rescan_all(&mut self, buffer: &Buffer) {
-        self.regions = std::iter::once(0)
-            .chain(region_starts(buffer, 0))
-            .map(Region::unparsed)
-            .collect();
+        self.starts = std::iter::once(0).chain(region_starts(buffer, 0)).collect();
+        self.parsed = vec![None; self.starts.len()];
     }
 
     /// Rescans from the region before the edit until a region start that existed before the edit is found again
@@ -177,81 +171,63 @@ impl MarkdownState {
         let edited = self.region_index(edit.start);
         // An edit at the start of a region can join it to the previous one, e.g. by indenting its first line.
         let first = edited.saturating_sub(1);
-        let scan_start = self.regions[first].start;
-        let mut rescanned = vec![Region::unparsed(scan_start)];
-        let mut kept_from = self.regions.len();
+        let scan_start = self.starts[first];
+        let mut rescanned = vec![scan_start];
+        let mut kept_from = self.starts.len();
         let mut old = edited + 1;
         for start in region_starts(buffer, scan_start) {
             if start >= edit.new_end {
                 let old_start = start - edit.new_end + edit.old_end;
-                while old < self.regions.len() && self.regions[old].start < old_start {
+                while old < self.starts.len() && self.starts[old] < old_start {
                     old += 1;
                 }
-                if old < self.regions.len() && self.regions[old].start == old_start {
+                if self.starts.get(old) == Some(&old_start) {
                     kept_from = old;
                     break;
                 }
             }
-            rescanned.push(Region::unparsed(start));
+            rescanned.push(start);
         }
 
+        let mut parsed = vec![None; rescanned.len()];
         // The region before the edited one keeps its parse if it still ends where it did.
-        let first_end = rescanned.get(1).map(|r| r.start).or_else(|| {
-            let kept = self.regions.get(kept_from)?;
-            Some(kept.start + edit.new_end - edit.old_end)
+        let first_end = rescanned.get(1).copied().or_else(|| {
+            let kept = self.starts.get(kept_from)?;
+            Some(kept + edit.new_end - edit.old_end)
         });
-        if first < edited && first_end == Some(self.regions[edited].start) {
-            rescanned[0].decorations = self.regions[first].decorations.take();
+        if first < edited && first_end == Some(self.starts[edited]) {
+            parsed[0] = self.parsed[first].take();
         }
 
-        for region in &mut self.regions[kept_from..] {
-            region.start = region.start + edit.new_end - edit.old_end;
+        for start in &mut self.starts[kept_from..] {
+            *start = *start + edit.new_end - edit.old_end;
         }
-        self.regions.splice(first..kept_from, rescanned);
+        self.starts.splice(first..kept_from, rescanned);
+        self.parsed.splice(first..kept_from, parsed);
     }
 
     /// The index of the region containing `offset`.
     fn region_index(&self, offset: usize) -> usize {
-        self.regions
-            .partition_point(|r| r.start <= offset)
+        self.starts
+            .partition_point(|&start| start <= offset)
             .saturating_sub(1)
     }
 
-    fn region_end(&self, index: usize) -> usize {
-        self.regions.get(index + 1).map_or(self.len, |r| r.start)
-    }
-
     fn region_decorations(&mut self, buffer: &Buffer, index: usize) -> &[Decoration] {
-        let range = ByteOffset(self.regions[index].start)..ByteOffset(self.region_end(index));
-        self.regions[index]
-            .decorations
-            .get_or_insert_with(|| parse::parse(&buffer.text_for_range(range)))
-    }
-}
-
-impl Region {
-    fn unparsed(start: usize) -> Self {
-        Self {
-            start,
-            decorations: None,
-        }
+        let start = self.starts[index];
+        let end = self.starts.get(index + 1).copied().unwrap_or(self.len);
+        self.parsed[index].get_or_insert_with(|| {
+            parse::parse(&buffer.text_for_range(ByteOffset(start)..ByteOffset(end)))
+        })
     }
 }
 
 /// The starts of the regions after the one starting at `from`, which must be a region start.
 fn region_starts(buffer: &Buffer, from: usize) -> impl Iterator<Item = usize> {
     let mut scanner = blocks::Scanner::default();
-    let mut offset = from;
     buffer
         .lines_from(buffer.line_of(ByteOffset(from)))
-        .filter_map(move |line| {
-            let start = offset;
-            offset += line.len_bytes();
-            let text: Cow<'_, str> = line.into();
-            scanner
-                .starts_region(text.strip_suffix('\n').unwrap_or(&text))
-                .then_some(start)
-        })
+        .filter_map(move |(start, line)| scanner.starts_region(&line).then_some(start))
 }
 
 /// Consecutive buffer changes merged into one replacement: `start..old_end` of the old text became
@@ -331,10 +307,6 @@ mod tests {
         ]
     }
 
-    fn region_starts_of(state: &MarkdownState) -> Vec<usize> {
-        state.regions.iter().map(|r| r.start).collect()
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(2048))]
 
@@ -371,7 +343,8 @@ mod tests {
             let all = ByteOffset(0)..buffer.end();
             let incremental = markdown.decorations(buffer, all.clone());
             let mut fresh = MarkdownState::new(buffer);
-            prop_assert_eq!(region_starts_of(&markdown), region_starts_of(&fresh));
+            prop_assert_eq!(&markdown.starts, &fresh.starts);
+            prop_assert_eq!(markdown.parsed.len(), markdown.starts.len());
             prop_assert_eq!(incremental, fresh.decorations(buffer, all));
         }
     }
@@ -407,7 +380,7 @@ mod tests {
             let buffer = Buffer::from_text(&text);
             let mut markdown = MarkdownState::new(&buffer);
             let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
-            prop_assert_eq!(by_region, parse::parse(&text), "{:?} split at {:?}", text, region_starts_of(&markdown));
+            prop_assert_eq!(by_region, parse::parse(&text), "{:?} split at {:?}", text, markdown.starts);
         }
     }
 
@@ -437,11 +410,7 @@ mod tests {
         editor.move_to(ByteOffset(7), false);
         editor.insert_text("x");
         markdown.sync(editor.buffer());
-        let parsed: Vec<bool> = markdown
-            .regions
-            .iter()
-            .map(|r| r.decorations.is_some())
-            .collect();
+        let parsed: Vec<bool> = markdown.parsed.iter().map(Option::is_some).collect();
         // The edited region and the one before it are rescanned; the one before keeps its parse because it
         // still ends where it did, and the regions after are kept.
         assert_eq!(parsed, [true, false, true, true]);
@@ -465,8 +434,8 @@ mod tests {
             let buffer = editor.buffer();
             let incremental = markdown.decorations(buffer, ByteOffset(0)..buffer.end());
             let mut fresh = MarkdownState::new(buffer);
-            assert_eq!(region_starts_of(&markdown), region_starts_of(&fresh));
-            assert!(region_starts_of(&markdown).len() > 3);
+            assert_eq!(markdown.starts, fresh.starts);
+            assert!(markdown.starts.len() > 3);
             assert_eq!(
                 incremental,
                 fresh.decorations(buffer, ByteOffset(0)..buffer.end())

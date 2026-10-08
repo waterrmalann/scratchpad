@@ -191,10 +191,21 @@ impl Buffer {
         ByteOffset(self.graphemes(offset).next().unwrap_or(self.len()))
     }
 
-    /// The lines from `line` (clamped) to the end, each including its line break; text ending in `\n` yields an
-    /// empty last line.
-    pub(crate) fn lines_from(&self, line: usize) -> impl Iterator<Item = RopeSlice<'_>> {
-        self.rope.lines_at(line.min(self.last_line()))
+    /// The lines from `line` (clamped) to the end, with their start offsets and without their line breaks; text
+    /// ending in `\n` yields an empty last line. Lines are borrowed from the rope unless they span chunks, which
+    /// makes this several times faster than ropey's line iterator for scanning a whole document.
+    pub(crate) fn lines_from(&self, line: usize) -> Lines<'_> {
+        let start = self.line_start(line).0;
+        let (mut chunks, chunk_start, _, _) = self.rope.chunks_at_byte(start);
+        let rest = chunks
+            .next()
+            .map_or("", |chunk| &chunk[start - chunk_start..]);
+        Lines {
+            chunks,
+            rest,
+            offset: start,
+            done: false,
+        }
     }
 
     /// A grapheme walker starting at `offset`, which is clamped to the buffer and rounded down to a char.
@@ -262,6 +273,51 @@ impl Buffer {
     pub(crate) fn clip_range_to_chars(&self, range: Range<usize>) -> Range<usize> {
         let start = self.clip_to_char(range.start);
         start..self.clip_to_char(range.end).max(start)
+    }
+}
+
+/// See [`Buffer::lines_from`].
+pub(crate) struct Lines<'a> {
+    chunks: ropey::iter::Chunks<'a>,
+    /// The part of the current chunk not yet returned.
+    rest: &'a str,
+    /// The buffer offset of `rest`.
+    offset: usize,
+    done: bool,
+}
+
+impl<'a> Iterator for Lines<'a> {
+    type Item = (usize, Cow<'a, str>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let start = self.offset;
+        // The beginning of a line that spans chunks.
+        let mut spanning = String::new();
+        loop {
+            let (line, more) = match self.rest.find('\n') {
+                Some(i) => (&self.rest[..i], &self.rest[i + 1..]),
+                None => (self.rest, ""),
+            };
+            let found = line.len() < self.rest.len();
+            self.offset += self.rest.len() - more.len();
+            self.rest = more;
+            if !found && let Some(chunk) = self.chunks.next() {
+                spanning.push_str(line);
+                self.rest = chunk;
+                continue;
+            }
+            self.done = !found;
+            let line = if spanning.is_empty() {
+                Cow::Borrowed(line)
+            } else {
+                spanning.push_str(line);
+                Cow::Owned(spanning)
+            };
+            return Some((start, line));
+        }
     }
 }
 
@@ -359,6 +415,38 @@ mod tests {
             "evicted changes must not be reported as complete"
         );
         assert!(buffer.changes_since(current + 1).is_none());
+    }
+
+    #[test]
+    fn lines_from_yields_every_line_across_chunk_boundaries() {
+        // Lines of many lengths, some much longer than a rope chunk, and a trailing empty line.
+        let text: String = (0..300)
+            .map(|i| format!("{}é\n", "x".repeat(i * i % 3000)))
+            .collect();
+        let buffer = Buffer::from_text(&text);
+        let expected: Vec<(usize, &str)> = text
+            .split('\n')
+            .scan(0, |start, line| {
+                let item = (*start, line);
+                *start += line.len() + 1;
+                Some(item)
+            })
+            .collect();
+        for first in [0, 1, 150, 300] {
+            let lines: Vec<(usize, String)> = buffer
+                .lines_from(first)
+                .map(|(start, line)| (start, line.into_owned()))
+                .collect();
+            let expected: Vec<(usize, String)> = expected[first..]
+                .iter()
+                .map(|&(start, line)| (start, line.to_string()))
+                .collect();
+            assert_eq!(lines, expected, "from line {first}");
+        }
+        assert_eq!(
+            Buffer::default().lines_from(0).collect::<Vec<_>>(),
+            [(0, Cow::Borrowed(""))]
+        );
     }
 
     #[test]
