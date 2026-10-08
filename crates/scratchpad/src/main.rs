@@ -2,4 +2,6 @@
 // app. Debug builds keep the console so log output stays visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-fn main() {}
+fn main() {
+    scratchpad::run();
+}
