@@ -134,6 +134,26 @@ impl ScrollAnchor {
         Some(top)
     }
 
+    /// The line at `y` (relative to the viewport's top) and `y` relative to that line's top. Points
+    /// above the first or below the last line map to those lines.
+    pub fn line_at(self, y: Pixels, lines: &mut impl LineHeights) -> (usize, Pixels) {
+        let mut line = self.line;
+        let mut top = -self.offset;
+        while y < top && line > 0 {
+            line -= 1;
+            top -= lines.height(line);
+        }
+        while line + 1 < lines.line_count() {
+            let height = lines.height(line);
+            if y < top + height {
+                break;
+            }
+            top += height;
+            line += 1;
+        }
+        (line, y - top)
+    }
+
     /// Keeps the same text at the top of the viewport when lines are inserted or removed above it.
     pub fn apply_change(&mut self, change: &TextChange) {
         let first = change.start_point.line;
@@ -266,6 +286,16 @@ mod tests {
         assert_eq!(reveal(90, 0.0..20.0, &mut lines), at(87, 0.));
         assert_eq!(reveal(2, 10.0..30.0, &mut lines), at(1, 10.));
         assert!(lines.1 < 40, "measured {} lines", lines.1);
+    }
+
+    #[test]
+    fn hit_testing_finds_the_line_under_a_y() {
+        let mut lines = Heights(vec![20., 60., 20.], 0);
+        let anchor = at(1, 10.);
+        assert_eq!(anchor.line_at(px(0.), &mut lines), (1, px(10.)));
+        assert_eq!(anchor.line_at(px(55.), &mut lines), (2, px(5.)));
+        assert_eq!(anchor.line_at(px(-15.), &mut lines), (0, px(15.)));
+        assert_eq!(anchor.line_at(px(500.), &mut lines), (2, px(450.)));
     }
 
     fn change(start: usize, old_end: usize, new_end: usize) -> TextChange {

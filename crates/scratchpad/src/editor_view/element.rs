@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, ContentMask, CursorStyle, Element, ElementId, Entity, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Style, Window, fill,
-    point, px, relative, size,
+    App, Bounds, ContentMask, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    Pixels, Style, Window, fill, point, px, relative, size,
 };
 use scratchpad_editor::ByteOffset;
 
@@ -32,6 +32,8 @@ impl EditorElement {
 pub(super) struct Frame {
     lines: Vec<(Arc<LineLayout>, gpui::Point<Pixels>)>,
     selection: Vec<Bounds<Pixels>>,
+    /// Underlines of IME composition text.
+    marked: Vec<Bounds<Pixels>>,
     cursor: Option<Bounds<Pixels>>,
     colors: FrameColors,
 }
@@ -39,6 +41,7 @@ pub(super) struct Frame {
 struct FrameColors {
     selection: Hsla,
     caret: Hsla,
+    composition: Hsla,
 }
 
 pub(super) struct PrepaintState {
@@ -56,6 +59,7 @@ impl EditorView {
         let vp = self.viewport();
         let margin = self.layouts.style().line_height * AUTOSCROLL_MARGIN_ROWS;
         let selection = self.editor.selection();
+        let marked = self.editor.marked_range();
         let autoscroll = std::mem::take(&mut self.autoscroll);
 
         let (mut lines, scroll) = self.lines(window);
@@ -75,10 +79,12 @@ impl EditorView {
         let mut frame = Frame {
             lines: Vec::new(),
             selection: Vec::new(),
+            marked: Vec::new(),
             cursor: None,
             colors: FrameColors {
                 selection: cx.theme().selection,
                 caret: cx.theme().accent,
+                composition: cx.theme().foreground,
             },
         };
         let mut y = -anchor.offset;
@@ -97,6 +103,13 @@ impl EditorView {
                     frame
                         .selection
                         .push(rect(row, x0, x1, px(0.), layout.line_height()));
+                }
+            }
+            if let Some(columns) = marked.as_ref().and_then(|m| columns_in(m, &line_range)) {
+                for (row, x0, x1) in layout.spans(columns, false, px(0.)) {
+                    frame
+                        .marked
+                        .push(rect(row, x0, x1, layout.baseline() + px(2.), px(1.)));
                 }
             }
             if line_range.contains(&selection.head) || line_range.end == selection.head {
@@ -205,6 +218,11 @@ impl Element for EditorElement {
             view.set_blinking(focused, cx);
             view.caret_visible()
         });
+        window.handle_input(
+            &focus_handle,
+            ElementInputHandler::new(bounds, self.view.clone()),
+            cx,
+        );
         window.set_cursor_style(CursorStyle::IBeam, &state.hitbox);
 
         let frame = &state.frame;
@@ -214,6 +232,9 @@ impl Element for EditorElement {
             }
             for (layout, origin) in &frame.lines {
                 layout.paint(*origin, window);
+            }
+            for underline in &frame.marked {
+                window.paint_quad(fill(*underline, frame.colors.composition));
             }
             if let Some(cursor) = frame.cursor.filter(|_| show_caret) {
                 window.paint_quad(fill(cursor, frame.colors.caret));

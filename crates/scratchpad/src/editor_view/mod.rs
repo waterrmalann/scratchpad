@@ -15,10 +15,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Pixels,
-    Subscription, Task, Window, WindowTextSystem, div, font, prelude::*, px,
+    App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    Pixels, Point, Subscription, Task, UTF16Selection, Window, WindowTextSystem, div, font,
+    prelude::*, px,
 };
-use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion};
+use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Utf16Offset};
 
 use crate::actions::editor::*;
 use crate::theme::{ActiveTheme, typography};
@@ -225,6 +226,18 @@ impl EditorView {
         viewport(self.bounds)
     }
 
+    /// The buffer offset under a window position.
+    fn offset_at(&mut self, position: Point<Pixels>, window: &Window) -> ByteOffset {
+        let Some(bounds) = self.bounds else {
+            return self.editor.selection().head;
+        };
+        let (left, _) = text_column(bounds);
+        let (mut lines, scroll) = self.lines(window);
+        let (line, y) = scroll.line_at(position.y - bounds.top(), &mut lines);
+        let layout = lines.layout(line);
+        lines.offset(line, layout.column_at(layout.row_at(y), position.x - left))
+    }
+
     // --- Keyboard ---
 
     /// Moves the cursor to the row `distance` away (one row for Up/Down, a page for PageUp/Down),
@@ -299,6 +312,20 @@ impl EditorView {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.edit(cx, |editor| editor.paste(&text));
         }
+    }
+
+    // --- IME (UTF-16 offsets at this boundary) ---
+
+    /// Converts a range from the platform, which is not trusted to be ordered or in bounds.
+    fn range_from_utf16(&self, range: &Range<usize>) -> Range<ByteOffset> {
+        let buffer = self.editor.buffer();
+        let (start, end) = (range.start.min(range.end), range.start.max(range.end));
+        buffer.utf16_to_offset(Utf16Offset(start))..buffer.utf16_to_offset(Utf16Offset(end))
+    }
+
+    fn range_to_utf16(&self, range: &Range<ByteOffset>) -> Range<usize> {
+        let buffer = self.editor.buffer();
+        buffer.offset_to_utf16(range.start).0..buffer.offset_to_utf16(range.end).0
     }
 }
 
@@ -421,6 +448,131 @@ impl Render for EditorView {
     }
 }
 
+impl EntityInputHandler for EditorView {
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        let range = self.range_from_utf16(&range_utf16);
+        adjusted_range.replace(self.range_to_utf16(&range));
+        Some(self.editor.buffer().text_for_range(range).into_owned())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let selection = self.editor.selection();
+        Some(UTF16Selection {
+            range: self.range_to_utf16(&selection.range()),
+            reversed: selection.head < selection.anchor,
+        })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        self.editor
+            .marked_range()
+            .map(|range| self.range_to_utf16(&range))
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.editor.unmark();
+        cx.notify();
+    }
+
+    /// Typed text, a dead-key result, or a committed IME composition.
+    fn replace_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let marked = self.editor.marked_range();
+        // Japanese IMEs report "no composition" this way; there is nothing to replace.
+        if text.is_empty() && range_utf16.is_none() && marked.is_none() {
+            return;
+        }
+        let range = range_utf16.map(|range| self.range_from_utf16(&range));
+        self.edit(cx, |editor| match range {
+            Some(range) if marked.as_ref() != Some(&range) => {
+                editor.unmark();
+                editor.replace_range(range, text);
+            }
+            _ => editor.insert_text(text),
+        });
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range_utf16: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let range = range_utf16.map(|range| self.range_from_utf16(&range));
+        let selected = new_selected_range_utf16.map(|selected| {
+            utf16_to_byte(new_text, selected.start)..utf16_to_byte(new_text, selected.end)
+        });
+        self.edit(cx, |editor| {
+            editor.replace_and_mark(range, new_text, selected)
+        });
+        // Lets the platform move the candidate window along with the composition.
+        window.invalidate_character_coordinates();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        _element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let range = self.range_from_utf16(&range_utf16);
+        let bounds = self.bounds?;
+        let (left, _) = text_column(bounds);
+        let vp = self.viewport();
+        let (mut lines, scroll) = self.lines(window);
+        let buffer = lines.buffer;
+        let start = buffer.offset_to_point(range.start);
+        let top = scroll.line_top(start.line, &mut lines, vp.height)?;
+        let layout = lines.layout(start.line);
+        // One rectangle can only describe the range's first row; the platform uses it to place the
+        // candidate window, so that is the part that matters.
+        let line_start = buffer.line_start(start.line);
+        let end_column = range.end.min(buffer.line_end(start.line)).0 - line_start.0;
+        let (row, start_x, end_x) = layout
+            .spans(start.column..end_column, false, px(0.))
+            .first()
+            .copied()
+            .unwrap_or_else(|| {
+                let x = layout.x_for(start.column);
+                (layout.row_of(start.column), x, x)
+            });
+        let row_top = bounds.top() + top + layout.row_top(row);
+        Some(Bounds::from_corners(
+            gpui::point(left + start_x, row_top),
+            gpui::point(left + end_x, row_top + layout.line_height()),
+        ))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        let offset = self.offset_at(point, window);
+        Some(self.editor.buffer().offset_to_utf16(offset).0)
+    }
+}
+
 /// The document as laid-out lines: what scroll math, hit testing and vertical motion walk over.
 struct Lines<'a> {
     buffer: &'a Buffer,
@@ -531,4 +683,32 @@ fn clipboard_item(text: String) -> ClipboardItem {
         text
     };
     ClipboardItem::new_string(text)
+}
+
+/// Converts a UTF-16 offset within `text` to a byte offset, rounding down inside a surrogate pair.
+fn utf16_to_byte(text: &str, utf16: usize) -> usize {
+    let mut units = 0;
+    for (byte, c) in text.char_indices() {
+        if units + c.len_utf16() > utf16 {
+            return byte;
+        }
+        units += c.len_utf16();
+    }
+    text.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utf16_offsets_within_inserted_text_map_to_bytes() {
+        // "é" is 2 bytes / 1 unit, "😀" 4 bytes / 2 units.
+        let text = "aé😀b";
+        assert_eq!(utf16_to_byte(text, 0), 0);
+        assert_eq!(utf16_to_byte(text, 2), 3);
+        assert_eq!(utf16_to_byte(text, 3), 3, "inside the surrogate pair");
+        assert_eq!(utf16_to_byte(text, 4), 7);
+        assert_eq!(utf16_to_byte(text, 99), 8);
+    }
 }
