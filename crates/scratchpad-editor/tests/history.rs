@@ -2,14 +2,8 @@
 
 mod common;
 
-use common::{editor, state};
+use common::{editor, state, type_chars};
 use scratchpad_editor::{ByteOffset, Editor, Motion, Selection, UNDO_HISTORY_BUDGET_BYTES};
-
-fn type_chars(editor: &mut Editor, text: &str) {
-    for c in text.chars() {
-        editor.insert_text(c.encode_utf8(&mut [0; 4]));
-    }
-}
 
 /// Undoes until there is nothing left, recording the state after each step.
 fn undo_all(editor: &mut Editor) -> Vec<String> {

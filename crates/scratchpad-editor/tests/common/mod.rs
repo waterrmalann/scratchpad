@@ -13,6 +13,13 @@ pub fn editor(marked: &str) -> Editor {
     editor
 }
 
+/// Types `text` one character at a time, as the keyboard delivers it.
+pub fn type_chars(editor: &mut Editor, text: &str) {
+    for c in text.chars() {
+        editor.insert_text(c.encode_utf8(&mut [0; 4]));
+    }
+}
+
 /// Renders the editor's (normalized) text with selection markers.
 pub fn state(editor: &Editor) -> String {
     let mut text = editor.buffer().normalized_text();

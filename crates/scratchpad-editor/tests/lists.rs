@@ -2,15 +2,8 @@
 
 mod common;
 
-use common::{editor, state};
-use scratchpad_editor::Editor;
+use common::{editor, state, type_chars};
 use scratchpad_editor::markdown::MarkdownState;
-
-fn type_chars(editor: &mut Editor, text: &str) {
-    for c in text.chars() {
-        editor.insert_text(c.encode_utf8(&mut [0; 4]));
-    }
-}
 
 /// Presses Enter on marked text and returns the resulting marked text.
 fn enter(marked: &str) -> String {

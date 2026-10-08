@@ -2,14 +2,8 @@
 
 mod common;
 
-use common::{editor, state};
+use common::{editor, state, type_chars};
 use scratchpad_editor::{ByteOffset, Editor, Motion};
-
-fn type_chars(editor: &mut Editor, text: &str) {
-    for c in text.chars() {
-        editor.insert_text(c.encode_utf8(&mut [0; 4]));
-    }
-}
 
 #[test]
 fn typing_a_sentence_and_fixing_a_typo() {
