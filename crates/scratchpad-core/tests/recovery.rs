@@ -85,6 +85,26 @@ fn removing_a_missing_snapshot_is_not_an_error() {
 }
 
 #[test]
+fn a_snapshot_that_cannot_be_removed_is_reported() {
+    let (dir, recovery) = recovery_store();
+    recovery
+        .write(Path::new("C:/Notes/Other.md"), "other")
+        .unwrap();
+    // A folder where the snapshot of Draft.md would be (see the pinned file name above).
+    let folder = dir.path().join("Scratchpad").join("recovery");
+    fs::create_dir(folder.join("5ca43ed72c936d45.json")).unwrap();
+
+    let error = recovery.remove(Path::new("C:/Notes/Draft.md")).unwrap_err();
+
+    assert!(
+        error.to_string().contains("remove recovery snapshot"),
+        "{error}"
+    );
+    // The folder is no snapshot; the real one is still listed.
+    assert_eq!(recovery.list().len(), 1);
+}
+
+#[test]
 fn listing_without_a_recovery_folder_is_empty_and_creates_nothing() {
     let (dir, recovery) = recovery_store();
     assert!(recovery.list().is_empty());
