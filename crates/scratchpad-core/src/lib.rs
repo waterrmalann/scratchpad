@@ -9,6 +9,7 @@ mod note;
 mod recovery;
 mod search;
 mod store;
+mod watcher;
 
 pub use config::{Config, ThemePreference, WindowBounds, default_config_path, default_notes_dir};
 pub use error::{Error, Result};
@@ -18,3 +19,4 @@ pub use note::Note;
 pub use recovery::{RecoveryStore, Snapshot};
 pub use search::{NoteSearch, SearchHit};
 pub use store::{NoteStore, NoteText};
+pub use watcher::{NoteEvent, NoteWatcher};
