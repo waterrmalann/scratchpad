@@ -4,6 +4,7 @@ use crate::actions::CloseWindow;
 use crate::editor_pane::EditorPane;
 use crate::sidebar::Sidebar;
 use crate::theme::{self, ActiveTheme, typography};
+use crate::toast;
 
 /// Root view of the main window: sidebar on the left, editor pane filling the rest (PLAN §42).
 pub struct AppWindow {
@@ -51,6 +52,7 @@ impl Render for AppWindow {
             .key_context("AppWindow")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::close_window))
+            .relative()
             .size_full()
             .flex()
             .flex_row()
@@ -60,5 +62,6 @@ impl Render for AppWindow {
             .text_size(typography::UI_FONT_SIZE)
             .child(self.sidebar.clone())
             .child(self.editor_pane.clone())
+            .children(toast::render(cx))
     }
 }

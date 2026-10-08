@@ -11,6 +11,7 @@ pub mod editor_view;
 mod logging;
 pub mod sidebar;
 pub mod theme;
+pub mod toast;
 
 pub use app::{init, open_main_window, run};
 pub use app_window::AppWindow;
