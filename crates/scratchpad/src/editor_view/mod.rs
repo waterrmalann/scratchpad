@@ -244,11 +244,20 @@ impl EditorView {
 
     /// Runs an edit, notifying observers if the text changed and scrolling to the cursor.
     fn edit(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut Editor)) {
+        self.edit_markdown(cx, |editor, _| edit(editor));
+    }
+
+    /// [`EditorView::edit`] for commands that read the document's Markdown structure.
+    fn edit_markdown(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut Editor, &mut MarkdownState),
+    ) {
         if self.read_only {
             return;
         }
         let version = self.editor.buffer().version();
-        edit(&mut self.editor);
+        edit(&mut self.editor, &mut self.markdown);
         if self.editor.buffer().version() != version {
             cx.emit(EditorEvent::Changed);
         }
@@ -755,7 +764,9 @@ impl Render for EditorView {
                 this.move_in_row(true, true, window, cx)
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
-            .on_action(cx.listener(|this, _: &Backspace, _, cx| this.edit(cx, Editor::backspace)))
+            .on_action(
+                cx.listener(|this, _: &Backspace, _, cx| this.edit(cx, Editor::backspace_typed)),
+            )
             .on_action(cx.listener(|this, _: &Delete, _, cx| this.edit(cx, Editor::delete_forward)))
             .on_action(cx.listener(|this, _: &DeleteWordLeft, _, cx| {
                 this.edit(cx, Editor::delete_word_backward)
@@ -763,8 +774,11 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &DeleteWordRight, _, cx| {
                 this.edit(cx, Editor::delete_word_forward)
             }))
+            .on_action(cx.listener(|this, _: &Newline, _, cx| {
+                this.edit_markdown(cx, Editor::insert_markdown_newline)
+            }))
             .on_action(
-                cx.listener(|this, _: &Newline, _, cx| this.edit(cx, Editor::insert_newline)),
+                cx.listener(|this, _: &PlainNewline, _, cx| this.edit(cx, Editor::insert_newline)),
             )
             .on_action(cx.listener(|this, _: &Tab, _, cx| this.edit(cx, |e| e.insert_text(TAB))))
             .on_action(
@@ -785,6 +799,21 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.cut(cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
+            .on_action(cx.listener(|this, _: &ToggleBold, _, cx| {
+                this.edit_markdown(cx, Editor::toggle_bold)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleItalic, _, cx| {
+                this.edit_markdown(cx, Editor::toggle_italic)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleStrikethrough, _, cx| {
+                this.edit_markdown(cx, Editor::toggle_strikethrough)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleInlineCode, _, cx| {
+                this.edit_markdown(cx, Editor::toggle_inline_code)
+            }))
+            .on_action(
+                cx.listener(|this, _: &InsertLink, _, cx| this.edit(cx, Editor::insert_link)),
+            )
             .on_action(cx.listener(|this, _: &ToggleSourceMode, _, cx| this.toggle_source_mode(cx)))
             .child(EditorElement::new(cx.entity()))
     }
@@ -846,7 +875,8 @@ impl EntityInputHandler for EditorView {
                 editor.unmark();
                 editor.replace_range(range, text);
             }
-            _ => editor.insert_text(text),
+            // Keystrokes pair brackets; IME commits (with marked text) are inserted as they are.
+            _ => editor.insert_typed(text),
         });
     }
 

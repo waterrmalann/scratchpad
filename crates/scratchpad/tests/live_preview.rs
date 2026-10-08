@@ -8,10 +8,13 @@ mod common;
 use std::time::Duration;
 
 use gpui::{
-    Bounds, Entity, EntityInputHandler, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
-    Pixels, Point, TestAppContext, VisualTestContext, point, px, size,
+    Bounds, Entity, EntityInputHandler, Focusable, Modifiers, MouseButton, MouseDownEvent,
+    MouseUpEvent, Pixels, Point, TestAppContext, VisualTestContext, point, px, size,
 };
+use scratchpad::AppWindow;
 use scratchpad::editor_view::EditorView;
+use scratchpad::session::AUTOSAVE_DELAY;
+use scratchpad_core::NoteEvent;
 
 const ADVANCE: f32 = 9.;
 
@@ -205,6 +208,63 @@ fn ime_bounds_and_selections_use_displayed_positions(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn formatting_shortcuts_edit_markdown_and_undo_in_one_step(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "hello");
+
+    for (keys, formatted) in [
+        ("ctrl-b", "**hello**"),
+        ("ctrl-i", "*hello*"),
+        ("ctrl-shift-x", "~~hello~~"),
+        ("ctrl-e", "`hello`"),
+        ("ctrl-k", "[hello]()"),
+    ] {
+        cx.simulate_keystrokes("ctrl-a");
+        cx.simulate_keystrokes(keys);
+        assert_eq!(text(&editor, cx), formatted, "{keys}");
+        cx.simulate_keystrokes("ctrl-z");
+        assert_eq!(text(&editor, cx), "hello", "{keys} undone");
+    }
+    cx.simulate_keystrokes("ctrl-a ctrl-b ctrl-b");
+    assert_eq!(text(&editor, cx), "hello", "bold toggles off");
+}
+
+#[gpui::test]
+fn enter_continues_a_list_and_ends_it_on_an_empty_item(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "");
+
+    cx.simulate_input("- one");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(text(&editor, cx), "- one\n- ");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(text(&editor, cx), "- one\n\n");
+    cx.simulate_keystrokes("ctrl-z");
+    assert_eq!(text(&editor, cx), "- one\n- ");
+
+    cx.simulate_keystrokes("backspace backspace");
+    cx.simulate_input("1. a");
+    cx.simulate_keystrokes("shift-enter");
+    assert_eq!(
+        text(&editor, cx),
+        "- one\n1. a\n",
+        "shift-enter does not continue"
+    );
+}
+
+#[gpui::test]
+fn typed_brackets_pair_and_backspace_removes_an_empty_pair(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "");
+
+    cx.simulate_input("(");
+    assert_eq!(text(&editor, cx), "()");
+    assert_eq!(cursor(&editor, cx), 1);
+    cx.simulate_input("x)");
+    assert_eq!(text(&editor, cx), "(x)", "the closer steps over");
+    cx.simulate_input(" [");
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(text(&editor, cx), "(x) ");
+}
+
+#[gpui::test]
 fn clicking_a_task_box_toggles_it_without_moving_the_cursor(cx: &mut TestAppContext) {
     let (editor, cx) = open_editor(cx, "- [ ] task\n- [x] done\nnext");
     cx.simulate_keystrokes("ctrl-end");
@@ -272,4 +332,101 @@ fn moving_the_cursor_and_blinking_reshape_only_lines_whose_markers_change(cx: &m
         before + 2,
         "leaving it hides them again"
     );
+}
+
+// --- With the note session: formatting is saved, reloads restyle, read-only notes stay put ---
+
+struct Note {
+    _dir: tempfile::TempDir,
+    path: std::path::PathBuf,
+    root: Entity<AppWindow>,
+    editor: Entity<EditorView>,
+}
+
+/// Opens the app on a folder holding one note, `Ideas.md` with `contents`, sized like
+/// `open_editor`.
+fn open_note<'a>(cx: &'a mut TestAppContext, contents: &[u8]) -> (Note, &'a mut VisualTestContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Ideas.md");
+    std::fs::write(&path, contents).unwrap();
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    cx.simulate_resize(size(px(1100.), px(720.)));
+    let editor = common::editor(&root, cx);
+    cx.update(|window, cx| window.focus(&editor.focus_handle(cx)));
+    cx.run_until_parked();
+    let note = Note {
+        _dir: dir,
+        path,
+        root,
+        editor,
+    };
+    (note, cx)
+}
+
+fn on_disk(note: &Note) -> String {
+    String::from_utf8_lossy(&std::fs::read(&note.path).unwrap()).into_owned()
+}
+
+/// The middle of the task box drawn at the start of the line starting at UTF-16 offset
+/// `line_start`.
+fn task_box(
+    editor: &Entity<EditorView>,
+    line_start: usize,
+    cx: &mut VisualTestContext,
+) -> Point<Pixels> {
+    let line = bounds(editor, line_start..line_start, cx);
+    point(line.left() + px(7.), line.center().y)
+}
+
+#[gpui::test]
+fn formatting_shortcuts_and_task_clicks_are_saved_like_typing(cx: &mut TestAppContext) {
+    let (note, cx) = open_note(cx, b"Ideas\n- [ ] call\nfirst");
+    cx.simulate_keystrokes("ctrl-end ctrl-shift-left ctrl-b");
+    common::wait(AUTOSAVE_DELAY, cx);
+    assert_eq!(on_disk(&note), "Ideas\n- [ ] call\n**first**");
+
+    click(task_box(&note.editor, 6, cx), Modifiers::none(), cx);
+    common::wait(AUTOSAVE_DELAY, cx);
+    assert_eq!(on_disk(&note), "Ideas\n- [x] call\n**first**");
+}
+
+#[gpui::test]
+fn a_note_reloaded_after_an_outside_change_is_styled_from_its_new_text(cx: &mut TestAppContext) {
+    let (note, cx) = open_note(cx, b"Ideas\nplain");
+    // As long as the old text, so Markdown structure left over from it would look current.
+    std::fs::write(&note.path, "Ideas\n## Hi").unwrap();
+    let session = common::session(&note.root, cx);
+    session.update(cx, |session, cx| {
+        session.disk_events(vec![NoteEvent::Changed(note.path.clone())], cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(text(&note.editor, cx), "Ideas\n## Hi");
+
+    // The cursor is on the first line: `## ` is hidden and "Hi" is set as an H2.
+    let h = bounds(&note.editor, 9..10, cx);
+    assert_eq!(round(h.size.width), 0.6 * 15. * 1.5);
+    assert_eq!(h.left(), bounds(&note.editor, 6..6, cx).left());
+}
+
+#[gpui::test]
+fn a_read_only_note_ignores_task_clicks_and_markdown_commands(cx: &mut TestAppContext) {
+    // Not UTF-8, so it opens read-only until the user agrees to edit it.
+    let contents = b"Caf\xE9\n- [ ] task\nword";
+    let (note, cx) = open_note(cx, contents);
+    assert!(note.editor.read_with(cx, |editor, _| editor.is_read_only()));
+    let shown = text(&note.editor, cx);
+    // The task line starts after "Caf", U+FFFD (one UTF-16 unit, three bytes) and the break.
+    click(task_box(&note.editor, 5, cx), Modifiers::none(), cx);
+    assert_eq!(text(&note.editor, cx), shown, "the box is not toggled");
+    assert_eq!(
+        cursor(&note.editor, cx),
+        "Caf\u{FFFD}\n- [ ] ".len(),
+        "the click places the cursor after the box instead"
+    );
+
+    cx.simulate_keystrokes("ctrl-end ctrl-shift-left ctrl-b ctrl-e ctrl-k end enter");
+    cx.simulate_input("(");
+    assert_eq!(text(&note.editor, cx), shown);
+    common::wait(AUTOSAVE_DELAY, cx);
+    assert_eq!(std::fs::read(&note.path).unwrap(), contents);
 }

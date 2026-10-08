@@ -113,6 +113,15 @@ pub mod editor {
             Copy,
             Cut,
             Paste,
+            /// A line break that does not continue the list item or quote (Enter does).
+            PlainNewline,
+            /// Markdown formatting of the selection or the word at the cursor (PLAN §36).
+            ToggleBold,
+            ToggleItalic,
+            ToggleStrikethrough,
+            ToggleInlineCode,
+            /// Wraps the selection in `[...]()` and puts the cursor where the address goes.
+            InsertLink,
             /// Switches between live preview and showing every Markdown marker.
             ToggleSourceMode,
         ]
@@ -152,7 +161,7 @@ pub mod editor {
             KeyBinding::new("ctrl-backspace", DeleteWordLeft, context),
             KeyBinding::new("ctrl-delete", DeleteWordRight, context),
             KeyBinding::new("enter", Newline, context),
-            KeyBinding::new("shift-enter", Newline, context),
+            KeyBinding::new("shift-enter", PlainNewline, context),
             KeyBinding::new("tab", Tab, context),
             KeyBinding::new("secondary-shift-d", DuplicateLines, context),
             KeyBinding::new("alt-up", MoveLinesUp, context),
@@ -166,6 +175,11 @@ pub mod editor {
             KeyBinding::new("shift-delete", Cut, context),
             KeyBinding::new("secondary-v", Paste, context),
             KeyBinding::new("shift-insert", Paste, context),
+            KeyBinding::new("secondary-b", ToggleBold, context),
+            KeyBinding::new("secondary-i", ToggleItalic, context),
+            KeyBinding::new("secondary-shift-x", ToggleStrikethrough, context),
+            KeyBinding::new("secondary-e", ToggleInlineCode, context),
+            KeyBinding::new("secondary-k", InsertLink, context),
             KeyBinding::new("secondary-/", ToggleSourceMode, context),
         ]
     }
