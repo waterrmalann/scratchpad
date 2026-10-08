@@ -925,12 +925,12 @@ impl Session {
             self.doc.dirty = true;
         }
         self.persist(true, cx);
-        let mut jobs = self.writer.take_unfinished();
         let flushed = self.writer.flush_marker();
         // Waits for a background job that is writing right now.
         let mut flushed = flushed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut jobs = self.writer.take_unfinished(*flushed);
         // Background jobs started before now will skip themselves.
         *flushed = self.writer.next_number();
         let store = self.notes.read(cx).store().cloned();
@@ -1001,7 +1001,11 @@ impl Session {
             let store = self.notes.read(cx).store().cloned();
             let recovery = self.recovery.clone();
             let running = job.clone();
-            self.writer.running = Some(Running { job, moved: None });
+            self.writer.running = Some(Running {
+                job,
+                moved: None,
+                number,
+            });
             return Some(cx.background_spawn(async move {
                 writer::run_in_order(
                     &running,
@@ -1015,7 +1019,7 @@ impl Session {
     }
 
     fn finish_job(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
-        let Some(Running { job, moved }) = self.writer.running.take() else {
+        let Some(Running { job, moved, .. }) = self.writer.running.take() else {
             return;
         };
         match (job, outcome) {

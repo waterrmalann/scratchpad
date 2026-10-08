@@ -103,6 +103,8 @@ pub(super) struct Running {
     /// The note the job saved to was renamed (to this path) or deleted while it ran, so the
     /// save may have recreated the old file.
     pub moved: Option<Moved>,
+    /// Its place in the order of started jobs (see [`Writer::flush_marker`]).
+    pub number: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,12 +205,14 @@ impl Writer {
     }
 
     /// Every job that has not finished, in order, for a synchronous flush: the running one
-    /// first, unless it would recreate a moved note.
-    pub fn take_unfinished(&mut self) -> Vec<Job> {
+    /// first, unless it would recreate a moved note or has already run (`flushed` is the
+    /// flush marker's value): a save run twice would find its own text and take it for a
+    /// change by another program.
+    pub fn take_unfinished(&mut self, flushed: u64) -> Vec<Job> {
         let running = self
             .running
             .as_ref()
-            .filter(|running| running.moved.is_none())
+            .filter(|running| running.moved.is_none() && running.number > flushed)
             .map(|running| running.job.clone());
         running.into_iter().chain(self.queue.drain(..)).collect()
     }

@@ -316,3 +316,25 @@ body newer"
         )]
     );
 }
+
+#[gpui::test]
+fn closing_just_after_a_background_save_leaves_nothing_to_recover(cx: &mut TestAppContext) {
+    let folders = Folders::new();
+    let ideas = write_note(folders.notes.path(), "Ideas", "Ideas", days_ago(0, 10));
+    let (root, cx) = folders.open(cx);
+    let session = common::session(&root, cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input(" saved");
+    // The save has run on a background thread, but the app has not heard back yet...
+    session.update(cx, |session, cx| session.flush(cx));
+    while fs::read_to_string(&ideas).unwrap() != "Ideas saved" {
+        assert!(cx.executor().tick());
+    }
+    assert!(session.read_with(cx, |session, _| session.is_writing()));
+
+    // ...when the window closes. Saving again would find its own text and take it for a
+    // change by another program.
+    common::close(cx);
+
+    assert!(folders.snapshots().is_empty());
+}
