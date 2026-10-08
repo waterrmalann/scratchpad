@@ -24,6 +24,7 @@ const CARET_WIDTH: Pixels = px(2.);
 const SCROLLBAR_TRACK_WIDTH: Pixels = px(12.);
 const SCROLLBAR_THUMB_WIDTH: Pixels = px(6.);
 const SCROLLBAR_MIN_THUMB: Pixels = px(24.);
+const CODE_BLOCK_RADIUS: Pixels = px(6.);
 
 pub(super) struct EditorElement {
     view: Entity<EditorView>,
@@ -62,6 +63,8 @@ impl ScrollbarLayout {
 
 pub(super) struct Frame {
     lines: Vec<(Arc<LineLayout>, gpui::Point<Pixels>)>,
+    /// Backgrounds of code blocks, one per run of consecutive code lines.
+    code_blocks: Vec<Bounds<Pixels>>,
     selection: Vec<Bounds<Pixels>>,
     /// Underlines of IME composition text.
     marked: Vec<Bounds<Pixels>>,
@@ -71,6 +74,7 @@ pub(super) struct Frame {
 }
 
 struct FrameColors {
+    code_block: Hsla,
     selection: Hsla,
     caret: Hsla,
     composition: Hsla,
@@ -89,7 +93,8 @@ impl EditorView {
     fn layout_frame(&mut self, bounds: Bounds<Pixels>, window: &Window, cx: &App) -> Frame {
         self.bounds = Some(bounds);
         let (left, width) = text_column(bounds);
-        self.layouts.set_style(base_style(cx, width));
+        self.layouts
+            .set_style(base_style(cx, width, &self.mono_family));
         let vp = self.viewport();
         let margin = self.layouts.style().line_height * AUTOSCROLL_MARGIN_ROWS;
         let selection = self.editor.selection();
@@ -112,11 +117,13 @@ impl EditorView {
         let newline_width = lines.cache.style().font_size / 3.;
         let mut frame = Frame {
             lines: Vec::new(),
+            code_blocks: Vec::new(),
             selection: Vec::new(),
             marked: Vec::new(),
             cursor: None,
             scrollbar: None,
             colors: FrameColors {
+                code_block: cx.theme().surface,
                 selection: cx.theme().selection,
                 caret: cx.theme().accent,
                 composition: cx.theme().foreground,
@@ -157,6 +164,13 @@ impl EditorView {
                 frame.cursor = Some(rect(row, x, x + CARET_WIDTH, text_top, text_height));
             }
             let height = layout.height();
+            if layout.code_block() {
+                let block = Bounds::new(origin, size(width, height));
+                match frame.code_blocks.last_mut() {
+                    Some(last) if last.bottom() == block.top() => last.size.height += height,
+                    _ => frame.code_blocks.push(block),
+                }
+            }
             frame.lines.push((layout, origin));
             painted_height += height;
             y += height;
@@ -319,6 +333,14 @@ impl Element for EditorElement {
 
         let frame = &state.frame;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for block in &frame.code_blocks {
+                window.paint_quad(
+                    fill(*block, frame.colors.code_block).corner_radii(CODE_BLOCK_RADIUS),
+                );
+            }
+            for (layout, origin) in &frame.lines {
+                layout.paint_background(*origin, window);
+            }
             for rect in &frame.selection {
                 window.paint_quad(fill(*rect, frame.colors.selection));
             }

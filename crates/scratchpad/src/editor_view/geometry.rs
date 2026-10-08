@@ -15,6 +15,14 @@ pub(crate) struct Glyph {
     pub x: Pixels,
 }
 
+/// How far rows sit from the left edge of the text column: the first row, and the rows a line wraps
+/// into. Negative for text that hangs into the margin.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Indents {
+    pub first: Pixels,
+    pub rest: Pixels,
+}
+
 /// One visual row of a wrapped line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Row {
@@ -39,21 +47,29 @@ pub(crate) struct LineGeometry {
     /// Width of the whole line unwrapped.
     width: Pixels,
     wrap_width: Pixels,
+    indents: Indents,
     len: usize,
 }
 
 impl LineGeometry {
-    /// Wraps `text` (one line, no line break) whose glyphs are `glyphs`, in column order, at
-    /// `wrap_width`. Rows break after whitespace, around CJK ideographs, and after a hyphen; a word
-    /// longer than a row is broken at a grapheme boundary. Trailing spaces may hang past the wrap
-    /// width instead of starting a row of their own.
-    pub fn new(text: &str, glyphs: Vec<Glyph>, width: Pixels, wrap_width: Pixels) -> Self {
-        let rows = wrap(text, &glyphs, width, wrap_width);
+    /// Wraps `text` (one line, no line break) whose glyphs are `glyphs`, in column order, into rows
+    /// that start at their indent and end at `wrap_width`. Rows break after whitespace, around CJK
+    /// ideographs, and after a hyphen; a word longer than a row is broken at a grapheme boundary.
+    /// Trailing spaces may hang past the wrap width instead of starting a row of their own.
+    pub fn new(
+        text: &str,
+        glyphs: Vec<Glyph>,
+        width: Pixels,
+        wrap_width: Pixels,
+        indents: Indents,
+    ) -> Self {
+        let rows = wrap(text, &glyphs, width, wrap_width, indents);
         Self {
             glyphs,
             rows,
             width,
             wrap_width,
+            indents,
             len: text.len(),
         }
     }
@@ -82,18 +98,19 @@ impl LineGeometry {
         }
     }
 
-    /// x of a cursor at `column`, relative to the start of its row, capped at the wrap width so
-    /// hanging spaces never put the cursor outside the text column.
+    /// x of a cursor at `column`, capped at the wrap width so hanging spaces never put the cursor
+    /// outside the text column.
     pub fn x_for(&self, column: usize) -> Pixels {
-        let row = &self.rows[self.row_of(column)];
-        (self.unwrapped_x(column) - row.start_x).min(self.wrap_width)
+        let row = self.row_of(column);
+        let x = unwrapped_x(&self.glyphs, column, self.width) - self.rows[row].start_x;
+        self.indent(row) + x.min(self.room(row))
     }
 
     /// The column closest to `x` on `row`. Never returns a non-final row's end (see the type docs).
     pub fn column_at(&self, row: usize, x: Pixels) -> usize {
         let row = row.min(self.rows.len() - 1);
         let glyphs = self.row_glyphs(row);
-        let x = x + self.rows[row].start_x;
+        let x = x - self.indent(row) + self.rows[row].start_x;
         for i in glyphs.clone() {
             let left = self.glyphs[i].x;
             let right = self.glyphs.get(i + 1).map_or(self.width, |next| next.x);
@@ -125,12 +142,12 @@ impl LineGeometry {
                 let start = if row == first {
                     self.x_for(columns.start)
                 } else {
-                    px(0.)
+                    self.indent(row)
                 };
                 let mut end = if row == last {
                     self.x_for(columns.end)
                 } else {
-                    self.row_width(row)
+                    self.indent(row) + self.row_width(row)
                 };
                 if newline && is_last_row {
                     end += newline_width;
@@ -150,9 +167,22 @@ impl LineGeometry {
         start..end
     }
 
-    /// x of `glyph` relative to the start of its row.
+    /// x of `glyph` on `row`.
     pub fn glyph_x(&self, row: usize, glyph: usize) -> Pixels {
-        self.glyphs[glyph].x - self.rows[row].start_x
+        self.indent(row) + self.glyphs[glyph].x - self.rows[row].start_x
+    }
+
+    fn indent(&self, row: usize) -> Pixels {
+        if row == 0 {
+            self.indents.first
+        } else {
+            self.indents.rest
+        }
+    }
+
+    /// Width available to `row` between its indent and the wrap width.
+    fn room(&self, row: usize) -> Pixels {
+        self.wrap_width - self.indent(row)
     }
 
     fn row_width(&self, row: usize) -> Pixels {
@@ -160,14 +190,32 @@ impl LineGeometry {
             .rows
             .get(row + 1)
             .map_or(self.width, |next| next.start_x);
-        (end_x - self.rows[row].start_x).min(self.wrap_width)
+        (end_x - self.rows[row].start_x).min(self.room(row))
     }
+}
 
-    /// x in the unwrapped line of the first glyph at or after `column`.
-    fn unwrapped_x(&self, column: usize) -> Pixels {
-        let i = self.glyphs.partition_point(|glyph| glyph.column < column);
-        self.glyphs.get(i).map_or(self.width, |glyph| glyph.x)
+/// x in the unwrapped line of the first glyph at or after `column`, or the line's `width` past the
+/// last glyph.
+pub(crate) fn unwrapped_x(glyphs: &[Glyph], column: usize, width: Pixels) -> Pixels {
+    let i = glyphs.partition_point(|glyph| glyph.column < column);
+    glyphs.get(i).map_or(width, |glyph| glyph.x)
+}
+
+/// Makes the glyphs of `columns` take `span_width` by moving every later glyph, e.g. to make room
+/// for a shape drawn in their place. Returns the new line width.
+pub(crate) fn set_span_width(
+    glyphs: &mut [Glyph],
+    columns: Range<usize>,
+    span_width: Pixels,
+    width: Pixels,
+) -> Pixels {
+    let start = unwrapped_x(glyphs, columns.start, width);
+    let after = glyphs.partition_point(|glyph| glyph.column < columns.end);
+    let shift = span_width - (unwrapped_x(glyphs, columns.end, width) - start);
+    for glyph in &mut glyphs[after..] {
+        glyph.x += shift;
     }
+    width + shift
 }
 
 /// Tab stops are this many space widths apart, matching the four spaces the Tab key inserts.
@@ -190,7 +238,13 @@ pub(crate) fn expand_tabs(text: &str, glyphs: &mut [Glyph], width: Pixels) -> Pi
     width + shift
 }
 
-fn wrap(text: &str, glyphs: &[Glyph], width: Pixels, wrap_width: Pixels) -> Vec<Row> {
+fn wrap(
+    text: &str,
+    glyphs: &[Glyph],
+    width: Pixels,
+    wrap_width: Pixels,
+    indents: Indents,
+) -> Vec<Row> {
     // Collected once per line: asking `GraphemeCursor` about each glyph separately rescans runs of
     // regional indicators, which made a line of flags quadratic.
     let graphemes: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
@@ -219,7 +273,12 @@ fn wrap(text: &str, glyphs: &[Glyph], width: Pixels, wrap_width: Pixels) -> Vec<
             }
         }
         let right = glyphs.get(i + 1).map_or(width, |next| next.x);
-        let overflows = right - row.start_x > wrap_width
+        let indent = if rows.len() == 1 {
+            indents.first
+        } else {
+            indents.rest
+        };
+        let overflows = right - row.start_x > wrap_width - indent
             && i > row.first_glyph
             && !char_at(text, glyphs[i].column).is_whitespace();
         if !overflows {
@@ -313,20 +372,31 @@ mod tests {
 
     /// Every char 10 px wide, like a monospace font.
     fn layout(text: &str, wrap_width: f32) -> LineGeometry {
-        let glyphs = text
-            .char_indices()
+        indented(text, wrap_width, Indents::default())
+    }
+
+    fn glyphs(text: &str) -> Vec<Glyph> {
+        text.char_indices()
             .enumerate()
             .map(|(i, (column, _))| Glyph {
                 column,
                 x: px(i as f32 * ADVANCE),
             })
-            .collect();
+            .collect()
+    }
+
+    fn indented(text: &str, wrap_width: f32, indents: Indents) -> LineGeometry {
+        let glyphs = glyphs(text);
         let width = px(text.chars().count() as f32 * ADVANCE);
-        LineGeometry::new(text, glyphs, width, px(wrap_width))
+        LineGeometry::new(text, glyphs, width, px(wrap_width), indents)
     }
 
     fn rows(text: &str, wrap_width: f32) -> Vec<&str> {
-        let line = layout(text, wrap_width);
+        rows_of(&layout(text, wrap_width), text)
+    }
+
+    /// The text of each row of `line`, laid out from `text`.
+    fn rows_of<'a>(line: &LineGeometry, text: &'a str) -> Vec<&'a str> {
         (0..line.row_count())
             .map(|row| {
                 let end = line.rows.get(row + 1).map_or(text.len(), |next| next.start);
@@ -450,5 +520,50 @@ mod tests {
         let line = layout("abc      ", 50.);
         assert_eq!(line.row_count(), 1);
         assert_eq!(line.x_for(9), px(50.));
+    }
+
+    #[test]
+    fn indents_shift_rows_and_narrow_the_rows_after_the_first() {
+        // A list item: "- " hangs before the first row's text; wrapped rows line up with it.
+        let indents = Indents {
+            first: px(0.),
+            rest: px(20.),
+        };
+        let line = indented("- aaa bbb ccc", 80., indents);
+        assert_eq!(rows_of(&line, "- aaa bbb ccc"), ["- aaa ", "bbb ", "ccc"]);
+        assert_eq!(line.x_for(6), px(20.), "wrapped rows start at the indent");
+        assert_eq!(line.x_for(8), px(40.));
+        assert_eq!(line.column_at(1, px(21.)), 6);
+        assert_eq!(line.column_at(1, px(0.)), 6);
+        assert_eq!(
+            line.spans(4..8, false, px(0.)),
+            [(0, px(40.), px(60.)), (1, px(20.), px(40.))]
+        );
+        assert_eq!(line.glyph_x(1, 7), px(30.));
+
+        // A heading marker hanging in the margin: the first row has its width in extra room.
+        let hanging = Indents {
+            first: px(-20.),
+            rest: px(0.),
+        };
+        let line = indented("# abcdefgh", 80., hanging);
+        assert_eq!(
+            line.row_count(),
+            1,
+            "10 chars fit in 80 px plus the 20 px margin"
+        );
+        assert_eq!(line.x_for(2), px(0.));
+        assert_eq!(line.x_for(0), px(-20.));
+    }
+
+    #[test]
+    fn span_widths_move_the_glyphs_after_the_span() {
+        let mut glyphs = glyphs("- ab");
+        let width = set_span_width(&mut glyphs, 0..2, px(35.), px(40.));
+        let xs: Vec<f32> = glyphs.iter().map(|glyph| glyph.x.into()).collect();
+        assert_eq!(xs, [0., 10., 35., 45.]);
+        assert_eq!(width, px(55.));
+        let width = set_span_width(&mut glyphs, 2..4, px(5.), width);
+        assert_eq!(width, px(40.), "the last span ends the line");
     }
 }

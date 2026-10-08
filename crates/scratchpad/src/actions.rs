@@ -113,6 +113,8 @@ pub mod editor {
             Copy,
             Cut,
             Paste,
+            /// Switches between live preview and showing every Markdown marker.
+            ToggleSourceMode,
         ]
     );
 
@@ -164,6 +166,7 @@ pub mod editor {
             KeyBinding::new("shift-delete", Cut, context),
             KeyBinding::new("secondary-v", Paste, context),
             KeyBinding::new("shift-insert", Paste, context),
+            KeyBinding::new("secondary-/", ToggleSourceMode, context),
         ]
     }
 }

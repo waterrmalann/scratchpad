@@ -1,8 +1,9 @@
-//! The editor view: the typing surface on top of the editing engine (PLAN §10–16, §22–27, §45–46).
+//! The editor view: the typing surface on top of the editing engine (PLAN §10–27, §36, §45–50).
 //!
 //! [`EditorView`] owns the engine's [`Editor`], which is the source of truth for text, selection and
-//! history. The view only adds what is about presentation: the scroll position, shaped line layouts,
-//! caret blinking and mouse drags. [`element::EditorElement`] lays out and paints the visible lines.
+//! history, and the document's [`MarkdownState`], which styles it. The view only adds what is about
+//! presentation: the scroll position, shaped line layouts, caret blinking and mouse drags.
+//! [`element::EditorElement`] lays out and paints the visible lines.
 
 mod element;
 mod geometry;
@@ -16,16 +17,17 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, Subscription,
-    Task, UTF16Selection, Window, WindowTextSystem, div, font, prelude::*, px,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, SharedString,
+    Subscription, Task, UTF16Selection, Window, WindowTextSystem, div, font, prelude::*, px,
 };
+use scratchpad_editor::markdown::MarkdownState;
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Selection, Utf16Offset};
 
 use crate::actions::editor::*;
 use crate::theme::{ActiveTheme, typography};
 use element::{EditorElement, ScrollbarLayout};
 use layout_cache::LayoutCache;
-use line_layout::{BaseStyle, LineLayout};
+use line_layout::{BaseStyle, LineKey, LineLayout};
 use scroll::{LineHeights, ScrollAnchor, Viewport};
 
 /// Caret on/off period (PLAN §24).
@@ -54,10 +56,18 @@ pub enum EditorEvent {
 /// A text editor for one document.
 pub struct EditorView {
     editor: Editor,
+    /// The Markdown structure of `editor`'s buffer; replaced with the document.
+    markdown: MarkdownState,
+    /// Shows every Markdown marker instead of hiding them away from the cursor (live preview).
+    source_mode: bool,
     focus_handle: FocusHandle,
     layouts: LayoutCache,
     /// Buffer version the layouts and scroll anchor were last updated to.
     synced_version: u64,
+    /// Buffer version and selection the cached layouts' keys were last checked against.
+    styled_for: Option<(u64, Option<Selection>)>,
+    /// Looked up once: enumerating fonts takes about a millisecond.
+    mono_family: SharedString,
     scroll: ScrollAnchor,
     /// Set by keyboard input; the next layout scrolls the cursor into view.
     autoscroll: bool,
@@ -113,12 +123,18 @@ impl EditorView {
         let subscriptions = vec![cx.on_blur(&focus_handle, window, |this, _, _| {
             this.editor.break_undo_group();
         })];
-        let base_style = base_style(cx, MAX_TEXT_WIDTH);
+        let mono_family = SharedString::from(typography::mono_font_family(cx));
+        let base_style = base_style(cx, MAX_TEXT_WIDTH, &mono_family);
+        let (editor, markdown) = open_document(text);
         Self {
-            editor: Editor::from_text(text),
+            editor,
+            markdown,
+            source_mode: false,
             focus_handle,
             layouts: LayoutCache::new(base_style),
             synced_version: 0,
+            styled_for: None,
+            mono_family,
             scroll: ScrollAnchor::top(&viewport(None)),
             autoscroll: false,
             bounds: None,
@@ -136,7 +152,7 @@ impl EditorView {
     /// Replaces the document (e.g. when another note is opened): fresh history, cursor and scroll
     /// position at the start.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.editor = Editor::from_text(text);
+        (self.editor, self.markdown) = open_document(text);
         self.layouts.clear();
         self.synced_version = self.editor.buffer().version();
         self.scroll = ScrollAnchor::top(&viewport(self.bounds));
@@ -210,6 +226,18 @@ impl EditorView {
     #[doc(hidden)]
     pub fn cached_layout_count(&self) -> usize {
         self.layouts.len()
+    }
+
+    /// Number of times a line has been shaped, for tests of what input re-shapes.
+    #[doc(hidden)]
+    pub fn shaped_line_count(&self) -> u64 {
+        self.layouts.shaped()
+    }
+
+    /// Whether every Markdown marker is shown (source mode) rather than only those near the
+    /// selection (live preview).
+    pub fn source_mode(&self) -> bool {
+        self.source_mode
     }
 
     // --- Engine plumbing ---
@@ -286,11 +314,20 @@ impl EditorView {
         self.synced_version = buffer.version();
     }
 
-    /// The document's laid-out lines and the scroll anchor, in sync with the buffer.
+    /// The document's laid-out lines and the scroll anchor, in sync with the buffer and selection.
     fn lines<'a>(&'a mut self, window: &'a Window) -> (Lines<'a>, &'a mut ScrollAnchor) {
         self.sync_layouts();
+        // Live preview shows markers depending on the selection; source mode shows them all.
+        let selection = (!self.source_mode).then(|| self.editor.selection());
+        let styled_for = Some((self.editor.buffer().version(), selection));
+        if self.styled_for != styled_for {
+            self.styled_for = styled_for;
+            self.layouts.restyle();
+        }
         let lines = Lines {
             buffer: self.editor.buffer(),
+            markdown: &mut self.markdown,
+            selection,
             cache: &mut self.layouts,
             text_system: window.text_system(),
         };
@@ -301,16 +338,35 @@ impl EditorView {
         viewport(self.bounds)
     }
 
-    /// The buffer offset under a window position.
-    fn offset_at(&mut self, position: Point<Pixels>, window: &Window) -> ByteOffset {
-        let Some(bounds) = self.bounds else {
-            return self.editor.selection().head;
-        };
+    /// The line under a window position, and the position relative to the line's top-left corner.
+    /// Above or below the text, the first or last line.
+    fn line_at(&mut self, position: Point<Pixels>, window: &Window) -> Option<LineHit> {
+        let bounds = self.bounds?;
         let (left, _) = text_column(bounds);
         let (mut lines, scroll) = self.lines(window);
         let (line, y) = scroll.line_at(position.y - bounds.top(), &mut lines);
-        let layout = lines.layout(line);
-        lines.offset(line, layout.column_at(layout.row_at(y), position.x - left))
+        Some(LineHit {
+            line,
+            layout: lines.layout(line),
+            position: gpui::point(position.x - left, y),
+        })
+    }
+
+    /// The buffer offset nearest to a window position.
+    fn offset_at(&mut self, position: Point<Pixels>, window: &Window) -> ByteOffset {
+        let Some(hit) = self.line_at(position, window) else {
+            return self.editor.selection().head;
+        };
+        let layout = &hit.layout;
+        let column = layout.column_at(layout.row_at(hit.position.y), hit.position.x);
+        self.offset(hit.line, column)
+    }
+
+    /// The buffer offset of `column` in `line`, on a grapheme boundary.
+    fn offset(&self, line: usize, column: usize) -> ByteOffset {
+        let buffer = self.editor.buffer();
+        let start = buffer.line_start(line);
+        buffer.clip_offset(ByteOffset(start.0 + column), Bias::Left)
     }
 
     // --- Keyboard ---
@@ -387,6 +443,11 @@ impl EditorView {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.edit(cx, |editor| editor.paste(&text));
         }
+    }
+
+    fn toggle_source_mode(&mut self, cx: &mut Context<Self>) {
+        self.source_mode = !self.source_mode;
+        cx.notify();
     }
 
     // --- Mouse ---
@@ -693,6 +754,7 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.cut(cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
+            .on_action(cx.listener(|this, _: &ToggleSourceMode, _, cx| this.toggle_source_mode(cx)))
             .child(EditorElement::new(cx.entity()))
     }
 }
@@ -825,13 +887,19 @@ impl EntityInputHandler for EditorView {
 /// The document as laid-out lines: what scroll math, hit testing and vertical motion walk over.
 struct Lines<'a> {
     buffer: &'a Buffer,
+    markdown: &'a mut MarkdownState,
+    /// The selection markers are revealed around; `None` in source mode.
+    selection: Option<Selection>,
     cache: &'a mut LayoutCache,
     text_system: &'a WindowTextSystem,
 }
 
 impl Lines<'_> {
     fn layout(&mut self, line: usize) -> Arc<LineLayout> {
-        self.cache.line(line, self.buffer, self.text_system)
+        let (buffer, markdown, selection) = (self.buffer, &mut *self.markdown, self.selection);
+        self.cache.line(line, buffer, self.text_system, || {
+            LineKey::new(markdown, buffer, line, selection)
+        })
     }
 
     /// The buffer offset of `column` in `line`, on a grapheme boundary.
@@ -896,13 +964,30 @@ fn vertical_target(
     (lines.offset(line, layout.column_at(row, x)), x)
 }
 
-fn base_style(cx: &App, wrap_width: Pixels) -> BaseStyle {
+/// A new document's engine and Markdown structure. The only place either is created: a
+/// [`MarkdownState`] left over from another buffer could pass for current (same version and
+/// length) and style the new text with the old document's markers.
+fn open_document(text: &str) -> (Editor, MarkdownState) {
+    let editor = Editor::from_text(text);
+    let markdown = MarkdownState::new(editor.buffer());
+    (editor, markdown)
+}
+
+/// A line under a point, with the point relative to the line's top-left corner.
+struct LineHit {
+    line: usize,
+    layout: Arc<LineLayout>,
+    position: Point<Pixels>,
+}
+
+fn base_style(cx: &App, wrap_width: Pixels, mono_family: &SharedString) -> BaseStyle {
     let font_size = typography::BODY_FONT_SIZE;
     BaseStyle {
         font: font(typography::BODY_FONT_FAMILY),
+        mono_family: mono_family.clone(),
         font_size,
         line_height: font_size * typography::BODY_LINE_HEIGHT,
-        color: cx.theme().foreground,
+        theme: cx.theme().clone(),
         wrap_width,
     }
 }
