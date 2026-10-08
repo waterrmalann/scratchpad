@@ -24,7 +24,7 @@ later features (Markdown toggles, list continuation) need a generic undoable pri
 - Never merged, each its own step: newline, paste, cut, word deletion, duplicate/move lines,
   `replace_range`. Typing over a selection starts a new step that further typing joins.
 - No time-based grouping: it would need an injected clock and has not been asked for.
-- History is unbounded for now.
+- History is unbounded for now (since ADR 0112: bounded to 32 MiB of edit text).
 
 ## Consequences
 - Undo granularity is coarse for long uninterrupted typing; a pause does not split it.
