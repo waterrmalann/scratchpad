@@ -35,7 +35,7 @@ pub(super) enum Job {
     /// Keep unsaved text in the recovery folder; `key` is the note's path or a draft's key.
     Snapshot {
         key: PathBuf,
-        text: TextSnapshot,
+        text: SaveText,
     },
     RemoveSnapshot(PathBuf),
     /// Delete a file a save recreated after the note was renamed or deleted, if it still holds
@@ -46,7 +46,7 @@ pub(super) enum Job {
     },
 }
 
-/// The text of a save, or what a save expects the file to hold.
+/// The text of a save or a recovery snapshot, or what a save expects the file to hold.
 ///
 /// The session takes the editor's text as a [`TextSnapshot`], which copies nothing, and the
 /// writer turns it into a string on the background thread, once: a large note's save costs the
@@ -100,6 +100,18 @@ impl Job {
             | Job::RemoveIfUnchanged { path, .. }
             | Job::Snapshot { key: path, .. }
             | Job::RemoveSnapshot(path) => path,
+        }
+    }
+
+    /// The recovery snapshot this job may write or remove.
+    pub fn snapshot_key(&self) -> Option<&Path> {
+        match self {
+            Job::Save { path, .. }
+            | Job::Snapshot { key: path, .. }
+            | Job::RemoveSnapshot(path) => Some(path),
+            Job::Load(_) | Job::Check(_) | Job::Rename { .. } | Job::RemoveIfUnchanged { .. } => {
+                None
+            }
         }
     }
 
@@ -341,7 +353,7 @@ pub(super) fn run(
         }
         Job::Snapshot { key, text } => {
             if let Some(recovery) = recovery {
-                log_recovery_error(recovery.write(key, &text.to_text()));
+                log_recovery_error(recovery.write(key, text.get()));
             }
             Outcome::Done
         }
@@ -398,7 +410,7 @@ mod tests {
     fn snapshot(key: &str, text: &str) -> Job {
         Job::Snapshot {
             key: key.into(),
-            text: Buffer::from_text(text).snapshot(),
+            text: SaveText::snapshot(Buffer::from_text(text).snapshot()),
         }
     }
 
@@ -411,7 +423,7 @@ mod tests {
 
         let jobs: Vec<_> = std::iter::from_fn(|| writer.pop()).collect();
         assert!(
-            matches!(&jobs[..], [Job::RemoveSnapshot(_), Job::Snapshot { text, .. }] if text.to_text() == "new"),
+            matches!(&jobs[..], [Job::RemoveSnapshot(_), Job::Snapshot { text, .. }] if **text.get() == *"new"),
             "{jobs:?}"
         );
     }

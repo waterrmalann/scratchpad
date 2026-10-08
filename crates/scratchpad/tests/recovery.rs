@@ -150,6 +150,45 @@ fn edits_that_could_not_be_saved_are_restored_after_a_crash(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn recovered_text_survives_editing_its_note_without_restoring_it(cx: &mut TestAppContext) {
+    let folders = Folders::new();
+    let ideas = write_note(folders.notes.path(), "Ideas", "Ideas", days_ago(0, 10));
+    RecoveryStore::new(folders.data.path().join("recovery"))
+        .write(&ideas, "Ideas\nfrom the crash")
+        .unwrap();
+    let (root, cx) = folders.open(cx);
+    assert_eq!(
+        notices(&root, cx),
+        [Notice::Recovered {
+            title: "Ideas".into(),
+            new_note: false
+        }]
+    );
+
+    // The note opened at startup is edited and saved, which replaces its own snapshot...
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input(" typed");
+    wait(AUTOSAVE_DELAY, cx);
+    assert_eq!(fs::read_to_string(&ideas).unwrap(), "Ideas typed");
+    // ...and the app crashes before the recovered text was restored or discarded.
+    crash(cx);
+
+    let (root, cx) = folders.open(cx);
+    // It now has a snapshot of its own, so it comes back as a new note.
+    assert_eq!(
+        notices(&root, cx),
+        [Notice::Recovered {
+            title: "Ideas".into(),
+            new_note: true
+        }]
+    );
+    click("choice:Restore", cx);
+    assert_eq!(editor_text(&root, cx), "Ideas\nfrom the crash");
+    assert_eq!(titles_on_disk(folders.notes.path()), ["Ideas", "Ideas 2"]);
+    assert_eq!(fs::read_to_string(&ideas).unwrap(), "Ideas typed");
+}
+
+#[gpui::test]
 fn discarded_recovered_text_is_not_offered_again(cx: &mut TestAppContext) {
     let folders = Folders::new();
     let (_root, cx) = folders.open(cx);

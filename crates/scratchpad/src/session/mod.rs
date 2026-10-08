@@ -17,9 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext, Context, Entity, Focusable, Subscription, Task, Window};
-use scratchpad_core::{
-    Note, NoteEvent, NoteText, RecoveryStore, Snapshot, UNTITLED, title_from_content,
-};
+use scratchpad_core::{Note, NoteEvent, NoteText, RecoveryStore, UNTITLED, title_from_content};
 use scratchpad_editor::{Buffer, TextSnapshot};
 
 use crate::app::Storage;
@@ -133,13 +131,21 @@ pub enum Choice {
     Discard,
 }
 
+/// Unsaved text offered like recovered text.
+struct Offer {
+    /// The note it belongs to, or a new note's draft key.
+    note_path: PathBuf,
+    text: Arc<str>,
+    /// The recovery snapshot that holds it: its note's, until the note's own saves or
+    /// snapshots would replace that; then one of its own (see [`Session::enqueue`]).
+    key: PathBuf,
+}
+
 /// Recovered text waiting for its note (or a new note) to open.
 struct Restore {
-    /// `None` restores into a new note.
-    path: Option<PathBuf>,
-    text: String,
-    /// The snapshot it came from.
-    key: PathBuf,
+    offer: Offer,
+    /// Into its note; otherwise into a new note.
+    into_note: bool,
 }
 
 pub struct Session {
@@ -156,8 +162,10 @@ pub struct Session {
     refresh: Option<Task<()>>,
     /// Unsaved text from crashed runs, or that could not be saved to a note the user left,
     /// offered one at a time.
-    recovered: VecDeque<Snapshot>,
+    recovered: VecDeque<Offer>,
     restore: Option<Restore>,
+    /// Counts the draft keys made, so two made at the same moment differ.
+    draft_keys: u64,
     /// Called once the first note (or new note) is in the editor, to log startup timing.
     first_load: Option<Box<dyn FnOnce()>>,
     /// Watches the notes folder; `None` when [`Storage::watch`] is off.
@@ -208,6 +216,7 @@ impl Session {
             refresh: None,
             recovered: VecDeque::new(),
             restore: None,
+            draft_keys: 0,
             first_load: None,
             watcher,
             _find_recovered: find_recovered,
@@ -239,12 +248,12 @@ impl Session {
             DocumentNotice::Conflict { .. } => Notice::ChangedOnDisk,
             DocumentNotice::Deleted => Notice::DeletedOnDisk,
         });
-        let recovered = self.recovered.front().map(|snapshot| {
-            let new_note = is_draft_key(&snapshot.note_path);
+        let recovered = self.recovered.front().map(|offer| {
+            let new_note = is_draft_key(&offer.note_path);
             let title = if new_note {
-                title_from_content(&snapshot.text).unwrap_or_else(|| UNTITLED.to_owned())
+                title_from_content(&offer.text).unwrap_or_else(|| UNTITLED.to_owned())
             } else {
-                title_of(&snapshot.note_path)
+                title_of(&offer.note_path)
             };
             Notice::Recovered { title, new_note }
         });
@@ -292,7 +301,7 @@ impl Session {
             Target::Draft { key, .. } => key.clone(),
             _ => return,
         };
-        let text = self.editor.read(cx).text();
+        let text = self.editor.read(cx).text().into();
         self.offer_unsaved(key, text, cx);
     }
 
@@ -327,7 +336,10 @@ impl Session {
                     notice: note.lossy.then_some(DocumentNotice::NotUtf8),
                     ..Document::new(Target::Note(path.clone()))
                 };
-                if let Some(restore) = self.restore.take_if(|r| r.path.as_ref() == Some(&path)) {
+                if let Some(restore) = self
+                    .restore
+                    .take_if(|r| r.into_note && r.offer.note_path == path)
+                {
                     self.apply_restore(restore, cx);
                 }
                 if let Some(first_load) = self.first_load.take() {
@@ -344,18 +356,14 @@ impl Session {
     }
 
     fn start_draft(&mut self, id: DraftId, window: &mut Window, cx: &mut Context<Self>) {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let key = self.notes_dir.join(format!("{DRAFT_KEY_PREFIX}{nanos}"));
+        let key = self.new_draft_key();
         self.doc = Document::new(Target::Draft { id, key });
         self.editor.update(cx, |editor, cx| {
             editor.set_text("", cx);
             editor.set_read_only(false);
         });
         window.focus(&self.editor.focus_handle(cx));
-        if let Some(restore) = self.restore.take_if(|restore| restore.path.is_none()) {
+        if let Some(restore) = self.restore.take_if(|restore| !restore.into_note) {
             self.apply_restore(restore, cx);
         }
         if let Some(first_load) = self.first_load.take() {
@@ -404,10 +412,15 @@ impl Session {
             Target::None | Target::Loading(_) => return,
         };
         if self.doc.dirty {
-            self.doc.snapshot = true;
-            let text = self.text_snapshot(cx);
-            self.enqueue(Job::Snapshot { key, text }, cx);
+            self.keep_in_snapshot(key, cx);
         }
+    }
+
+    /// Writes the editor's text to the recovery snapshot `key`.
+    fn keep_in_snapshot(&mut self, key: PathBuf, cx: &mut Context<Self>) {
+        self.doc.snapshot = true;
+        let text = SaveText::snapshot(self.text_snapshot(cx));
+        self.enqueue(Job::Snapshot { key, text }, cx);
     }
 
     /// The editor's text for a save or a recovery snapshot. These run while the user types, so
@@ -458,9 +471,7 @@ impl Session {
         if self.doc.dirty {
             if blocked {
                 // Keep the edits safe until the user decides.
-                self.doc.snapshot = true;
-                let text = self.text_snapshot(cx);
-                self.enqueue(Job::Snapshot { key: path, text }, cx);
+                self.keep_in_snapshot(path, cx);
                 return;
             }
             let text = SaveText::snapshot(self.text_snapshot(cx));
@@ -516,9 +527,7 @@ impl Session {
             return;
         }
         if !(flush || title_finished) {
-            self.doc.snapshot = true;
-            let text = self.text_snapshot(cx);
-            self.enqueue(Job::Snapshot { key, text }, cx);
+            self.keep_in_snapshot(key, cx);
             return;
         }
         match self
@@ -548,9 +557,7 @@ impl Session {
             Err(error) => {
                 let name = title.as_deref().unwrap_or(UNTITLED);
                 toast::show_file_error(name, &error, cx);
-                self.doc.snapshot = true;
-                let text = self.text_snapshot(cx);
-                self.enqueue(Job::Snapshot { key, text }, cx);
+                self.keep_in_snapshot(key, cx);
             }
         }
     }
@@ -580,7 +587,7 @@ impl Session {
                     self.doc.dirty = true;
                     self.doc.snapshot = true;
                 } else {
-                    self.offer_unsaved(path, text.get().to_string(), cx);
+                    self.offer_unsaved(path, text.get().clone(), cx);
                 }
             }
         }
@@ -796,7 +803,7 @@ impl Session {
                 None => DocumentNotice::Deleted,
             });
         } else {
-            self.offer_unsaved(path, text.get().to_string(), cx);
+            self.offer_unsaved(path, text.get().clone(), cx);
         }
         self.refresh_list(cx);
         cx.notify();
@@ -848,16 +855,16 @@ impl Session {
                 }
             }
             (Choice::Restore, _) => {
-                if let Some(snapshot) = self.recovered.pop_front() {
-                    self.restore(snapshot, cx);
+                if let Some(offer) = self.recovered.pop_front() {
+                    self.restore(offer, cx);
                 }
             }
             (Choice::Discard, _) => {
-                if let Some(snapshot) = self.recovered.pop_front()
+                if let Some(offer) = self.recovered.pop_front()
                     // Then the snapshot holds the open note's unsaved text instead.
-                    && !(self.doc.is_note(&snapshot.note_path) && self.doc.snapshot)
+                    && !(self.doc.is_note(&offer.key) && self.doc.snapshot)
                 {
-                    self.enqueue(Job::RemoveSnapshot(snapshot.note_path), cx);
+                    self.enqueue(Job::RemoveSnapshot(offer.key), cx);
                 }
             }
             _ => {}
@@ -886,26 +893,27 @@ impl Session {
             }
             tracing::info!(count = leftovers.len(), "found unsaved text from a crash");
             this.update(cx, |this, cx| {
-                this.recovered.extend(leftovers);
+                this.recovered
+                    .extend(leftovers.into_iter().map(|snapshot| Offer {
+                        key: snapshot.note_path.clone(),
+                        note_path: snapshot.note_path,
+                        text: snapshot.text.into(),
+                    }));
                 cx.notify();
             })
             .ok();
         })
     }
 
-    fn restore(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
-        let path = snapshot.note_path;
+    fn restore(&mut self, offer: Offer, cx: &mut Context<Self>) {
+        let path = offer.note_path.clone();
         // A note of a folder used before the notes folder was changed is not opened from
         // there: renaming it would move it into this folder. Its text becomes a new note here.
         let into_note = !is_draft_key(&path)
             && path.parent() == Some(self.notes_dir.as_path())
             && path.is_file();
-        let restore = Restore {
-            path: into_note.then(|| path.clone()),
-            text: snapshot.text,
-            key: path.clone(),
-        };
-        if self.doc.is_note(&path) {
+        let restore = Restore { offer, into_note };
+        if into_note && self.doc.is_note(&path) {
             self.apply_restore(restore, cx);
             return;
         }
@@ -923,30 +931,43 @@ impl Session {
     fn apply_restore(&mut self, restore: Restore, cx: &mut Context<Self>) {
         // What it replaces stays one undo away.
         self.editor.update(cx, |editor, cx| {
-            editor.replace_text(&restore.text, cx);
+            editor.replace_text(&restore.offer.text, cx);
             editor.set_read_only(false);
         });
         self.doc.notice = None;
         self.doc.dirty = true;
         self.show_title(cx);
-        // Saved (or snapshotted under its new key) before the old snapshot goes.
+        // Saved (or snapshotted under its own key) before the old snapshot goes. The note's
+        // own snapshot goes with that save.
         self.persist(false, cx);
-        if restore.path.is_none() {
-            self.enqueue(Job::RemoveSnapshot(restore.key), cx);
+        let Offer { note_path, key, .. } = restore.offer;
+        if !(restore.into_note && key == note_path) {
+            self.enqueue(Job::RemoveSnapshot(key), cx);
         }
     }
 
     /// Offers text that could not be saved to a note the user has left like recovered text:
-    /// its snapshot alone would be removed by the note's next save.
-    fn offer_unsaved(&mut self, note_path: PathBuf, text: String, cx: &mut Context<Self>) {
-        self.recovered
-            .retain(|offered| offered.note_path != note_path);
-        self.recovered.push_back(Snapshot {
-            note_path,
+    /// its snapshot alone would be removed by the note's next save. That snapshot (`key`, the
+    /// note's path or a new note's key) holds `text` now, so an older offer from it goes.
+    fn offer_unsaved(&mut self, key: PathBuf, text: Arc<str>, cx: &mut Context<Self>) {
+        self.recovered.retain(|offer| offer.key != key);
+        self.recovered.push_back(Offer {
+            note_path: key.clone(),
             text,
-            saved_at: SystemTime::now(),
+            key,
         });
         cx.notify();
+    }
+
+    /// A key for a new note's recovery snapshot, unique in this run and across runs.
+    fn new_draft_key(&mut self) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        self.draft_keys += 1;
+        let name = format!("{DRAFT_KEY_PREFIX}{nanos}-{}", self.draft_keys);
+        self.notes_dir.join(name)
     }
 
     // --- Closing ---
@@ -1000,7 +1021,7 @@ impl Session {
                             Outcome::ChangedOnDisk(_) => {}
                             _ => continue,
                         }
-                        self.offer_unsaved(path, text.get().to_string(), cx);
+                        self.offer_unsaved(path, text.get().clone(), cx);
                     }
                 }
             }
@@ -1029,7 +1050,21 @@ impl Session {
 
     // --- Writer ---
 
+    /// Queues `job`. Text offered to the user whose snapshot `job` would replace or remove
+    /// (e.g. recovered text of a note edited without restoring it) first gets a snapshot of its
+    /// own, so it is never lost.
     fn enqueue(&mut self, job: Job, cx: &mut Context<Self>) {
+        if let Some(key) = job.snapshot_key() {
+            for ix in 0..self.recovered.len() {
+                if self.recovered[ix].key == key {
+                    let own = self.new_draft_key();
+                    let offer = &mut self.recovered[ix];
+                    let text = SaveText::from(offer.text.clone());
+                    offer.key = own.clone();
+                    self.writer.push(Job::Snapshot { key: own, text });
+                }
+            }
+        }
         self.writer.push(job);
         if self.writer.busy {
             return;
