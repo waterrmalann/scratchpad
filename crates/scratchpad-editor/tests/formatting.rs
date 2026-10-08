@@ -176,10 +176,25 @@ fn the_cursor_right_after_a_span_removes_it_rather_than_nesting_markers() {
     let mut ed = editor("a **bold**| c");
     toggle(&mut ed, Editor::toggle_bold);
     assert_eq!(state(&ed), "a bold| c");
+}
 
-    let mut ed = editor("**bold|**");
+#[test]
+fn the_cursor_at_the_end_of_formatted_text_steps_out_to_type_on_unformatted() {
+    // Ctrl+B, type, Ctrl+B, type, as in a word processor.
+    let mut ed = editor("Say |");
     toggle(&mut ed, Editor::toggle_bold);
-    assert_eq!(state(&ed), "bold|");
+    ed.insert_text("bold");
+    toggle(&mut ed, Editor::toggle_bold);
+    ed.insert_text(" plain");
+    assert_eq!(state(&ed), "Say **bold** plain|");
+
+    let mut ed = editor("`code|` and ~~gone~~");
+    toggle(&mut ed, Editor::toggle_inline_code);
+    assert_eq!(state(&ed), "`code`| and ~~gone~~");
+    // Elsewhere in the span, or with the cursor already past it, the span is removed.
+    let mut ed = editor("**bo|ld**");
+    toggle(&mut ed, Editor::toggle_bold);
+    assert_eq!(state(&ed), "bo|ld");
 }
 
 #[test]

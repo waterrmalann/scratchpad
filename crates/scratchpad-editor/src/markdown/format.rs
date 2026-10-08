@@ -83,9 +83,10 @@ impl Change {
 
 impl Editor {
     /// Ctrl+B: makes the selection bold, or not bold if all its text already is (like a word processor). With
-    /// a cursor it removes the bold span the cursor is in or right after, else formats the word around the
-    /// cursor, else inserts `****` with the cursor in the middle. Bold spans the selection overlaps are merged
-    /// into one. One undo step; the selection keeps covering the same text.
+    /// a cursor at the end of a bold span's text it steps over the closing `**`, so that typing goes on
+    /// unformatted (Ctrl+B, type, Ctrl+B, type); elsewhere in or right after a bold span it removes the span,
+    /// else formats the word around the cursor, else inserts `****` with the cursor in the middle. Bold spans
+    /// the selection overlaps are merged into one. One undo step; the selection keeps covering the same text.
     pub fn toggle_bold(&mut self, markdown: &mut MarkdownState) {
         self.toggle_format(markdown, BOLD);
     }
@@ -123,6 +124,10 @@ impl Editor {
 
     fn toggle_format(&mut self, markdown: &mut MarkdownState, format: Format) {
         let selection = self.selection();
+        if let Some(end) = closing_marker_end(self.buffer(), markdown, format, selection) {
+            self.set_selection(Selection::cursor(end));
+            return;
+        }
         let changes = format_changes(self.buffer(), markdown, format, selection);
         let map = |offset: ByteOffset| ByteOffset(map_through(&changes, offset.0));
         let after = Selection::new(map(selection.anchor), map(selection.head));
@@ -135,6 +140,25 @@ impl Editor {
             editor.set_selection(after);
         });
     }
+}
+
+/// The end of the closing marker of a `format` span if `selection` is a cursor right before it, at the end of the
+/// span's text.
+fn closing_marker_end(
+    buffer: &Buffer,
+    markdown: &mut MarkdownState,
+    format: Format,
+    selection: Selection,
+) -> Option<ByteOffset> {
+    let cursor = selection.head;
+    if !selection.is_empty() {
+        return None;
+    }
+    let decorations = markdown.decorations(buffer, cursor..cursor);
+    decorations
+        .iter()
+        .filter(|d| (format.kind)(&d.kind) && d.markers.len() == 2)
+        .find_map(|d| (d.markers[1].start == cursor).then_some(d.markers[1].end))
 }
 
 /// The changes, ordered and not overlapping, that toggle `format` for `selection`.
