@@ -382,6 +382,35 @@ fn save_into_a_vanished_folder_fails_cleanly() {
     assert!(!notes.exists());
 }
 
+#[test]
+fn listing_and_creating_in_a_vanished_folder_fail_without_recreating_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let notes = dir.path().join("notes");
+    let store = NoteStore::open(&notes).unwrap();
+    fs::remove_dir_all(&notes).unwrap();
+
+    let error = store.list().unwrap_err();
+    assert_eq!(error.io_kind(), io::ErrorKind::NotFound);
+    assert!(error.to_string().contains("notes"), "{error}");
+    assert_eq!(
+        store.create(Some("Late")).unwrap_err().io_kind(),
+        io::ErrorKind::NotFound
+    );
+    assert!(!notes.exists());
+}
+
+#[test]
+fn open_reports_a_notes_folder_that_cannot_be_created() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where a parent folder should be.
+    let blocker = path_in(&dir, "file");
+    fs::write(&blocker, "x").unwrap();
+
+    let error = NoteStore::open(blocker.join("notes")).unwrap_err();
+
+    assert!(error.to_string().contains("notes"), "{error}");
+}
+
 // On Unix a read-only file can still be replaced via rename, so this is Windows behaviour only.
 #[cfg(windows)]
 #[test]

@@ -139,6 +139,19 @@ fn unusable_files_give_defaults() {
 }
 
 #[test]
+fn a_configured_notes_folder_replaces_the_default_one() {
+    let config = Config {
+        notes_dir: Some("D:/Elsewhere".into()),
+        ..Config::default()
+    };
+    assert_eq!(config.notes_dir_or_default(), PathBuf::from("D:/Elsewhere"));
+    assert_eq!(
+        Config::default().notes_dir_or_default(),
+        scratchpad_core::default_notes_dir()
+    );
+}
+
+#[test]
 fn a_directory_in_place_of_the_file_gives_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
