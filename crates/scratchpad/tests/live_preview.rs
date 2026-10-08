@@ -268,6 +268,29 @@ fn up_and_down_keep_the_caret_x_on_lines_whose_markers_they_reveal(cx: &mut Test
 }
 
 #[gpui::test]
+fn home_goes_to_the_text_after_list_quote_and_heading_markers_then_to_the_line_start(
+    cx: &mut TestAppContext,
+) {
+    let (editor, cx) = open_editor(cx, "  - item\n- [ ] task\n> quote\n## Head\nplain");
+    let lines = [(0, 4), (9, 15), (20, 22), (28, 31), (36, 36)];
+    for (line, (line_start, text_start)) in lines.into_iter().enumerate() {
+        cx.simulate_keystrokes("ctrl-home");
+        for _ in 0..line {
+            cx.simulate_keystrokes("down");
+        }
+        cx.simulate_keystrokes("end home");
+        assert_eq!(cursor(&editor, cx), text_start, "line {line}");
+        cx.simulate_keystrokes("home");
+        assert_eq!(cursor(&editor, cx), line_start, "line {line}");
+        cx.simulate_keystrokes("home");
+        assert_eq!(cursor(&editor, cx), text_start, "line {line}");
+    }
+    cx.simulate_keystrokes("ctrl-home end shift-home");
+    let selected = editor.read_with(cx, |editor, _| editor.editor().selection().range());
+    assert_eq!(selected.start.0..selected.end.0, 4..8);
+}
+
+#[gpui::test]
 fn left_and_right_step_through_markers_one_character_at_a_time(cx: &mut TestAppContext) {
     let text = "a **b** `c` d";
     let (editor, cx) = open_editor(cx, text);

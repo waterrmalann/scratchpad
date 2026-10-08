@@ -279,6 +279,8 @@ pub(crate) struct LineLayout {
     hides: bool,
     /// Length of the buffer line.
     len: usize,
+    /// Buffer column where the text starts, after block markers.
+    text_start: usize,
     /// Bullets and task boxes in display columns: the cursor never stops inside them.
     widgets: Vec<Range<usize>>,
     /// `(end display column, colour)` of each run.
@@ -375,6 +377,7 @@ impl LineLayout {
             styled: key.styled.clone(),
             hides: key.styled.spans.iter().any(|span| span.hidden),
             len: text.len(),
+            text_start: text_start(text, &key.styled),
             widgets: widgets.iter().map(|w| w.columns.clone()).collect(),
             colors: runs
                 .iter()
@@ -553,6 +556,12 @@ impl LineLayout {
         }
     }
 
+    /// Where the line's text starts after any list bullet, task box, quote or heading markers:
+    /// where Home goes first.
+    pub fn text_start(&self) -> usize {
+        self.text_start
+    }
+
     /// x of a cursor at `column`.
     pub fn x_for(&self, column: usize) -> Pixels {
         self.geometry.x_for(self.display(column))
@@ -706,6 +715,31 @@ impl LineLayout {
             .get(run)
             .map_or(Hsla::default(), |(_, color)| *color)
     }
+}
+
+/// The buffer column after the block markers (list bullets and numbers, task boxes, quotes and
+/// heading `#`s) that `text` starts with, and the indentation before them; 0 without any.
+fn text_start(text: &str, styled: &StyledLine) -> usize {
+    let mut start = 0;
+    for span in &styled.spans {
+        let span_text = &text[span.columns.clone()];
+        let block_marker = match span.marker {
+            Some(MarkerKind::Heading) => span_text.starts_with('#'),
+            Some(
+                MarkerKind::Quote
+                | MarkerKind::ListBullet
+                | MarkerKind::ListNumber
+                | MarkerKind::TaskBox { .. },
+            ) => true,
+            _ => false,
+        };
+        if block_marker {
+            start = span.columns.end;
+        } else if !span_text.trim().is_empty() {
+            break;
+        }
+    }
+    start
 }
 
 /// The displayed runs of a line: fonts, sizes and colours from the Markdown styles.

@@ -457,7 +457,9 @@ impl EditorView {
         self.move_vertically(distance, extend, window, cx);
     }
 
-    /// Home/End: to the start or end of the cursor's visual row.
+    /// Home/End: to the start or end of the cursor's visual row. Home on a list item, quote or
+    /// heading goes to its text first, after the markers, and from there to the line start
+    /// (ADR 0126).
     fn move_in_row(&mut self, to_end: bool, extend: bool, window: &Window, cx: &mut Context<Self>) {
         let selection = self.editor.selection();
         let (mut lines, _) = self.lines(window);
@@ -1045,11 +1047,18 @@ fn moved(selection: Selection, head: ByteOffset, extend: bool) -> Selection {
     Selection::new(if extend { selection.anchor } else { head }, head)
 }
 
-/// Where Home goes: the start of the cursor's row.
+/// Where Home goes: the start of the cursor's row, but on a list item, quote or heading first the
+/// start of its text, after the markers, unless the cursor is already there.
 fn row_start_target(lines: &mut Lines, head: ByteOffset) -> ByteOffset {
     let point = lines.buffer.offset_to_point(head);
     let layout = lines.layout(point.line);
-    let column = layout.row_start(layout.row_of(point.column));
+    let row = layout.row_of(point.column);
+    let text_start = layout.text_start();
+    let column = if layout.row_of(text_start) == row && point.column != text_start {
+        text_start
+    } else {
+        layout.row_start(row)
+    };
     lines.offset(point.line, column)
 }
 

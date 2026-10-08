@@ -58,3 +58,4 @@ with every new ADR.
 | [0114](0114-measuring-and-guarding-performance.md) | Measuring performance and guarding against regressions | Accepted |
 | [0120](0120-data-safety-review-and-accepted-risks.md) | Data safety before V1: what the session guarantees and the risks accepted | Accepted |
 | [0125](0125-cursor-targets-settle-on-revealed-markers.md) | Cursor targets settle on the markers they reveal | Accepted |
+| [0126](0126-keyboard-conventions-for-markdown-text.md) | Keyboard conventions for Markdown text | Accepted |
