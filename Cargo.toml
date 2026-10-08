@@ -15,6 +15,7 @@ scratchpad-editor = { path = "crates/scratchpad-editor" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 dirs = "7"
+gpui = "0.2.2"
 notify = "8"
 proptest = "1"
 serde = { version = "1", features = ["derive"] }
@@ -22,6 +23,7 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "std", "tracing-log"] }
 trash = "5"
 
 [workspace.lints.rust]
@@ -29,3 +31,16 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Dependencies (GPUI above all) are optimised even in dev builds so a debug app renders
+# and responds at a usable speed. They rarely change, so this costs one slower first build;
+# our own crates stay at opt-level 0 for fast incremental rebuilds. See ADR 0021.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Small, fast shipping binary. See ADR 0021.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
