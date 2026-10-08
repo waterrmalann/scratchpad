@@ -191,6 +191,15 @@ fn run_end(
         .map_or(pos, |(_, end)| end)
 }
 
+/// The word around `offset` if word characters lie on both sides of it.
+pub(crate) fn word_around(buffer: &Buffer, offset: ByteOffset) -> Option<Range<ByteOffset>> {
+    let is_word =
+        |grapheme: Option<(CharClass, ByteOffset)>| matches!(grapheme, Some((CharClass::Word, _)));
+    (is_word(classes_before(buffer, offset).next())
+        && is_word(classes_after(buffer, offset).next()))
+    .then(|| word_range_at(buffer, offset))
+}
+
 /// The run of same-class graphemes around `offset` (a word, a punctuation run or whitespace), preferring the
 /// grapheme after `offset`. Empty if `offset` is surrounded by line breaks or the document edges.
 pub(crate) fn word_range_at(buffer: &Buffer, offset: ByteOffset) -> Range<ByteOffset> {

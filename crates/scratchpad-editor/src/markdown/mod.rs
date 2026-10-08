@@ -6,6 +6,7 @@
 //! lines, which also say which syntax markers live preview hides around the selection (ADR 0042).
 
 mod blocks;
+mod format;
 mod parse;
 mod style;
 
