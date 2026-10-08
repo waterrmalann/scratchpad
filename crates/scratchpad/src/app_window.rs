@@ -28,7 +28,8 @@ impl AppWindow {
         let sidebar_width = config.sidebar_width;
         let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
         let editor = cx.new(|cx| EditorView::new("", window, cx));
-        let session = cx.new(|cx| Session::new(notes.clone(), editor.clone(), window, cx));
+        let session =
+            cx.new(|cx| Session::new(notes.clone(), editor.clone(), &storage, window, cx));
         let editor_pane = cx.new(|cx| EditorPane::new(editor.clone(), session.clone(), cx));
         window.focus(&editor.focus_handle(cx));
         let sidebar = cx.new(|cx| {

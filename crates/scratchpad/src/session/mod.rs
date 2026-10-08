@@ -1,5 +1,6 @@
 //! The open note's lifecycle: loading it into the editor, autosave, giving new notes a file,
-//! keeping file names in step with titles (PLAN §7, §9, §44, §56). See ADRs 0060-0062 and 0066.
+//! keeping file names in step with titles and crash recovery (PLAN §7, §9, §40, §44, §56). See
+//! ADRs 0060-0062, 0064 and 0066.
 //!
 //! [`Session`] follows the notes model's [`NotesEvent`]s and the editor's
 //! [`EditorEvent::Changed`]. Every file operation goes through one ordered queue (see
@@ -8,14 +9,16 @@
 
 mod writer;
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext, Context, Entity, Focusable, Subscription, Task, Window};
-use scratchpad_core::{Note, NoteText, UNTITLED, title_from_content};
+use scratchpad_core::{Note, NoteText, RecoveryStore, Snapshot, UNTITLED, title_from_content};
 use scratchpad_editor::Buffer;
 
+use crate::app::Storage;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::notes::{DraftId, Notes, NotesEvent, title_of};
 use crate::toast;
@@ -25,8 +28,14 @@ use writer::{Job, Moved, Outcome, Running, Writer};
 pub const AUTOSAVE_DELAY: Duration = Duration::from_millis(300);
 /// The longest a change waits for a save while the user keeps typing without pausing.
 pub const MAX_AUTOSAVE_DELAY: Duration = Duration::from_secs(2);
+/// While the user keeps typing, unsaved text goes to a recovery snapshot this often, so a crash
+/// loses at most about this much typing; a pause saves it sooner (PLAN §40, ADR 0064).
+pub const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(500);
 /// Titles are looked for this far into a note, so a keystroke never scans a huge document.
 const TITLE_SEARCH_LINES: usize = 200;
+/// Recovery snapshots of new notes that have no file yet are keyed by a path in the notes
+/// folder starting with this; it is hidden and not `.md`, so it can never be a note.
+const DRAFT_KEY_PREFIX: &str = ".draft-";
 
 /// What the editor shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,8 +43,11 @@ enum Target {
     None,
     /// Being read; the editor is read-only and still shows the previous note.
     Loading(PathBuf),
-    /// A new note without a file.
-    Draft(DraftId),
+    /// A new note without a file; `key` names its recovery snapshot.
+    Draft {
+        id: DraftId,
+        key: PathBuf,
+    },
     Note(PathBuf),
 }
 
@@ -48,6 +60,8 @@ struct Document {
     /// is changed (ADR 0061).
     title: Option<String>,
     notice: Option<DocumentNotice>,
+    /// A recovery snapshot of this note may exist.
+    snapshot: bool,
 }
 
 impl Document {
@@ -57,6 +71,7 @@ impl Document {
             dirty: false,
             title: None,
             notice: None,
+            snapshot: false,
         }
     }
 
@@ -76,24 +91,49 @@ enum DocumentNotice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
     NotUtf8,
+    /// Unsaved text from a run that crashed. `title` is the note's, or the new note's first
+    /// line.
+    Recovered {
+        title: String,
+        new_note: bool,
+    },
 }
 
 /// The buttons of the notice bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
     EditAnyway,
+    Restore,
+    Discard,
+}
+
+/// Recovered text waiting for its note (or a new note) to open.
+struct Restore {
+    /// `None` restores into a new note.
+    path: Option<PathBuf>,
+    text: String,
+    /// The snapshot it came from.
+    key: PathBuf,
 }
 
 pub struct Session {
     notes: Entity<Notes>,
     editor: Entity<EditorView>,
+    notes_dir: PathBuf,
+    recovery: Option<RecoveryStore>,
     doc: Document,
     writer: Writer,
     autosave: Option<Task<()>>,
     /// When the oldest unsaved edit must be saved by, however busy the typing.
     autosave_deadline: Option<Instant>,
+    snapshot_timer: Option<Task<()>>,
+    /// Unsaved text from crashed runs, or that could not be saved to a note the user left,
+    /// offered one at a time.
+    recovered: VecDeque<Snapshot>,
+    restore: Option<Restore>,
     /// Called once the first note (or new note) is in the editor, to log startup timing.
     first_load: Option<Box<dyn FnOnce()>>,
+    _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -101,6 +141,7 @@ impl Session {
     pub fn new(
         notes: Entity<Notes>,
         editor: Entity<EditorView>,
+        storage: &Storage,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -118,14 +159,25 @@ impl Session {
                 }
             }),
         ];
+        let recovery = storage.recovery_dir.clone().map(RecoveryStore::new);
+        let mut tasks = Vec::new();
+        if let Some(recovery) = recovery.clone() {
+            tasks.push(Self::find_recovered(recovery, cx));
+        }
         Self {
             notes,
             editor,
+            notes_dir: storage.notes.dir.clone(),
+            recovery,
             doc: Document::new(Target::None),
             writer: Writer::default(),
             autosave: None,
             autosave_deadline: None,
+            snapshot_timer: None,
+            recovered: VecDeque::new(),
+            restore: None,
             first_load: None,
+            _tasks: tasks,
             _subscriptions: subscriptions,
         }
     }
@@ -152,7 +204,16 @@ impl Session {
         let document = self.doc.notice.as_ref().map(|notice| match notice {
             DocumentNotice::NotUtf8 => Notice::NotUtf8,
         });
-        document.into_iter().collect()
+        let recovered = self.recovered.front().map(|snapshot| {
+            let new_note = is_draft_key(&snapshot.note_path);
+            let title = if new_note {
+                title_from_content(&snapshot.text).unwrap_or_else(|| UNTITLED.to_owned())
+            } else {
+                title_of(&snapshot.note_path)
+            };
+            Notice::Recovered { title, new_note }
+        });
+        document.into_iter().chain(recovered).collect()
     }
 
     fn on_notes_event(
@@ -204,8 +265,11 @@ impl Session {
                 self.doc = Document {
                     title: self.current_title(cx),
                     notice: note.lossy.then_some(DocumentNotice::NotUtf8),
-                    ..Document::new(Target::Note(path))
+                    ..Document::new(Target::Note(path.clone()))
                 };
+                if let Some(restore) = self.restore.take_if(|r| r.path.as_ref() == Some(&path)) {
+                    self.apply_restore(restore, cx);
+                }
                 if let Some(first_load) = self.first_load.take() {
                     first_load();
                 }
@@ -220,12 +284,20 @@ impl Session {
     }
 
     fn start_draft(&mut self, id: DraftId, window: &mut Window, cx: &mut Context<Self>) {
-        self.doc = Document::new(Target::Draft(id));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let key = self.notes_dir.join(format!("{DRAFT_KEY_PREFIX}{nanos}"));
+        self.doc = Document::new(Target::Draft { id, key });
         self.editor.update(cx, |editor, cx| {
             editor.set_text("", cx);
             editor.set_read_only(false);
         });
         window.focus(&self.editor.focus_handle(cx));
+        if let Some(restore) = self.restore.take_if(|restore| restore.path.is_none()) {
+            self.apply_restore(restore, cx);
+        }
         if let Some(first_load) = self.first_load.take() {
             first_load();
         }
@@ -253,6 +325,29 @@ impl Session {
         self.doc.dirty = true;
         self.show_title(cx);
         self.schedule_autosave(cx);
+        if self.snapshot_timer.is_none() {
+            let timer = cx.background_executor().timer(SNAPSHOT_INTERVAL);
+            self.snapshot_timer = Some(cx.spawn(async move |this, cx| {
+                timer.await;
+                this.update(cx, |this, cx| this.snapshot_unsaved(cx)).ok();
+            }));
+        }
+    }
+
+    /// Keeps edits that are not saved yet in a recovery snapshot: release builds abort on a
+    /// panic, so only what is on disk survives a crash (ADR 0064).
+    fn snapshot_unsaved(&mut self, cx: &mut Context<Self>) {
+        self.snapshot_timer = None;
+        let key = match &self.doc.target {
+            Target::Note(path) => path.clone(),
+            Target::Draft { key, .. } => key.clone(),
+            Target::None | Target::Loading(_) => return,
+        };
+        if self.doc.dirty {
+            self.doc.snapshot = true;
+            let text = self.editor.read(cx).text().into();
+            self.enqueue(Job::Snapshot { key, text }, cx);
+        }
     }
 
     /// Saves after [`AUTOSAVE_DELAY`] without edits, or [`MAX_AUTOSAVE_DELAY`] after the
@@ -283,18 +378,24 @@ impl Session {
     fn persist(&mut self, flush: bool, cx: &mut Context<Self>) {
         self.autosave = None;
         self.autosave_deadline = None;
+        self.snapshot_timer = None;
         match self.doc.target.clone() {
-            Target::Draft(id) => self.persist_draft(id, flush, cx),
+            Target::Draft { id, key } => self.persist_draft(id, key, flush, cx),
             Target::Note(path) => self.persist_note(path, flush, cx),
             Target::None | Target::Loading(_) => {}
         }
     }
 
     fn persist_note(&mut self, path: PathBuf, flush: bool, cx: &mut Context<Self>) {
-        // A note that needs a decision first is not saved.
         let blocked = self.doc.notice.is_some();
-        if self.doc.dirty && !blocked {
+        if self.doc.dirty {
             let text: Arc<str> = self.editor.read(cx).text().into();
+            if blocked {
+                // Keep the edits safe until the user decides.
+                self.doc.snapshot = true;
+                self.enqueue(Job::Snapshot { key: path, text }, cx);
+                return;
+            }
             self.doc.dirty = false;
             self.enqueue(
                 Job::Save {
@@ -320,8 +421,8 @@ impl Session {
     }
 
     /// A new note gets its file once its title line is finished (followed by another line) or
-    /// the user leaves it; until then it lives in memory (ADR 0061).
-    fn persist_draft(&mut self, id: DraftId, flush: bool, cx: &mut Context<Self>) {
+    /// the user leaves it; until then it lives in memory and in a recovery snapshot (ADR 0061).
+    fn persist_draft(&mut self, id: DraftId, key: PathBuf, flush: bool, cx: &mut Context<Self>) {
         if !self.doc.dirty {
             return;
         }
@@ -332,9 +433,15 @@ impl Session {
         if text.trim().is_empty() {
             // Nothing worth a file.
             self.doc.dirty = false;
+            if self.doc.snapshot {
+                self.doc.snapshot = false;
+                self.enqueue(Job::RemoveSnapshot(key), cx);
+            }
             return;
         }
         if !(flush || title_finished) {
+            self.doc.snapshot = true;
+            self.enqueue(Job::Snapshot { key, text }, cx);
             return;
         }
         match self
@@ -342,6 +449,7 @@ impl Session {
             .update(cx, |notes, cx| notes.save_draft(id, title.as_deref(), cx))
         {
             Ok(note) => {
+                let had_snapshot = self.doc.snapshot;
                 self.doc = Document {
                     title,
                     ..Document::new(Target::Note(note.path.clone()))
@@ -355,11 +463,15 @@ impl Session {
                     },
                     cx,
                 );
+                if had_snapshot {
+                    self.enqueue(Job::RemoveSnapshot(key), cx);
+                }
             }
             Err(error) => {
-                // Tried again at the next pause in typing or flush.
                 let name = title.as_deref().unwrap_or(UNTITLED);
                 toast::show_file_error(name, &error, cx);
+                self.doc.snapshot = true;
+                self.enqueue(Job::Snapshot { key, text }, cx);
             }
         }
     }
@@ -385,14 +497,26 @@ impl Session {
                 }
             }
             (Ok(note), None) => {
+                if self.doc.is_note(&path) {
+                    self.doc.snapshot = false;
+                }
                 self.notes
                     .update(cx, |notes, cx| notes.note_saved(note, cx));
             }
-            (Err(error), _) => {
+            (Err(error), moved) => {
                 toast::show_file_error(&title_of(&path), &error, cx);
-                if self.doc.is_note(&path) {
-                    // Saved again after the next edit or flush.
+                let open = match &moved {
+                    Some(Moved::Renamed(to)) => self.doc.is_note(to),
+                    // Dropped, as the delete asked.
+                    Some(Moved::Deleted) => false,
+                    None => self.doc.is_note(&path),
+                };
+                if open {
+                    // Saved again after the next edit or flush; the text is in a snapshot.
                     self.doc.dirty = true;
+                    self.doc.snapshot = true;
+                } else if moved.is_none() {
+                    self.offer_unsaved(path, text.to_string(), cx);
                 }
             }
         }
@@ -420,6 +544,12 @@ impl Session {
         if load_again {
             self.enqueue(Job::Load(to.to_owned()), cx);
         }
+        if self.doc.snapshot {
+            self.enqueue(Job::RemoveSnapshot(from.to_owned()), cx);
+            // Written again under the new name with the next save or snapshot.
+            self.doc.dirty = true;
+            self.schedule_autosave(cx);
+        }
         self.show_title(cx);
     }
 
@@ -433,6 +563,7 @@ impl Session {
         {
             running.moved = Some(Moved::Deleted);
         }
+        self.enqueue(Job::RemoveSnapshot(path.to_owned()), cx);
         if matches!(&self.doc.target, Target::Note(open) | Target::Loading(open) if open == path) {
             self.close_document(cx);
             cx.notify();
@@ -455,12 +586,100 @@ impl Session {
 
     /// Acts on a button of the notice bar.
     pub fn choose(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
-        if let (Choice::EditAnyway, Some(DocumentNotice::NotUtf8)) = (choice, &self.doc.notice) {
-            self.doc.notice = None;
-            self.editor
-                .update(cx, |editor, _| editor.set_read_only(false));
+        let notice = self.doc.notice.clone();
+        match (choice, notice) {
+            (Choice::EditAnyway, Some(DocumentNotice::NotUtf8)) => {
+                self.doc.notice = None;
+                self.editor
+                    .update(cx, |editor, _| editor.set_read_only(false));
+            }
+            (Choice::Restore, _) => {
+                if let Some(snapshot) = self.recovered.pop_front() {
+                    self.restore(snapshot, cx);
+                }
+            }
+            (Choice::Discard, _) => {
+                if let Some(snapshot) = self.recovered.pop_front()
+                    // Then the snapshot holds the open note's unsaved text instead.
+                    && !(self.doc.is_note(&snapshot.note_path) && self.doc.snapshot)
+                {
+                    self.enqueue(Job::RemoveSnapshot(snapshot.note_path), cx);
+                }
+            }
+            _ => {}
         }
         window.focus(&self.editor.focus_handle(cx));
+        cx.notify();
+    }
+
+    // --- Crash recovery ---
+
+    fn find_recovered(recovery: RecoveryStore, cx: &mut Context<Self>) -> Task<()> {
+        let started = SystemTime::now();
+        let scan = cx.background_spawn(async move { recovery.leftovers(started) });
+        cx.spawn(async move |this, cx| {
+            let leftovers = scan.await;
+            if leftovers.is_empty() {
+                return;
+            }
+            tracing::info!(count = leftovers.len(), "found unsaved text from a crash");
+            this.update(cx, |this, cx| {
+                this.recovered.extend(leftovers);
+                cx.notify();
+            })
+            .ok();
+        })
+    }
+
+    fn restore(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
+        let path = snapshot.note_path;
+        let into_note = !is_draft_key(&path) && path.is_file();
+        let restore = Restore {
+            path: into_note.then(|| path.clone()),
+            text: snapshot.text,
+            key: path.clone(),
+        };
+        if self.doc.is_note(&path) {
+            self.apply_restore(restore, cx);
+            return;
+        }
+        // Applied once the note (or the new note) is open.
+        self.restore = Some(restore);
+        self.notes.update(cx, |notes, cx| {
+            if into_note {
+                notes.select(&path, cx);
+            } else {
+                notes.new_note(cx);
+            }
+        });
+    }
+
+    fn apply_restore(&mut self, restore: Restore, cx: &mut Context<Self>) {
+        // What it replaces stays one undo away.
+        self.editor.update(cx, |editor, cx| {
+            editor.replace_text(&restore.text, cx);
+            editor.set_read_only(false);
+        });
+        self.doc.notice = None;
+        self.doc.dirty = true;
+        self.show_title(cx);
+        // Saved (or snapshotted under its new key) before the old snapshot goes.
+        self.persist(false, cx);
+        if restore.path.is_none() {
+            self.enqueue(Job::RemoveSnapshot(restore.key), cx);
+        }
+    }
+
+    /// Offers text that could not be saved to a note the user has left like recovered text:
+    /// its snapshot alone would be removed by the note's next save.
+    fn offer_unsaved(&mut self, note_path: PathBuf, text: String, cx: &mut Context<Self>) {
+        self.recovered
+            .retain(|offered| offered.note_path != note_path);
+        self.recovered.push_back(Snapshot {
+            note_path,
+            text,
+            saved_at: SystemTime::now(),
+        });
         cx.notify();
     }
 
@@ -503,7 +722,10 @@ impl Session {
                 }
                 Job::Load(_) => {}
                 job => {
-                    if let Outcome::Saved(Err(error)) = writer::run(&job, store.as_ref()) {
+                    if let Outcome::Saved(Err(error)) =
+                        writer::run(&job, store.as_ref(), self.recovery.as_ref())
+                    {
+                        // The text is in a recovery snapshot and offered on the next start.
                         tracing::error!(%error, "could not save on exit");
                     }
                 }
@@ -552,10 +774,17 @@ impl Session {
             let number = self.writer.next_number();
             let flushed = self.writer.flush_marker();
             let store = self.notes.read(cx).store().cloned();
+            let recovery = self.recovery.clone();
             let running = job.clone();
             self.writer.running = Some(Running { job, moved: None });
             return Some(cx.background_spawn(async move {
-                writer::run_in_order(&running, number, &flushed, store.as_ref())
+                writer::run_in_order(
+                    &running,
+                    number,
+                    &flushed,
+                    store.as_ref(),
+                    recovery.as_ref(),
+                )
             }));
         }
     }
@@ -583,7 +812,7 @@ impl Session {
     fn show_title(&mut self, cx: &mut Context<Self>) {
         let title = self.current_title(cx);
         let shown = match &self.doc.target {
-            Target::Draft(_) => title,
+            Target::Draft { .. } => title,
             Target::Note(_) if title.is_some() && title != self.doc.title => title,
             _ => None,
         };
@@ -608,6 +837,11 @@ fn title_line_finished(buffer: &Buffer) -> bool {
 fn title_line(buffer: &Buffer) -> Option<(usize, String)> {
     (0..buffer.line_count().min(TITLE_SEARCH_LINES))
         .find_map(|line| title_from_content(&buffer.line_text(line)).map(|title| (line, title)))
+}
+
+fn is_draft_key(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with(DRAFT_KEY_PREFIX))
 }
 
 /// On case-insensitive filesystems a case-only rename keeps the same file, which a save to the

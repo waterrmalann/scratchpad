@@ -8,7 +8,7 @@ use crate::session::{Choice, Notice, Session};
 use crate::theme::ActiveTheme;
 
 /// Hosts the editor for the open note (PLAN §42), with a bar above it for decisions about the
-/// note, such as characters that cannot be read.
+/// note: unreadable characters, or text recovered after a crash.
 pub struct EditorPane {
     editor: Entity<EditorView>,
     session: Entity<Session>,
@@ -40,6 +40,15 @@ impl EditorPane {
                  Editing it replaces them when it is saved."
                     .into(),
                 &[(Choice::EditAnyway, "Edit Anyway")],
+            ),
+            Notice::Recovered { title, new_note } => (
+                "notice:recovered",
+                if *new_note {
+                    format!("Scratchpad recovered an unsaved new note, \u{201C}{title}\u{201D}.")
+                } else {
+                    format!("Scratchpad recovered unsaved changes to \u{201C}{title}\u{201D}.")
+                },
+                &[(Choice::Restore, "Restore"), (Choice::Discard, "Discard")],
             ),
         };
         let theme = cx.theme();

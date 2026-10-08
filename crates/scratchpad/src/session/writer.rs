@@ -1,6 +1,6 @@
 //! The session's file operations, run one at a time in the order they were asked for (ADR 0060).
 //!
-//! Loading, saving and renaming all go through one queue. Each job sees the
+//! Loading, saving, renaming and recovery snapshots all go through one queue. Each job sees the
 //! effects of every job before it, so an older save can never land after a newer one and a load
 //! never reads a file that a queued save is about to replace.
 
@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use scratchpad_core::{Note, NoteStore, NoteText};
+use scratchpad_core::{Note, NoteStore, NoteText, RecoveryStore};
 
 #[derive(Clone, Debug)]
 pub(super) enum Job {
@@ -25,6 +25,12 @@ pub(super) enum Job {
         path: PathBuf,
         title: String,
     },
+    /// Keep unsaved text in the recovery folder; `key` is the note's path or a draft's key.
+    Snapshot {
+        key: PathBuf,
+        text: Arc<str>,
+    },
+    RemoveSnapshot(PathBuf),
     /// Delete a file a save recreated after the note was renamed or deleted, if it still holds
     /// exactly what that save wrote.
     RemoveIfUnchanged {
@@ -39,7 +45,9 @@ impl Job {
             Job::Load(path)
             | Job::Save { path, .. }
             | Job::Rename { path, .. }
-            | Job::RemoveIfUnchanged { path, .. } => path,
+            | Job::RemoveIfUnchanged { path, .. }
+            | Job::Snapshot { key: path, .. }
+            | Job::RemoveSnapshot(path) => path,
         }
     }
 
@@ -48,15 +56,20 @@ impl Job {
             Job::Load(path)
             | Job::Save { path, .. }
             | Job::Rename { path, .. }
-            | Job::RemoveIfUnchanged { path, .. } => path,
+            | Job::RemoveIfUnchanged { path, .. }
+            | Job::Snapshot { key: path, .. }
+            | Job::RemoveSnapshot(path) => path,
         }
     }
 
-    /// Whether this job can take the place of `queued`: a save of the same file with newer
-    /// content.
+    /// Whether this job can take the place of `queued`: it does the same thing to the same
+    /// file with newer content.
     fn replaces(&self, queued: &Job) -> bool {
-        matches!((self, queued), (Job::Save { .. }, Job::Save { .. }))
-            && self.path() == queued.path()
+        let same_kind = matches!(
+            (self, queued),
+            (Job::Save { .. }, Job::Save { .. }) | (Job::Snapshot { .. }, Job::Snapshot { .. })
+        );
+        same_kind && self.path() == queued.path()
     }
 }
 
@@ -98,10 +111,16 @@ pub(super) struct Writer {
 }
 
 impl Writer {
-    /// Queues `job`. A queued save of the same file is updated in place
+    /// Queues `job`. A queued save or snapshot of the same file is updated in place
     /// (so a save stays before a rename queued after it); only the latest of several notes
     /// opened in quick succession is loaded, after everything queued before it.
     pub fn push(&mut self, job: Job) {
+        // A newer snapshot must not take the place of one queued before this removal.
+        if let Job::RemoveSnapshot(key) = &job {
+            self.queue.retain(
+                |queued| !matches!(queued, Job::Snapshot { key: snapshot, .. } if snapshot == key),
+            );
+        }
         if matches!(job, Job::Load(_)) {
             self.queue.retain(|queued| !matches!(queued, Job::Load(_)));
         } else if let Some(queued) = self.queue.iter_mut().find(|queued| job.replaces(queued)) {
@@ -161,23 +180,49 @@ pub(super) fn run_in_order(
     number: u64,
     flushed: &Mutex<u64>,
     store: Option<&NoteStore>,
+    recovery: Option<&RecoveryStore>,
 ) -> Outcome {
     let mut flushed = flushed.lock().unwrap_or_else(PoisonError::into_inner);
     if *flushed >= number {
         return Outcome::Skipped;
     }
     *flushed = number;
-    run(job, store)
+    run(job, store, recovery)
 }
 
 /// Does the file work of `job`. Renames are not file work here (see [`Job::Rename`]).
-pub(super) fn run(job: &Job, store: Option<&NoteStore>) -> Outcome {
+pub(super) fn run(
+    job: &Job,
+    store: Option<&NoteStore>,
+    recovery: Option<&RecoveryStore>,
+) -> Outcome {
     match job {
         Job::Load(path) => Outcome::Loaded(store_or_error(store, path).and_then(|s| s.read(path))),
-        Job::Save { path, text } => Outcome::Saved(
-            store_or_error(store, path)
-                .and_then(|store| store.save(path, text).and(store.note(path))),
-        ),
+        Job::Save { path, text } => {
+            let saved = store_or_error(store, path)
+                .and_then(|store| store.save(path, text).and(store.note(path)));
+            if let Some(recovery) = recovery {
+                // Unsaved text must survive a crash; saved text needs no snapshot.
+                let result = match &saved {
+                    Ok(_) => recovery.remove(path),
+                    Err(_) => recovery.write(path, text),
+                };
+                log_recovery_error(result);
+            }
+            Outcome::Saved(saved)
+        }
+        Job::Snapshot { key, text } => {
+            if let Some(recovery) = recovery {
+                log_recovery_error(recovery.write(key, text));
+            }
+            Outcome::Done
+        }
+        Job::RemoveSnapshot(key) => {
+            if let Some(recovery) = recovery {
+                log_recovery_error(recovery.remove(key));
+            }
+            Outcome::Done
+        }
         Job::RemoveIfUnchanged { path, text } => {
             let recreated = fs::read(path).is_ok_and(|bytes| bytes == text.as_bytes());
             if recreated && let Err(error) = fs::remove_file(path) {
@@ -200,4 +245,36 @@ fn store_or_error<'a>(
         path: path.to_owned(),
         source: io::Error::other("the notes folder is not open"),
     })
+}
+
+fn log_recovery_error(result: scratchpad_core::Result<()>) {
+    if let Err(error) = result {
+        tracing::warn!(%error, "recovery snapshot failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(key: &str, text: &str) -> Job {
+        Job::Snapshot {
+            key: key.into(),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_queued_after_its_removal_is_written_after_it() {
+        let mut writer = Writer::default();
+        writer.push(snapshot("a", "old"));
+        writer.push(Job::RemoveSnapshot("a".into()));
+        writer.push(snapshot("a", "new"));
+
+        let jobs: Vec<_> = std::iter::from_fn(|| writer.pop()).collect();
+        assert!(
+            matches!(&jobs[..], [Job::RemoveSnapshot(_), Job::Snapshot { text, .. }] if &**text == "new"),
+            "{jobs:?}"
+        );
+    }
 }

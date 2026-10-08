@@ -20,7 +20,7 @@ use scratchpad::{AppWindow, Storage};
 use scratchpad_core::Config;
 use tempfile::TempDir;
 
-/// Keeps the temp folders of a test (notes, config) alive as long as the app.
+/// Keeps the temp folders of a test (notes, config, recovery) alive as long as the app.
 #[derive(Default)]
 struct TempDirs(#[allow(dead_code)] Vec<TempDir>);
 
@@ -52,7 +52,7 @@ pub fn open_main_window(cx: &mut TestAppContext) -> (Entity<AppWindow>, &mut Vis
 }
 
 /// Like [`open_main_window`] but on the notes in `dir`. Deleted notes go to [`trash_dir`]
-/// instead of the real recycle bin; the config goes to a fresh temp folder.
+/// instead of the real recycle bin; config and recovery data go to a fresh temp folder.
 /// Waits until the notes have been listed.
 pub fn open_main_window_in<'a>(
     dir: &Path,
@@ -64,11 +64,13 @@ pub fn open_main_window_in<'a>(
     open_with(storage, cx)
 }
 
-/// Where the app keeps its files in a test: notes in `notes_dir`, the config in `data_dir`.
+/// Where the app keeps its files in a test: notes in `notes_dir`, the config and recovery
+/// snapshots in `data_dir`.
 pub fn storage(notes_dir: &Path, data_dir: &Path) -> Storage {
     Storage {
         notes: location(notes_dir),
         config_path: Some(data_dir.join("config.json")),
+        recovery_dir: Some(data_dir.join("recovery")),
     }
 }
 

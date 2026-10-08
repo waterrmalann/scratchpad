@@ -6,7 +6,7 @@ use gpui::{
     App, Application, Bounds, DisplayId, Pixels, Size, TitlebarOptions, WindowBounds, WindowHandle,
     WindowOptions, point, prelude::*, px, size,
 };
-use scratchpad_core::{Config, default_config_path};
+use scratchpad_core::{Config, RecoveryStore, default_config_path};
 
 use crate::app_window::AppWindow;
 use crate::notes::NotesLocation;
@@ -25,6 +25,8 @@ pub struct Storage {
     pub notes: NotesLocation,
     /// The config file. `None` keeps settings for this run only.
     pub config_path: Option<PathBuf>,
+    /// The folder for crash recovery snapshots. `None` turns recovery off.
+    pub recovery_dir: Option<PathBuf>,
 }
 
 /// Entry point used by `main`: starts the platform event loop and opens the main window.
@@ -39,6 +41,7 @@ pub fn run() {
     let storage = Storage {
         notes: NotesLocation::new(notes_dir(std::env::var_os(NOTES_DIR_ENV), &config)),
         config_path,
+        recovery_dir: RecoveryStore::default_dir(),
     };
     tracing::info!(dir = %storage.notes.dir.display(), "notes folder");
 
