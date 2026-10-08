@@ -24,7 +24,7 @@ impl AppWindow {
         let focus_handle = cx.focus_handle();
         let editor_pane = cx.new(|cx| EditorPane::new(window, cx));
         editor_pane.focus_handle(cx).focus(window);
-        let notes = cx.new(|cx| Notes::new(notes, cx));
+        let notes = cx.new(|cx| Notes::new(notes, None, cx));
         let sidebar = cx.new(|cx| Sidebar::new(notes.clone(), window, cx));
         let sidebar_subscription =
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {

@@ -439,9 +439,15 @@ impl Sidebar {
             // The draft only exists while it is open, so it is always selected.
             Row::Draft => {
                 let highlight = Some(self.selection_color(window, cx));
+                let title = self
+                    .notes
+                    .read(cx)
+                    .open_title()
+                    .unwrap_or("New Note")
+                    .to_owned();
                 list_row(
                     "draft",
-                    "New Note",
+                    title,
                     "No additional text",
                     highlight,
                     false,
@@ -451,15 +457,24 @@ impl Sidebar {
                 .into_any_element()
             }
             Row::Note(ix) => {
-                let Some(note) = self.notes.read(cx).notes().get(ix) else {
+                let notes = self.notes.read(cx);
+                let Some(note) = notes.notes().get(ix) else {
                     return div().into_any_element();
                 };
                 let (path, title) = (note.path.clone(), note.title.clone());
                 let subtitle = StyledText::new(modified_label(note, today));
+                // While the open note's title line is edited, its new title shows before the
+                // file is renamed.
+                let shown_title = match (notes.selection(), notes.open_title()) {
+                    (Selection::Note(open), Some(open_title)) if *open == path => {
+                        open_title.to_owned()
+                    }
+                    _ => title.clone(),
+                };
                 self.note_row(
                     ix,
                     &path,
-                    StyledText::new(title.clone()),
+                    StyledText::new(shown_title),
                     subtitle,
                     window,
                     cx,

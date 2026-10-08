@@ -5,6 +5,7 @@
 //! directly, so the list always matches what is on disk.
 
 use std::io;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -89,6 +90,11 @@ pub struct Notes {
     selection: Selection,
     /// The id of the most recent draft.
     last_draft: u64,
+    /// Shown instead of the open note's file name while its title line has been edited but
+    /// the file not renamed yet, and as the title of the draft.
+    open_title: Option<String>,
+    /// Open something once the first listing arrives, unless a note was opened before.
+    open_after_listing: bool,
     refresh_task: Option<Task<()>>,
     query: String,
     /// Results for `query`; `None` while not searching or until the first results arrive.
@@ -103,9 +109,13 @@ pub struct Notes {
 impl EventEmitter<NotesEvent> for Notes {}
 
 impl Notes {
-    /// Starts listing the folder in the background: the window renders first and the sidebar
-    /// fills in when the listing arrives (PLAN §39).
-    pub fn new(location: NotesLocation, cx: &mut Context<Self>) -> Self {
+    /// Opens the folder and lists it in the background: the window renders first and the
+    /// sidebar fills in when the listing arrives (PLAN §39).
+    ///
+    /// `reopen` (the note open when the app last closed) is opened as soon as the folder is,
+    /// before the listing. Without it, or if it is gone, the newest note is opened once the
+    /// list arrives, or a new note if there are none.
+    pub fn new(location: NotesLocation, reopen: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let mut notes = Self {
             location,
             store: None,
@@ -114,14 +124,45 @@ impl Notes {
             changes: 0,
             selection: Selection::None,
             last_draft: 0,
+            open_title: None,
+            open_after_listing: true,
             refresh_task: None,
             query: String::new(),
             hits: None,
             search: Arc::default(),
             search_task: None,
         };
-        notes.refresh(cx);
+        notes.open_folder(reopen, cx);
         notes
+    }
+
+    fn open_folder(&mut self, reopen: Option<PathBuf>, cx: &mut Context<Self>) {
+        let location = self.location.clone();
+        let opening = cx.background_spawn(async move {
+            let store = location.open()?;
+            // Only a note of this folder; the folder may have changed since.
+            let reopen = reopen
+                .filter(|path| path.parent() == Some(location.dir.as_path()) && path.is_file());
+            scratchpad_core::Result::Ok((store, reopen))
+        });
+        self.refresh_task = Some(cx.spawn(async move |this, cx| {
+            let opened = opening.await;
+            this.update(cx, |this, cx| match opened {
+                Ok((store, reopen)) => {
+                    this.store = Some(store);
+                    if let Some(path) = reopen {
+                        this.select(&path, cx);
+                    }
+                    this.refresh(cx);
+                }
+                Err(error) => {
+                    toast::show_file_error(&this.folder_name(), &error, cx);
+                    this.loaded = true;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
     }
 
     /// Re-reads the note list from disk (metadata only). A newer refresh replaces one that is
@@ -151,6 +192,14 @@ impl Notes {
                         this.store = Some(store);
                         this.notes = Arc::new(notes);
                         this.search(cx);
+                        if mem::take(&mut this.open_after_listing)
+                            && this.selection == Selection::None
+                        {
+                            match this.notes.first() {
+                                Some(newest) => this.select(&newest.path.clone(), cx),
+                                None => this.new_note(cx),
+                            }
+                        }
                     }
                     Err(error) => toast::show_file_error(&this.folder_name(), &error, cx),
                 }
@@ -173,6 +222,54 @@ impl Notes {
 
     pub fn selection(&self) -> &Selection {
         &self.selection
+    }
+
+    /// The folder's store, once it has been opened in the background. Always available while
+    /// a note is open.
+    pub fn store(&self) -> Option<&NoteStore> {
+        self.store.as_ref()
+    }
+
+    /// The title the sidebar shows for the open note (or the draft) instead of its file name.
+    pub fn open_title(&self) -> Option<&str> {
+        self.open_title.as_deref()
+    }
+
+    /// Sets the title shown for the open note while its title line is edited but the file not
+    /// renamed yet (ADR 0061), or for the draft. `None` shows the file name again.
+    pub fn set_open_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        if self.open_title != title {
+            self.open_title = title;
+            cx.notify();
+        }
+    }
+
+    /// Records that the note was just saved: updates its metadata and moves it to the top,
+    /// adding it back if it was missing (e.g. deleted by another program and saved again).
+    pub fn note_saved(&mut self, note: Note, cx: &mut Context<Self>) {
+        self.changes += 1;
+        let notes = Arc::make_mut(&mut self.notes);
+        notes.retain(|listed| listed.path != note.path);
+        notes.insert(0, note);
+        cx.notify();
+    }
+
+    /// Drops a note that no longer exists from the list. If it was open, the next note is
+    /// opened instead, as after a delete.
+    pub fn forget(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let neighbour = self.neighbour_of(path);
+        self.changes += 1;
+        Arc::make_mut(&mut self.notes).retain(|note| note.path != path);
+        if let Some(hits) = &mut self.hits {
+            hits.retain(|hit| hit.path != path);
+        }
+        if self.selection == Selection::Note(path.to_owned()) {
+            match neighbour {
+                Some(next) => self.select(&next, cx),
+                None => self.selection = Selection::None,
+            }
+        }
+        cx.notify();
     }
 
     pub fn has_draft(&self) -> bool {
@@ -242,6 +339,8 @@ impl Notes {
             return;
         }
         self.selection = Selection::Note(path.to_owned());
+        self.open_after_listing = false;
+        self.open_title = None;
         cx.emit(NotesEvent::OpenNote(path.to_owned()));
         cx.notify();
     }
@@ -254,6 +353,8 @@ impl Notes {
         self.last_draft += 1;
         let draft = DraftId(self.last_draft);
         self.selection = Selection::Draft(draft);
+        self.open_after_listing = false;
+        self.open_title = None;
         cx.emit(NotesEvent::OpenDraft(draft));
         cx.notify();
     }
@@ -270,7 +371,7 @@ impl Notes {
         title: Option<&str>,
         cx: &mut Context<Self>,
     ) -> scratchpad_core::Result<Note> {
-        let note = self.store()?.create(title)?;
+        let note = self.opened_store()?.create(title)?;
         self.changes += 1;
         Arc::make_mut(&mut self.notes).insert(0, note.clone());
         if self.selection == Selection::Draft(draft) {
@@ -289,13 +390,13 @@ impl Notes {
         title: &str,
         cx: &mut Context<Self>,
     ) -> scratchpad_core::Result<PathBuf> {
-        let new_path = self.store()?.rename(path, title)?;
+        let new_path = self.opened_store()?.rename(path, title)?;
         if new_path == path {
             return Ok(new_path);
         }
         self.changes += 1;
         // Renaming keeps the modification time, so the note keeps its place in the list.
-        match self.store()?.note(&new_path) {
+        match self.opened_store()?.note(&new_path) {
             Ok(renamed) => {
                 let notes = Arc::make_mut(&mut self.notes);
                 if let Some(note) = notes.iter_mut().find(|note| note.path == path) {
@@ -325,7 +426,7 @@ impl Notes {
     /// sidebar (or the previous one at the end) is opened instead.
     pub fn delete(&mut self, path: &Path, cx: &mut Context<Self>) -> scratchpad_core::Result<()> {
         let neighbour = self.neighbour_of(path);
-        self.store()?.delete(path)?;
+        self.opened_store()?.delete(path)?;
         self.changes += 1;
         Arc::make_mut(&mut self.notes).retain(|note| note.path != path);
         if let Some(hits) = &mut self.hits {
@@ -364,7 +465,7 @@ impl Notes {
         self.hits.as_mut()?.iter_mut().find(|hit| hit.path == path)
     }
 
-    fn store(&self) -> scratchpad_core::Result<&NoteStore> {
+    fn opened_store(&self) -> scratchpad_core::Result<&NoteStore> {
         self.store
             .as_ref()
             .ok_or_else(|| scratchpad_core::Error::Io {

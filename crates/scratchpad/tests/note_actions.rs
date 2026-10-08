@@ -20,8 +20,9 @@ fn toast_message(cx: &mut VisualTestContext) -> Option<String> {
 #[gpui::test]
 fn double_click_renames_the_file_in_place(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    let ideas = write_note(dir.path(), "Ideas", "webhooks", days_ago(0, 10));
-    write_note(dir.path(), "Meeting", "", days_ago(0, 9));
+    // Meeting is newest, so it is the note open at startup.
+    let ideas = write_note(dir.path(), "Ideas", "webhooks", days_ago(0, 9));
+    write_note(dir.path(), "Meeting", "", days_ago(0, 10));
     let (root, cx) = common::open_main_window_in(dir.path(), cx);
     let notes = common::notes(&root, cx);
     let events = EventLog::new(&notes, cx);
@@ -178,7 +179,9 @@ fn a_listing_started_before_a_delete_does_not_bring_the_note_back(cx: &mut TestA
 #[gpui::test]
 fn escape_closes_the_context_menu_without_acting(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    write_note(dir.path(), "Ideas", "", days_ago(0, 10));
+    write_note(dir.path(), "Ideas", "", days_ago(0, 9));
+    // Open at startup, being the newest.
+    write_note(dir.path(), "Meeting", "", days_ago(0, 10));
     let (root, cx) = common::open_main_window_in(dir.path(), cx);
     let notes = common::notes(&root, cx);
     let events = EventLog::new(&notes, cx);
@@ -188,7 +191,7 @@ fn escape_closes_the_context_menu_without_acting(cx: &mut TestAppContext) {
     // The menu is gone, so the click lands on the row underneath (which only opens the note).
     click("note:Ideas", cx);
 
-    assert_eq!(titles_on_disk(dir.path()), ["Ideas"]);
+    assert_eq!(titles_on_disk(dir.path()), ["Ideas", "Meeting"]);
     assert_eq!(
         events.take(),
         [NotesEvent::OpenNote(dir.path().join("Ideas.md"))]

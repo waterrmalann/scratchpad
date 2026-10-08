@@ -16,17 +16,18 @@ fn arrows_open_the_previous_and_next_note(cx: &mut TestAppContext) {
     let notes = common::notes(&root, cx);
     let events = EventLog::new(&notes, cx);
 
+    // The newest note is open at startup; clicking it again only focuses the list.
     click("note:First", cx);
     // Group headers are skipped; the ends of the list stop the selection.
-    cx.simulate_keystrokes("down down down up");
+    cx.simulate_keystrokes("down down down up up up");
 
     assert_eq!(
         events.take(),
         [
-            NotesEvent::OpenNote(first),
             NotesEvent::OpenNote(second.clone()),
             NotesEvent::OpenNote(third),
             NotesEvent::OpenNote(second),
+            NotesEvent::OpenNote(first),
         ]
     );
 }
