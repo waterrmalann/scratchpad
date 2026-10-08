@@ -29,3 +29,33 @@ discrete GPU).
 
 To reproduce: run `target/release/scratchpad.exe` and read `%LOCALAPPDATA%\Scratchpad\scratchpad.log`
 (`SCRATCHPAD_LOG=debug` for more detail). Dev builds log to stderr.
+
+## Editor: typing and scrolling
+
+Same machine, release build with the editor view (Milestone 1). Every frame caused by input logs
+an `input painted` trace event with two durations:
+
+- `latency`: from the moment the editor has applied the key, IME text or wheel event (engine edits
+  take microseconds, ADR 0007) to the end of the editor's paint, including the wait for GPUI to
+  start the frame;
+- `frame`: the editor's own layout (scrolling, shaping, hit geometry) and paint time.
+
+Documents are generated Markdown notes (headings, lists, wrapped paragraphs, CJK), typed into with
+`SendKeys` at about 30 characters per second, half at the end and half at the very start of the
+document, and scrolled with 120-unit wheel steps every 16 ms. Times in milliseconds.
+
+| Document | Action | Events | Latency p50 / p90 / max | Frame p50 / p99 / max |
+| --- | --- | --- | --- | --- |
+| 1 MB, 29k lines | typing | 224 | 4.0 / 6.0 / 11.2 | 0.59 / 1.25 / 1.55 |
+| 10 MB, 289k lines | typing | 156 | 3.2 / 5.8 / 8.8 | 0.74 / 1.18 / 1.57 |
+| 10 MB, 289k lines | wheel scrolling | 351 | 3.8 / 6.5 / 7.5 | 0.62 / 1.13 / 1.67 |
+
+Input-to-render stays well under the 16 ms budget, and the editor's share of a frame is under
+2 ms regardless of document size: only the visible lines (about 30 here) are painted, and an edit
+re-shapes just the line it touched. Most of the latency is waiting for the next frame. Memory 4 s
+after opening: empty note 48 MB working set / 75 MB private, 1 MB note 52 / 78 MB, 10 MB note
+63 / 89 MB. The release binary is 6.1 MB.
+
+To reproduce: run with `SCRATCHPAD_LOG=info,scratchpad::editor_view=trace` and read the
+`input painted` lines from the log. Until notes are wired in, loading a large document needs a
+temporary change that passes its text to `EditorView::new` in `EditorPane::new`.
