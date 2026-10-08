@@ -191,6 +191,22 @@ fn markdown_styled_screen(c: &mut Criterion) {
     });
 }
 
+/// Styling one 96 KB line of 16k bold words: the cost must grow linearly with the spans on a line.
+fn markdown_styled_long_line(c: &mut Criterion) {
+    let editor = Editor::from_text(&"**a** ".repeat(16_000));
+    let buffer = editor.buffer();
+    let mut markdown = MarkdownState::new(buffer);
+    c.bench_function("markdown_styled_long_line", |b| {
+        b.iter(|| {
+            markdown.styled_lines(
+                buffer,
+                black_box(0..1),
+                Some(Selection::cursor(ByteOffset(0))),
+            )
+        })
+    });
+}
+
 criterion_group!(
     benches,
     open,
@@ -200,6 +216,7 @@ criterion_group!(
     search,
     markdown_parse,
     markdown_keystroke,
-    markdown_styled_screen
+    markdown_styled_screen,
+    markdown_styled_long_line
 );
 criterion_main!(benches);

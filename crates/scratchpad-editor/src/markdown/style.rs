@@ -1,6 +1,7 @@
 //! Per-line styles for rendering and the live preview rules that decide which syntax markers are shown
 //! (PLAN §18, §20, §22; ADR 0042).
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use super::{Decoration, DecorationKind, MarkdownState};
@@ -175,33 +176,49 @@ fn style_line(
         }
     }
 
-    // Every range edge on the line splits it; between two edges the style is constant.
-    let mut edges = vec![line_start, line_end];
-    for d in &on_line {
-        let ranges = std::iter::once(&d.range).chain(&d.markers);
-        edges.extend(ranges.flat_map(|r| [r.start, r.end]));
-    }
-    edges.retain(|&edge| line_start <= edge && edge <= line_end);
-    edges.sort();
-    edges.dedup();
-
-    let mut spans: Vec<StyledSpan> = Vec::new();
-    for pair in edges.windows(2) {
-        let piece = pair[0]..pair[1];
-        let mut span_style = SpanStyle::default();
-        let mut marker = None;
-        for d in &on_line {
-            if d.range.start <= piece.start && piece.end <= d.range.end {
-                apply(&d.kind, &mut span_style);
-            }
-            if let Some(m) = d
-                .markers
-                .iter()
-                .find(|m| m.start <= piece.start && piece.end <= m.end)
-            {
-                marker = Some((*d, m));
+    // Every range edge on the line splits it; between two edges the style is constant. A sweep over the
+    // edges keeps the ranges and markers covering the current piece, so a long line with many spans costs
+    // O(n log n) rather than checking every decoration for every piece.
+    let mut edges: Vec<(ByteOffset, Edge)> = Vec::new();
+    for (index, d) in on_line.iter().enumerate() {
+        let covers = std::iter::once((None, &d.range))
+            .chain(d.markers.iter().enumerate().map(|(m, r)| (Some(m), r)));
+        for (marker, range) in covers {
+            let (start, end) = (range.start.max(line_start), range.end.min(line_end));
+            // Empty and off-line ranges cover no piece.
+            if start < end {
+                edges.push((start, Edge::Start(index, marker)));
+                edges.push((end, Edge::End(index, marker)));
             }
         }
+    }
+    edges.sort_by_key(|(offset, _)| *offset);
+
+    let mut ranges = BTreeSet::new();
+    let mut markers = BTreeSet::new();
+    let mut edges = edges.into_iter().peekable();
+    let mut spans: Vec<StyledSpan> = Vec::new();
+    let mut at = line_start;
+    while at < line_end {
+        while let Some((_, edge)) = edges.next_if(|(offset, _)| *offset == at) {
+            match edge {
+                Edge::Start(index, None) => ranges.insert(index),
+                Edge::End(index, None) => ranges.remove(&index),
+                Edge::Start(index, Some(m)) => markers.insert((index, m)),
+                Edge::End(index, Some(m)) => markers.remove(&(index, m)),
+            };
+        }
+        let piece = at..edges.peek().map_or(line_end, |(offset, _)| *offset);
+        at = piece.end;
+
+        let mut span_style = SpanStyle::default();
+        for &index in &ranges {
+            apply(&on_line[index].kind, &mut span_style);
+        }
+        // The innermost marker: decorations are ordered with enclosing ones first.
+        let marker = markers
+            .last()
+            .map(|&(index, m)| (on_line[index], &on_line[index].markers[m]));
         let hidden = marker.is_some_and(|(d, m)| {
             hideable(&d.kind)
                 && selection
@@ -226,6 +243,14 @@ fn style_line(
         }
     }
     StyledLine { style, spans }
+}
+
+/// Where a decoration's range (marker `None`) or one of its markers starts or ends on a line; indices into the
+/// line's decorations and the decoration's markers.
+#[derive(Clone, Copy)]
+enum Edge {
+    Start(usize, Option<usize>),
+    End(usize, Option<usize>),
 }
 
 fn apply(kind: &DecorationKind, style: &mut SpanStyle) {
