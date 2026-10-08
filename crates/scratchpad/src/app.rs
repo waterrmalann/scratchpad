@@ -47,6 +47,7 @@ pub fn run() {
 pub fn init(cx: &mut App) {
     theme::init(ThemeMode::System, cx);
     cx.bind_keys(actions::key_bindings());
+    cx.bind_keys(actions::editor::key_bindings());
     actions::register_app_handlers(cx);
 }
 

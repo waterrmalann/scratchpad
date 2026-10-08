@@ -19,15 +19,18 @@ impl AppWindow {
             theme::system_appearance_changed(window.appearance(), cx);
         });
         let focus_handle = cx.focus_handle();
-        // Key bindings only reach views on the focus path; until the editor exists and takes
-        // focus, the root must hold it so window-level shortcuts work.
-        focus_handle.focus(window);
+        let editor_pane = cx.new(|cx| EditorPane::new(window, cx));
+        editor_pane.focus_handle(cx).focus(window);
         Self {
             focus_handle,
             sidebar: cx.new(|_| Sidebar),
-            editor_pane: cx.new(|_| EditorPane),
+            editor_pane,
             _appearance_subscription: appearance_subscription,
         }
+    }
+
+    pub fn editor_pane(&self) -> &Entity<EditorPane> {
+        &self.editor_pane
     }
 
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {

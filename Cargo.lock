@@ -5057,6 +5057,7 @@ dependencies = [
  "scratchpad-editor",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
 ]
 
 [[package]]

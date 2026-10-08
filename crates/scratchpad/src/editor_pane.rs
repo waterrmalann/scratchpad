@@ -1,21 +1,37 @@
-use gpui::{Context, Window, div, prelude::*};
+use gpui::{App, Context, Entity, FocusHandle, Focusable, Window, div, prelude::*};
 
-use crate::theme::ActiveTheme;
+use crate::editor_view::EditorView;
 
-/// Hosts the editor for the open note (PLAN §42). Shows an empty state until the editor
-/// view exists.
-pub struct EditorPane;
+/// Hosts the editor for the open note (PLAN §42). Until notes are wired in, it holds an empty
+/// document.
+pub struct EditorPane {
+    editor: Entity<EditorView>,
+}
+
+impl EditorPane {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self {
+            editor: cx.new(|cx| EditorView::new("", window, cx)),
+        }
+    }
+
+    pub fn editor(&self) -> &Entity<EditorView> {
+        &self.editor
+    }
+}
+
+impl Focusable for EditorPane {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.editor.focus_handle(cx)
+    }
+}
 
 impl Render for EditorPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .debug_selector(|| "editor-pane".into())
             .flex_1()
             .h_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(cx.theme().muted)
-            .child("No note selected")
+            .child(self.editor.clone())
     }
 }

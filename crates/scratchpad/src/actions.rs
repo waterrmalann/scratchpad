@@ -31,3 +31,75 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 pub fn register_app_handlers(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
+
+/// Text editing commands, handled by [`EditorView`](crate::editor_view::EditorView) while it has
+/// focus (key context `Editor`).
+pub mod editor {
+    use gpui::{KeyBinding, actions};
+
+    actions!(
+        editor,
+        [
+            MoveLeft,
+            MoveRight,
+            /// Up one visual (wrapped) row.
+            MoveUp,
+            /// Down one visual (wrapped) row.
+            MoveDown,
+            MoveWordLeft,
+            MoveWordRight,
+            /// Start of the visual row.
+            MoveToRowStart,
+            /// End of the visual row.
+            MoveToRowEnd,
+            MoveToDocumentStart,
+            MoveToDocumentEnd,
+            PageUp,
+            PageDown,
+            SelectLeft,
+            SelectRight,
+            SelectUp,
+            SelectDown,
+            SelectWordLeft,
+            SelectWordRight,
+            SelectToRowStart,
+            SelectToRowEnd,
+            SelectToDocumentStart,
+            SelectToDocumentEnd,
+            SelectPageUp,
+            SelectPageDown,
+            SelectAll,
+        ]
+    );
+
+    pub fn key_bindings() -> Vec<KeyBinding> {
+        let context = Some("Editor");
+        vec![
+            KeyBinding::new("left", MoveLeft, context),
+            KeyBinding::new("right", MoveRight, context),
+            KeyBinding::new("up", MoveUp, context),
+            KeyBinding::new("down", MoveDown, context),
+            KeyBinding::new("ctrl-left", MoveWordLeft, context),
+            KeyBinding::new("ctrl-right", MoveWordRight, context),
+            KeyBinding::new("home", MoveToRowStart, context),
+            KeyBinding::new("end", MoveToRowEnd, context),
+            KeyBinding::new("ctrl-home", MoveToDocumentStart, context),
+            KeyBinding::new("ctrl-end", MoveToDocumentEnd, context),
+            KeyBinding::new("pageup", PageUp, context),
+            KeyBinding::new("pagedown", PageDown, context),
+            KeyBinding::new("shift-left", SelectLeft, context),
+            KeyBinding::new("shift-right", SelectRight, context),
+            KeyBinding::new("shift-up", SelectUp, context),
+            KeyBinding::new("shift-down", SelectDown, context),
+            KeyBinding::new("ctrl-shift-left", SelectWordLeft, context),
+            KeyBinding::new("ctrl-shift-right", SelectWordRight, context),
+            KeyBinding::new("shift-home", SelectToRowStart, context),
+            KeyBinding::new("shift-end", SelectToRowEnd, context),
+            KeyBinding::new("ctrl-shift-home", SelectToDocumentStart, context),
+            KeyBinding::new("ctrl-shift-end", SelectToDocumentEnd, context),
+            KeyBinding::new("shift-pageup", SelectPageUp, context),
+            KeyBinding::new("shift-pagedown", SelectPageDown, context),
+            KeyBinding::new("secondary-a", SelectAll, context),
+        ]
+    }
+}

@@ -7,6 +7,7 @@ pub mod actions;
 mod app;
 pub mod app_window;
 pub mod editor_pane;
+pub mod editor_view;
 mod logging;
 pub mod sidebar;
 pub mod theme;
