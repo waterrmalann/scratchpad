@@ -1,6 +1,7 @@
 //! Randomized editing sessions over hostile Unicode.
 
 use proptest::prelude::*;
+use scratchpad_editor::markdown::MarkdownState;
 use scratchpad_editor::{ByteOffset, Editor, Motion, Selection};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -33,6 +34,9 @@ const ATOMS: &[&str] = &[
     "_",
     "(",
 ];
+
+/// Keys whose typing pairs, wraps or steps over a closer, and plain ones.
+const KEYS: [char; 11] = ['(', ')', '[', ']', '"', '\'', '`', '*', 'a', ' ', 'é'];
 
 fn hostile_text() -> impl Strategy<Value = String> {
     prop_oneof![
@@ -83,6 +87,12 @@ enum Op {
     SelectAll,
     /// Edits grouped with `Editor::transact`.
     Transaction(Vec<Op>),
+    /// A key typed with bracket pairing, Backspace that deletes empty pairs, and the Markdown commands.
+    TypeKey(char),
+    BackspaceTyped,
+    Toggle(usize),
+    InsertLink,
+    MarkdownNewline,
 }
 
 /// Edits and selection changes, sometimes grouped into a transaction; no undo/redo.
@@ -118,6 +128,11 @@ fn single_op() -> impl Strategy<Value = Op> {
         1 => offset.clone().prop_map(Op::SelectWordAt),
         1 => offset.prop_map(Op::SelectLineAt),
         1 => Just(Op::SelectAll),
+        2 => prop::sample::select(&KEYS[..]).prop_map(Op::TypeKey),
+        1 => Just(Op::BackspaceTyped),
+        1 => (0..4usize).prop_map(Op::Toggle),
+        1 => Just(Op::InsertLink),
+        1 => Just(Op::MarkdownNewline),
     ]
 }
 
@@ -148,6 +163,19 @@ fn apply(editor: &mut Editor, op: &Op) {
         Op::SelectWordAt(offset) => editor.select_word_at(ByteOffset(*offset)),
         Op::SelectLineAt(offset) => editor.select_line_at(ByteOffset(*offset)),
         Op::SelectAll => editor.select_all(),
+        Op::TypeKey(c) => editor.insert_typed(c.encode_utf8(&mut [0; 4])),
+        Op::BackspaceTyped => editor.backspace_typed(),
+        Op::Toggle(i) => [
+            Editor::toggle_bold,
+            Editor::toggle_italic,
+            Editor::toggle_strikethrough,
+            Editor::toggle_inline_code,
+        ][*i](editor, &mut MarkdownState::new(editor.buffer())),
+        Op::InsertLink => editor.insert_link(),
+        Op::MarkdownNewline => {
+            let mut markdown = MarkdownState::new(editor.buffer());
+            editor.insert_markdown_newline(&mut markdown);
+        }
         Op::Transaction(ops) => editor.transact(|editor| {
             for op in ops {
                 apply(editor, op);
