@@ -5,7 +5,7 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use scratchpad_editor::markdown::MarkdownState;
-use scratchpad_editor::search::{CaseSensitivity, find_all};
+use scratchpad_editor::search::{CaseSensitivity, adjust_matches, find_all};
 use scratchpad_editor::{ByteOffset, Editor, Motion, Selection};
 
 const KB: usize = 1024;
@@ -153,6 +153,41 @@ fn search(c: &mut Criterion) {
     group.finish();
 }
 
+/// What the open find bar adds to a keystroke in a 10 MB document while it searches for "e": keeping about a
+/// million matches in step with the edit.
+fn search_keystroke(c: &mut Criterion) {
+    let mut group = c.benchmark_group("find_adjust_matches_10MB");
+    let base = Editor::from_text(&markdown(10 * MB));
+    let matches = find_all(
+        &base.buffer().normalized_text(),
+        "e",
+        CaseSensitivity::Insensitive,
+    );
+    for (name, fraction) in [("beginning", 0.0), ("end", 1.0)] {
+        let mut editor = base.clone();
+        editor.move_to(
+            ByteOffset((editor.buffer().len() as f64 * fraction) as usize),
+            false,
+        );
+        let version = editor.buffer().version();
+        editor.insert_text("x");
+        let change = *editor
+            .buffer()
+            .changes_since(version)
+            .unwrap()
+            .next()
+            .unwrap();
+        group.bench_function(name, |b| {
+            b.iter_batched_ref(
+                || matches.clone(),
+                |matches| adjust_matches(matches, black_box(&change)),
+                BatchSize::LargeInput,
+            )
+        });
+    }
+    group.finish();
+}
+
 /// Splitting a document into block regions (what opening costs) and parsing all of them (the worst case for
 /// a renderer, which normally parses only visible regions).
 fn markdown_parse(c: &mut Criterion) {
@@ -235,6 +270,7 @@ criterion_group!(
     save,
     long_line_motion,
     search,
+    search_keystroke,
     markdown_parse,
     markdown_keystroke,
     markdown_styled_screen,

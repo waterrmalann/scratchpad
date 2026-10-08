@@ -95,18 +95,18 @@ pub fn prev_match(matches: &[Range<ByteOffset>], before: ByteOffset) -> Option<u
 /// matches after the change move with the text, matches it touched are dropped. Matches that end where
 /// the change starts or start where it ends keep their text and stay. New matches the change may have
 /// created are only found by searching again.
+///
+/// `matches` must be sorted and non-overlapping, as [`find_all`] returns them. This runs on every keystroke
+/// while the find bar is open, possibly with a million matches, so the matches before the change are found by
+/// binary search and left alone.
 pub fn adjust_matches(matches: &mut Vec<Range<ByteOffset>>, change: &TextChange) {
+    let before = matches.partition_point(|m| m.end <= change.start);
+    let touched = matches[before..].partition_point(|m| m.start < change.old_end);
+    matches.drain(before..before + touched);
     let removed = change.old_end.0 - change.start.0;
     let inserted = change.new_end.0 - change.start.0;
-    matches.retain_mut(|m| {
-        if m.end <= change.start {
-            true
-        } else if m.start >= change.old_end {
-            m.start = ByteOffset(m.start.0 - removed + inserted);
-            m.end = ByteOffset(m.end.0 - removed + inserted);
-            true
-        } else {
-            false
-        }
-    });
+    for m in &mut matches[before..] {
+        m.start = ByteOffset(m.start.0 - removed + inserted);
+        m.end = ByteOffset(m.end.0 - removed + inserted);
+    }
 }
