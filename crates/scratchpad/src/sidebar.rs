@@ -1,22 +1,29 @@
 //! Note navigation: the search field, the "New Note" button and the note list grouped by date
 //! or, while searching, the matching notes (PLAN §8, §28, §42-43). See ADR 0051.
+//!
+//! Click opens a note, double-click renames it in place, right-click shows Rename / Delete /
+//! Show in Folder.
 
+use std::io;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate};
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, Focusable,
-    FontWeight, HighlightStyle, Pixels, ScrollStrategy, Stateful, StyledText, Subscription,
-    UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+    FontWeight, HighlightStyle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
+    ScrollStrategy, Stateful, StyledText, Subscription, UniformListScrollHandle, Window, anchored,
+    deferred, div, prelude::*, px, uniform_list,
 };
 use scratchpad_core::{DateGroup, Note, local_date};
 
-use crate::notes::{Notes, Selection};
+use crate::notes::{Notes, Selection, title_of};
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::{ActiveTheme, Theme, typography};
+use crate::toast;
 
 pub const DEFAULT_SIDEBAR_WIDTH: Pixels = px(260.);
 
@@ -39,6 +46,36 @@ enum Row {
     Hit(usize),
 }
 
+/// A note title being edited in place.
+struct Rename {
+    path: PathBuf,
+    input: Entity<TextInput>,
+    _subscriptions: [Subscription; 2],
+}
+
+struct ContextMenu {
+    path: PathBuf,
+    position: Point<Pixels>,
+    focus: FocusHandle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuItem {
+    Rename,
+    Delete,
+    ShowInFolder,
+}
+
+impl MenuItem {
+    fn label(self) -> &'static str {
+        match self {
+            MenuItem::Rename => "Rename",
+            MenuItem::Delete => "Delete",
+            MenuItem::ShowInFolder => "Show in Folder",
+        }
+    }
+}
+
 pub struct Sidebar {
     notes: Entity<Notes>,
     width: Pixels,
@@ -52,6 +89,8 @@ pub struct Sidebar {
     /// 10,000 notes.
     rows: Rc<[Row]>,
     rows_date: NaiveDate,
+    rename: Option<Rename>,
+    menu: Option<ContextMenu>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -78,6 +117,8 @@ impl Sidebar {
             scroll: UniformListScrollHandle::new(),
             rows: Rc::new([]),
             rows_date: local_date(SystemTime::now()),
+            rename: None,
+            menu: None,
             _subscriptions: subscriptions,
         };
         sidebar.rebuild_rows(cx);
@@ -149,8 +190,128 @@ impl Sidebar {
         self.notes.update(cx, |notes, cx| notes.select(&path, cx));
     }
 
+    /// Replaces the note's title in the list with a text field. Enter or clicking elsewhere
+    /// renames the file, Escape cancels.
+    fn start_rename(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // Never drop a rename in progress silently (e.g. F2 while already renaming).
+        self.finish_rename(true, window, cx);
+        let title = title_of(&path);
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("", cx);
+            input.set_text(&title, cx);
+            input.select_all(cx);
+            input
+        });
+        let input_focus = input.focus_handle(cx);
+        let subscriptions = [
+            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
+                TextInputEvent::Confirmed => this.finish_rename(true, window, cx),
+                TextInputEvent::Cancelled => this.finish_rename(false, window, cx),
+                TextInputEvent::Changed => {}
+            }),
+            cx.on_blur(&input_focus, window, |this, window, cx| {
+                this.finish_rename(true, window, cx)
+            }),
+        ];
+        window.focus(&input_focus);
+        self.rename = Some(Rename {
+            path,
+            input,
+            _subscriptions: subscriptions,
+        });
+        cx.notify();
+    }
+
+    fn finish_rename(&mut self, commit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rename) = self.rename.take() else {
+            return;
+        };
+        let title = rename.input.read(cx).text().trim().to_owned();
+        // An empty title would become "Untitled"; treat it as a change of mind instead.
+        if commit && !title.is_empty() && title != title_of(&rename.path) {
+            let renamed = self
+                .notes
+                .update(cx, |notes, cx| notes.rename(&rename.path, &title, cx));
+            match renamed {
+                // Right-clicking the row commits the rename (the title loses focus) after the
+                // menu has opened for the old path.
+                Ok(new_path) => {
+                    if let Some(menu) = self.menu.as_mut().filter(|menu| menu.path == rename.path) {
+                        menu.path = new_path;
+                    }
+                }
+                Err(error) => toast::show_file_error(&title_of(&rename.path), &error, cx),
+            }
+        }
+        if rename.input.focus_handle(cx).is_focused(window) {
+            window.focus(&self.list_focus);
+        }
+        cx.notify();
+    }
+
+    fn renaming(&self, path: &Path) -> bool {
+        self.rename
+            .as_ref()
+            .is_some_and(|rename| rename.path == path)
+    }
+
+    fn delete(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let deleted = self.notes.update(cx, |notes, cx| notes.delete(path, cx));
+        if let Err(error) = deleted {
+            toast::show_file_error(&title_of(path), &error, cx);
+        }
+    }
+
+    fn open_menu(
+        &mut self,
+        path: PathBuf,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        self.menu = Some(ContextMenu {
+            path,
+            position,
+            focus,
+        });
+        cx.notify();
+    }
+
+    fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.menu.take() {
+            if menu.focus.is_focused(window) {
+                window.focus(&self.list_focus);
+            }
+            cx.notify();
+        }
+    }
+
+    fn choose(&mut self, item: MenuItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.menu.as_ref().map(|menu| menu.path.clone()) else {
+            return;
+        };
+        self.close_menu(window, cx);
+        match item {
+            MenuItem::Rename => self.start_rename(path, window, cx),
+            MenuItem::Delete => self.delete(&path, cx),
+            MenuItem::ShowInFolder => {
+                if let Err(error) = show_in_folder(&path) {
+                    let message = format!(
+                        "Could not show \"{}\" in its folder. {}",
+                        title_of(&path),
+                        toast::describe(&error)
+                    );
+                    toast::show_error(message, cx);
+                }
+            }
+        }
+    }
+
     fn render_row(&self, row: Row, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
+        let today = self.rows_date;
         match row {
             Row::Header(group) => div()
                 .debug_selector(|| format!("group:{}", group.label()))
@@ -165,100 +326,237 @@ impl Sidebar {
                 .child(group.label())
                 .into_any_element(),
             // The draft only exists while it is open, so it is always selected.
-            Row::Draft => self
-                .note_row("draft", "New Note", "No additional text", true, window, cx)
+            Row::Draft => {
+                let highlight = Some(self.selection_color(window, cx));
+                list_row(
+                    "draft",
+                    "New Note",
+                    "No additional text",
+                    highlight,
+                    false,
+                    theme,
+                )
                 .debug_selector(|| "note:draft".into())
-                .into_any_element(),
+                .into_any_element()
+            }
             Row::Note(ix) => {
-                let notes = self.notes.read(cx);
-                let Some(note) = notes.notes().get(ix) else {
+                let Some(note) = self.notes.read(cx).notes().get(ix) else {
                     return div().into_any_element();
                 };
-                let path = note.path.clone();
-                let selected = matches!(notes.selection(), Selection::Note(open) if *open == path);
-                let subtitle = modified_label(note, self.rows_date);
-                self.note_row(ix, note.title.clone(), subtitle, selected, window, cx)
-                    .debug_selector(|| format!("note:{}", note.title))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.open(path.clone(), window, cx)
-                    }))
-                    .into_any_element()
+                let (path, title) = (note.path.clone(), note.title.clone());
+                let subtitle = StyledText::new(modified_label(note, today));
+                self.note_row(
+                    ix,
+                    &path,
+                    StyledText::new(title.clone()),
+                    subtitle,
+                    window,
+                    cx,
+                )
+                .debug_selector(|| format!("note:{title}"))
+                .into_any_element()
             }
             Row::Hit(ix) => {
                 let notes = self.notes.read(cx);
                 let Some(hit) = notes.search_hits().and_then(|hits| hits.get(ix)) else {
                     return div().into_any_element();
                 };
-                let path = hit.path.clone();
-                let selected = matches!(notes.selection(), Selection::Note(open) if *open == path);
                 let title = highlighted(&hit.title, &hit.title_ranges, theme);
+                // Notes that match only by title have no snippet; show the date instead.
                 let subtitle = if hit.snippet.is_empty() {
-                    let today = self.rows_date;
                     let note = notes.note(&hit.path);
-                    StyledText::new(
-                        note.map(|note| modified_label(note, today))
-                            .unwrap_or_default(),
-                    )
+                    StyledText::new(note.map_or(String::new(), |n| modified_label(n, today)))
                 } else {
                     highlighted(&hit.snippet, &hit.snippet_ranges, theme)
                 };
-                self.note_row(("hit", ix), title, subtitle, selected, window, cx)
-                    .debug_selector(|| format!("hit:{}", hit.title))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.open(path.clone(), window, cx)
-                    }))
+                let selector = format!("hit:{}", hit.title);
+                let path = hit.path.clone();
+                self.note_row(("hit", ix), &path, title, subtitle, window, cx)
+                    .debug_selector(|| selector)
                     .into_any_element()
             }
         }
     }
 
-    /// A two-line row: the title and a muted second line.
+    /// A row for the note at `path`, with its mouse interactions.
     fn note_row(
         &self,
         id: impl Into<ElementId>,
-        title: impl IntoElement,
-        subtitle: impl IntoElement,
-        selected: bool,
+        path: &Path,
+        title: StyledText,
+        subtitle: StyledText,
         window: &Window,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let selected =
+            matches!(self.notes.read(cx).selection(), Selection::Note(open) if open == path);
+        let highlight = selected.then(|| self.selection_color(window, cx));
+        let menu_target = self.menu.as_ref().is_some_and(|menu| menu.path == path);
+        let title = match &self.rename {
+            Some(rename) if rename.path == path => {
+                let theme = cx.theme();
+                div()
+                    // Line the edited text up with the titles around it.
+                    .ml(px(-5.))
+                    .px(px(4.))
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(theme.accent)
+                    .bg(theme.background)
+                    .child(rename.input.clone())
+                    .into_any_element()
+            }
+            _ => title.into_any_element(),
+        };
+        let click_path = path.to_owned();
+        let menu_path = path.to_owned();
+        list_row(id, title, subtitle, highlight, menu_target, cx.theme())
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                // Clicks inside the title being edited only move its caret.
+                if this.renaming(&click_path) {
+                    return;
+                }
+                if event.click_count() >= 2 {
+                    this.start_rename(click_path.clone(), window, cx);
+                } else {
+                    this.open(click_path.clone(), window, cx);
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.open_menu(menu_path.clone(), event.position, window, cx)
+                }),
+            )
+    }
+
+    /// Background of the selected row: accent while the list has focus, neutral otherwise,
+    /// as in native lists.
+    fn selection_color(&self, window: &Window, cx: &App) -> Hsla {
         let theme = cx.theme();
-        // Accent while the list has focus, neutral otherwise, as in native lists.
-        let selection = if self.list_focus.contains_focused(window, cx) {
+        if self.list_focus.contains_focused(window, cx) {
             theme.selection
         } else {
             theme.foreground.opacity(0.08)
-        };
-        div().id(id).h(ROW_HEIGHT).px_2().child(
-            div()
-                .size_full()
-                .px_3()
-                .flex()
-                .flex_col()
-                .justify_center()
-                .rounded_md()
-                .map(|row| {
-                    if selected {
-                        row.bg(selection)
-                    } else {
-                        row.hover(|style| style.bg(theme.foreground.opacity(0.04)))
-                    }
-                })
-                .child(
-                    div()
-                        .truncate()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .truncate()
-                        .text_xs()
-                        .text_color(theme.muted)
-                        .child(subtitle),
-                ),
-        )
+        }
     }
+
+    fn render_menu(&self, menu: &ContextMenu, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let item = |item: MenuItem, cx: &mut Context<Self>| {
+            div()
+                .id(item.label())
+                .debug_selector(|| format!("menu:{}", item.label()))
+                .px_3()
+                .py_1()
+                .rounded_sm()
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.selection))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.choose(item, window, cx)
+                }))
+                .child(item.label())
+        };
+        let menu_element = div()
+            .id("context-menu")
+            .track_focus(&menu.focus)
+            .occlude()
+            .min_w(px(170.))
+            .p_1()
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .shadow_lg()
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, window, cx| this.close_menu(window, cx)),
+            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.close_menu(window, cx);
+                }
+            }))
+            .child(item(MenuItem::Rename, cx))
+            .child(item(MenuItem::Delete, cx))
+            .child(div().my_1().h(px(1.)).bg(theme.border))
+            .child(item(MenuItem::ShowInFolder, cx));
+        deferred(
+            anchored()
+                .position(menu.position)
+                .snap_to_window_with_margin(px(8.))
+                .child(menu_element),
+        )
+        .with_priority(1)
+    }
+}
+
+/// Opens the system file manager with the note selected.
+fn show_in_folder(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Explorer parses its own command line and needs the quotes inside the switch, which
+        // std's argument quoting cannot produce. Quoted, spaces and commas in the path are
+        // safe, and paths cannot contain quotes. Built as an `OsString` so that names that are
+        // not valid Unicode are passed unchanged.
+        let mut select = std::ffi::OsString::from("/select,\"");
+        select.push(path);
+        select.push("\"");
+        Command::new("explorer").raw_arg(select).spawn()?;
+    }
+    #[cfg(target_os = "macos")]
+    Command::new("open").arg("-R").arg(path).spawn()?;
+    #[cfg(not(any(windows, target_os = "macos")))]
+    Command::new("xdg-open")
+        .arg(path.parent().unwrap_or(path))
+        .spawn()?;
+    Ok(())
+}
+
+/// A two-line list row: the title and a muted second line. `highlight` is the background of
+/// the selected row; `outlined` marks the row a context menu is open for.
+fn list_row(
+    id: impl Into<ElementId>,
+    title: impl IntoElement,
+    subtitle: impl IntoElement,
+    highlight: Option<Hsla>,
+    outlined: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    div().id(id).h(ROW_HEIGHT).px_2().child(
+        div()
+            .size_full()
+            .px_3()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .rounded_md()
+            .border_1()
+            .border_color(if outlined {
+                theme.accent
+            } else {
+                gpui::transparent_black()
+            })
+            .map(|row| match highlight {
+                Some(color) => row.bg(color),
+                None => row.hover(|style| style.bg(theme.foreground.opacity(0.04))),
+            })
+            .child(
+                div()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(subtitle),
+            ),
+    )
 }
 
 fn rows(notes: &Notes, today: NaiveDate) -> Vec<Row> {
@@ -432,5 +730,8 @@ impl Render for Sidebar {
                         )
                     }),
             )
+            .when_some(self.menu.as_ref(), |sidebar, menu| {
+                sidebar.child(self.render_menu(menu, cx))
+            })
     }
 }

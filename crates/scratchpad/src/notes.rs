@@ -54,16 +54,26 @@ pub enum Selection {
 pub struct DraftId(u64);
 
 /// What the editor must do to stay in step with the notes. The selection has already changed
-/// when an event arrives, so the editor tracks which note (or draft) its own buffer belongs to.
-/// On `OpenNote` / `OpenDraft` it first saves the current buffer to where it belongs (a draft
-/// with content through [`Notes::save_draft`] with its own id), then shows the new one. Only
-/// the latest of several quick `OpenNote`s (e.g. holding Down) needs to be loaded.
+/// when an event arrives, so the editor tracks which note (or draft) its own buffer belongs to:
+///
+/// - `OpenNote` / `OpenDraft`: first save the current buffer to where it belongs (a draft with
+///   content through [`Notes::save_draft`] with its own id), then show the new one. Only the
+///   latest of several quick `OpenNote`s (e.g. holding Down) needs to be loaded.
+/// - `Renamed`: if the buffer belongs to `from`, keep it and save to `to` from now on. A save
+///   to `from` that is still running would recreate the old file.
+/// - `Deleted`: if the buffer belongs to that note, drop it without saving; a save would bring
+///   the file back. Edits not saved yet are not in the recycle bin copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NotesEvent {
     /// Load this note into the editor.
     OpenNote(PathBuf),
     /// Show an empty editor for a new note.
     OpenDraft(DraftId),
+    /// A note's file was renamed.
+    Renamed { from: PathBuf, to: PathBuf },
+    /// A note was moved to the recycle bin. If it was open, an `OpenNote` for the next note
+    /// follows if there is one.
+    Deleted(PathBuf),
 }
 
 pub struct Notes {
@@ -73,6 +83,9 @@ pub struct Notes {
     /// Newest first, as listed by [`NoteStore::list`].
     notes: Arc<Vec<Note>>,
     loaded: bool,
+    /// Counts changes made through this model, so a listing that started before one of them
+    /// is not applied over it.
+    changes: u64,
     selection: Selection,
     /// The id of the most recent draft.
     last_draft: u64,
@@ -98,6 +111,7 @@ impl Notes {
             store: None,
             notes: Arc::default(),
             loaded: false,
+            changes: 0,
             selection: Selection::None,
             last_draft: 0,
             refresh_task: None,
@@ -115,6 +129,7 @@ impl Notes {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let store = self.store.clone();
         let location = self.location.clone();
+        let changes = self.changes;
         let listing = cx.background_spawn(async move {
             let store = match store {
                 Some(store) => store,
@@ -126,6 +141,11 @@ impl Notes {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let listed = listing.await;
             this.update(cx, |this, cx| {
+                if this.changes != changes {
+                    // A rename, delete or new note happened meanwhile; list again.
+                    this.refresh(cx);
+                    return;
+                }
                 match listed {
                     Ok((store, notes)) => {
                         this.store = Some(store);
@@ -251,6 +271,7 @@ impl Notes {
         cx: &mut Context<Self>,
     ) -> scratchpad_core::Result<Note> {
         let note = self.store()?.create(title)?;
+        self.changes += 1;
         Arc::make_mut(&mut self.notes).insert(0, note.clone());
         if self.selection == Selection::Draft(draft) {
             self.selection = Selection::Note(note.path.clone());
@@ -258,6 +279,89 @@ impl Notes {
         self.search(cx);
         cx.notify();
         Ok(note)
+    }
+
+    /// Renames the note's file after `title` (sanitized and made unique by the store, so
+    /// "Ideas" may become "Ideas 2") and returns the new path.
+    pub fn rename(
+        &mut self,
+        path: &Path,
+        title: &str,
+        cx: &mut Context<Self>,
+    ) -> scratchpad_core::Result<PathBuf> {
+        let new_path = self.store()?.rename(path, title)?;
+        if new_path == path {
+            return Ok(new_path);
+        }
+        self.changes += 1;
+        // Renaming keeps the modification time, so the note keeps its place in the list.
+        match self.store()?.note(&new_path) {
+            Ok(renamed) => {
+                let notes = Arc::make_mut(&mut self.notes);
+                if let Some(note) = notes.iter_mut().find(|note| note.path == path) {
+                    *note = renamed;
+                }
+            }
+            Err(_) => self.refresh(cx),
+        }
+        if let Some(hit) = self.hit_mut(path) {
+            hit.path = new_path.clone();
+            hit.title = title_of(&new_path);
+            hit.title_ranges.clear();
+        }
+        if self.selection == Selection::Note(path.to_owned()) {
+            self.selection = Selection::Note(new_path.clone());
+        }
+        cx.emit(NotesEvent::Renamed {
+            from: path.to_owned(),
+            to: new_path.clone(),
+        });
+        self.search(cx);
+        cx.notify();
+        Ok(new_path)
+    }
+
+    /// Moves the note to the recycle bin (PLAN §41). If it was open, the next note in the
+    /// sidebar (or the previous one at the end) is opened instead.
+    pub fn delete(&mut self, path: &Path, cx: &mut Context<Self>) -> scratchpad_core::Result<()> {
+        let neighbour = self.neighbour_of(path);
+        self.store()?.delete(path)?;
+        self.changes += 1;
+        Arc::make_mut(&mut self.notes).retain(|note| note.path != path);
+        if let Some(hits) = &mut self.hits {
+            hits.retain(|hit| hit.path != path);
+        }
+        cx.emit(NotesEvent::Deleted(path.to_owned()));
+        if self.selection == Selection::Note(path.to_owned()) {
+            match neighbour {
+                Some(next) => self.select(&next, cx),
+                None => self.selection = Selection::None,
+            }
+        }
+        cx.notify();
+        Ok(())
+    }
+
+    /// The paths in the order the sidebar shows them.
+    pub fn visible_paths(&self) -> Vec<&Path> {
+        match (&self.hits, self.is_searching()) {
+            (Some(hits), true) => hits.iter().map(|hit| hit.path.as_path()).collect(),
+            (None, true) => Vec::new(),
+            (_, false) => self.notes.iter().map(|note| note.path.as_path()).collect(),
+        }
+    }
+
+    fn neighbour_of(&self, path: &Path) -> Option<PathBuf> {
+        let visible = self.visible_paths();
+        let ix = visible.iter().position(|visible| *visible == path)?;
+        visible
+            .get(ix + 1)
+            .or_else(|| ix.checked_sub(1).and_then(|previous| visible.get(previous)))
+            .map(|path| path.to_path_buf())
+    }
+
+    fn hit_mut(&mut self, path: &Path) -> Option<&mut SearchHit> {
+        self.hits.as_mut()?.iter_mut().find(|hit| hit.path == path)
     }
 
     fn store(&self) -> scratchpad_core::Result<&NoteStore> {
@@ -278,4 +382,12 @@ impl Notes {
             .to_string_lossy()
             .into_owned()
     }
+}
+
+/// The title of the note at `path`: its file stem (ADR 0013).
+pub fn title_of(path: &Path) -> String {
+    path.file_stem()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
 }

@@ -46,6 +46,8 @@ pub fn open_main_window_in<'a>(
     let window = cx.update(|cx| scratchpad::open_main_window(location, cx).expect("open window"));
     let root = window.root(cx).expect("main window root view");
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    // Like the real app's window after launch; focus-out events need an active window.
+    cx.update(|window, _| window.activate_window());
     cx.run_until_parked();
     (root, cx)
 }
