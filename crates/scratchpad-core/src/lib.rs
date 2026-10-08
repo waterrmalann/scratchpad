@@ -1,6 +1,7 @@
 //! Notes, filesystem storage, search and configuration. Free of any UI framework.
 
 mod atomic;
+mod config;
 mod error;
 mod grouping;
 mod naming;
@@ -8,6 +9,7 @@ mod note;
 mod search;
 mod store;
 
+pub use config::{Config, ThemePreference, WindowBounds, default_config_path, default_notes_dir};
 pub use error::{Error, Result};
 pub use grouping::{DateGroup, NaiveDate, group_notes, local_date};
 pub use naming::{UNTITLED, sanitize_file_stem, title_from_content};
