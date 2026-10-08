@@ -572,6 +572,12 @@ impl LineLayout {
         self.buffer(display, Bias::Right)
     }
 
+    /// The column of the character drawn at `x` on `row`, if any.
+    pub fn column_under(&self, row: usize, x: Pixels) -> Option<usize> {
+        let display = self.geometry.glyph_at(row, x)?;
+        Some(self.buffer(display, Bias::Right))
+    }
+
     /// The buffer column of the `[` of the task box drawn at `position` (relative to the line's
     /// top-left corner), if any.
     pub fn task_box_at(&self, position: Point<Pixels>) -> Option<usize> {

@@ -7,8 +7,8 @@ use std::time::Instant;
 use gpui::{
     App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
     Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent,
-    Style, Window, fill, point, px, relative, size,
+    LayoutId, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, ScrollWheelEvent, Style, Window, fill, point, px, relative, size,
 };
 use scratchpad_editor::ByteOffset;
 
@@ -325,7 +325,18 @@ impl Element for EditorElement {
             ElementInputHandler::new(bounds, self.view.clone()),
             cx,
         );
-        window.set_cursor_style(CursorStyle::IBeam, &state.hitbox);
+        // Ctrl+click opens links (PLAN §47); the pointer shows which text is one.
+        let over_link = window.modifiers().secondary()
+            && state.hitbox.is_hovered(window)
+            && self.view.update(cx, |view, _| {
+                view.link_at(window.mouse_position(), window).is_some()
+            });
+        let cursor = if over_link {
+            CursorStyle::PointingHand
+        } else {
+            CursorStyle::IBeam
+        };
+        window.set_cursor_style(cursor, &state.hitbox);
         if let Some(scrollbar) = &state.scrollbar_hitbox {
             window.set_cursor_style(CursorStyle::Arrow, scrollbar);
         }
@@ -396,9 +407,24 @@ impl EditorElement {
         });
 
         let view = self.view.clone();
+        let hitbox = state.hitbox.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-            if phase == DispatchPhase::Bubble && view.read(cx).drag.is_some() {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            if view.read(cx).drag.is_some() {
                 view.update(cx, |view, cx| view.mouse_move(event, window, cx));
+            } else if event.modifiers.secondary() && hitbox.is_hovered(window) {
+                // The pointer may have moved onto or off a link.
+                view.update(cx, |_, cx| cx.notify());
+            }
+        });
+
+        let view = self.view.clone();
+        let hitbox = state.hitbox.clone();
+        window.on_modifiers_changed(move |_: &ModifiersChangedEvent, window, cx| {
+            if hitbox.is_hovered(window) {
+                view.update(cx, |_, cx| cx.notify());
             }
         });
 

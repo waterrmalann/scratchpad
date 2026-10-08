@@ -172,6 +172,19 @@ impl LineGeometry {
         self.indent(row) + self.glyphs[glyph].x - self.rows[row].start_x
     }
 
+    /// The column of the glyph drawn at `x` on `row`, if any: what the pointer is over, as opposed
+    /// to the nearest cursor position.
+    pub fn glyph_at(&self, row: usize, x: Pixels) -> Option<usize> {
+        let row = row.min(self.rows.len() - 1);
+        let x = x - self.indent(row) + self.rows[row].start_x;
+        self.row_glyphs(row)
+            .find(|&i| {
+                let right = self.glyphs.get(i + 1).map_or(self.width, |next| next.x);
+                self.glyphs[i].x <= x && x < right
+            })
+            .map(|i| self.glyphs[i].column)
+    }
+
     fn indent(&self, row: usize) -> Pixels {
         if row == 0 {
             self.indents.first
@@ -565,5 +578,19 @@ mod tests {
         assert_eq!(width, px(55.));
         let width = set_span_width(&mut glyphs, 2..4, px(5.), width);
         assert_eq!(width, px(40.), "the last span ends the line");
+    }
+
+    #[test]
+    fn the_glyph_under_a_point_is_the_one_drawn_there() {
+        let line = layout("hello world", 80.);
+        assert_eq!(line.glyph_at(0, px(14.)), Some(1));
+        assert_eq!(
+            line.glyph_at(0, px(16.)),
+            Some(1),
+            "not the nearest boundary"
+        );
+        assert_eq!(line.glyph_at(1, px(5.)), Some(6));
+        assert_eq!(line.glyph_at(1, px(55.)), None, "past the end");
+        assert_eq!(line.glyph_at(0, px(-1.)), None);
     }
 }

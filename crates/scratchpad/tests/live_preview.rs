@@ -299,6 +299,37 @@ fn clicking_a_task_box_toggles_it_without_moving_the_cursor(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn ctrl_click_opens_web_links_but_never_other_schemes(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(
+        cx,
+        "[site](https://example.com) [js](javascript:alert(1)) [exe](file:///C:/x.exe)\nnext",
+    );
+    cx.simulate_keystrokes("ctrl-end");
+    let end = cursor(&editor, cx);
+    let line = bounds(&editor, 0..0, cx);
+    // Displayed "site js exe".
+    let at_display = |column: f32| point(line.left() + px(column * ADVANCE + 4.), line.center().y);
+
+    click(at_display(1.), Modifiers::none(), cx);
+    assert_eq!(cx.opened_url(), None, "a plain click edits");
+    assert_eq!(cursor(&editor, cx), 2);
+
+    cx.simulate_keystrokes("ctrl-end");
+    click(at_display(1.), Modifiers::secondary_key(), cx);
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
+    assert_eq!(
+        cursor(&editor, cx),
+        end,
+        "opening a link does not move the cursor"
+    );
+
+    for column in [5., 8.] {
+        click(at_display(column), Modifiers::secondary_key(), cx);
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
+    }
+}
+
+#[gpui::test]
 fn moving_the_cursor_and_blinking_reshape_only_lines_whose_markers_change(cx: &mut TestAppContext) {
     let (editor, cx) = open_editor(cx, "plain one\nplain two\n**bold** three\nplain four");
     cx.update(|window, _| window.activate_window());

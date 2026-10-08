@@ -378,6 +378,18 @@ impl EditorView {
         buffer.clip_offset(ByteOffset(start.0 + column), Bias::Left)
     }
 
+    /// The destination of the link drawn at a window position.
+    fn link_at(&mut self, position: Point<Pixels>, window: &Window) -> Option<String> {
+        let hit = self.line_at(position, window)?;
+        let layout = &hit.layout;
+        if hit.position.y < px(0.) || hit.position.y >= layout.height() {
+            return None;
+        }
+        let column = layout.column_under(layout.row_at(hit.position.y), hit.position.x)?;
+        let offset = self.offset(hit.line, column);
+        self.markdown.link_at(self.editor.buffer(), offset)
+    }
+
     // --- Keyboard ---
 
     /// Moves the cursor to the row `distance` away (one row for Up/Down, a page for PageUp/Down),
@@ -463,14 +475,20 @@ impl EditorView {
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
-        // A read-only note's task boxes are text like any other: the click places the cursor.
-        if event.click_count <= 1
-            && !event.modifiers.shift
-            && !self.read_only
-            && let Some(task_box) = self.task_box_at(event.position, window)
-        {
-            self.toggle_task(task_box, cx);
-            return;
+        if event.click_count <= 1 && !event.modifiers.shift {
+            // A read-only note's task boxes are text like any other: the click places the cursor.
+            if !self.read_only
+                && let Some(task_box) = self.task_box_at(event.position, window)
+            {
+                self.toggle_task(task_box, cx);
+                return;
+            }
+            if event.modifiers.secondary()
+                && let Some(url) = self.link_at(event.position, window)
+            {
+                open_link(&url, cx);
+                return;
+            }
         }
         let offset = self.offset_at(event.position, window);
         let granularity = match event.click_count {
@@ -1053,6 +1071,30 @@ fn base_style(cx: &App, wrap_width: Pixels, mono_family: &SharedString) -> BaseS
     }
 }
 
+/// Opens a link with Ctrl+click (PLAN §47). Markdown is text, not executable content (PLAN §60):
+/// only web and mail links are handed to the system, never files, scripts or other schemes.
+fn open_link(url: &str, cx: &App) {
+    if is_web_or_mail_link(url) {
+        cx.open_url(url);
+    } else {
+        // Only the scheme: the address itself may be private.
+        let scheme = url.split_once(':').map_or("", |(scheme, _)| scheme);
+        tracing::info!(
+            scheme,
+            "not opening a link that is not a web or mail address"
+        );
+    }
+}
+
+fn is_web_or_mail_link(url: &str) -> bool {
+    let scheme = url.split_once(':').map(|(scheme, _)| scheme);
+    scheme.is_some_and(|scheme| {
+        ["http", "https", "mailto"]
+            .iter()
+            .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+    })
+}
+
 fn viewport(bounds: Option<Bounds<Pixels>>) -> Viewport {
     Viewport {
         height: bounds.map_or(px(0.), |bounds| bounds.size.height),
@@ -1095,6 +1137,29 @@ fn utf16_to_byte(text: &str, utf16: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_web_and_mail_links_are_opened() {
+        for url in [
+            "https://example.com/a?b=c",
+            "HTTP://EXAMPLE.COM",
+            "mailto:someone@example.com",
+        ] {
+            assert!(is_web_or_mail_link(url), "{url}");
+        }
+        for url in [
+            "javascript:alert(1)",
+            "file:///C:/Windows/System32/calc.exe",
+            "C:\\Windows\\notepad.exe",
+            "ms-settings:privacy",
+            "example.com",
+            "/relative/path",
+            " https://example.com",
+            "",
+        ] {
+            assert!(!is_web_or_mail_link(url), "{url}");
+        }
+    }
 
     #[test]
     fn utf16_offsets_within_inserted_text_map_to_bytes() {
