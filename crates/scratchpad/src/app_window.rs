@@ -3,7 +3,7 @@ use gpui::{Context, Entity, FocusHandle, Focusable, Subscription, Window, div, p
 use crate::actions::{CloseWindow, NewNote, SearchNotes};
 use crate::editor_pane::EditorPane;
 use crate::notes::{Notes, NotesLocation};
-use crate::sidebar::Sidebar;
+use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::theme::{self, ActiveTheme, typography};
 use crate::toast;
 
@@ -13,7 +13,7 @@ pub struct AppWindow {
     notes: Entity<Notes>,
     sidebar: Entity<Sidebar>,
     editor_pane: Entity<EditorPane>,
-    _appearance_subscription: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 impl AppWindow {
@@ -25,12 +25,17 @@ impl AppWindow {
         let editor_pane = cx.new(|cx| EditorPane::new(window, cx));
         editor_pane.focus_handle(cx).focus(window);
         let notes = cx.new(|cx| Notes::new(notes, cx));
+        let sidebar = cx.new(|cx| Sidebar::new(notes.clone(), window, cx));
+        let sidebar_subscription =
+            cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
+                SidebarEvent::FocusEditor => window.focus(&this.editor_pane.focus_handle(cx)),
+            });
         Self {
             focus_handle,
-            sidebar: cx.new(|cx| Sidebar::new(notes.clone(), window, cx)),
+            sidebar,
             notes,
             editor_pane,
-            _appearance_subscription: appearance_subscription,
+            _subscriptions: [appearance_subscription, sidebar_subscription],
         }
     }
 

@@ -2,7 +2,8 @@
 //! or, while searching, the matching notes (PLAN §8, §28, §42-43). See ADR 0051.
 //!
 //! Click opens a note, double-click renames it in place, right-click shows Rename / Delete /
-//! Show in Folder.
+//! Show in Folder. With the list focused, Up/Down open the previous/next note, Enter moves
+//! into the note, F2 renames and Delete deletes it.
 
 use std::io;
 use std::ops::Range;
@@ -13,13 +14,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate};
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, Focusable,
-    FontWeight, HighlightStyle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
-    ScrollStrategy, Stateful, StyledText, Subscription, UniformListScrollHandle, Window, anchored,
-    deferred, div, prelude::*, px, uniform_list,
+    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, FontWeight, HighlightStyle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, Pixels,
+    Point, ScrollStrategy, Stateful, StyledText, Subscription, UniformListScrollHandle, Window,
+    anchored, deferred, div, prelude::*, px, uniform_list,
 };
 use scratchpad_core::{DateGroup, Note, local_date};
 
+use crate::actions::{DeleteNote, FocusOpenNote, RenameNote, SelectNextNote, SelectPreviousNote};
 use crate::notes::{Notes, Selection, title_of};
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::{ActiveTheme, Theme, typography};
@@ -76,6 +78,12 @@ impl MenuItem {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarEvent {
+    /// Enter was pressed in the note list: put the caret in the open note.
+    FocusEditor,
+}
+
 pub struct Sidebar {
     notes: Entity<Notes>,
     width: Pixels,
@@ -93,6 +101,8 @@ pub struct Sidebar {
     menu: Option<ContextMenu>,
     _subscriptions: [Subscription; 2],
 }
+
+impl EventEmitter<SidebarEvent> for Sidebar {}
 
 impl Sidebar {
     pub fn new(notes: Entity<Notes>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -188,6 +198,83 @@ impl Sidebar {
     fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.list_focus);
         self.notes.update(cx, |notes, cx| notes.select(&path, cx));
+    }
+
+    /// Opens the note `delta` rows below (or above) the open one and scrolls it into view.
+    fn open_adjacent(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let notes = self.notes.read(cx);
+        let visible = notes.visible_paths();
+        let open = match notes.selection() {
+            Selection::Note(open) => visible.iter().position(|path| path == open),
+            Selection::Draft(_) | Selection::None => None,
+        };
+        // Without an open note (or from the new note, which sits above them all) Down
+        // starts at the top.
+        let target = match open {
+            Some(ix) => ix.saturating_add_signed(delta).min(visible.len() - 1),
+            None if delta > 0 && !visible.is_empty() => 0,
+            None => return,
+        };
+        let path = visible[target].to_path_buf();
+        self.open(path.clone(), window, cx);
+        self.reveal(&path, delta > 0, cx);
+    }
+
+    /// Scrolls the minimum needed to show the note's row.
+    fn reveal(&self, path: &Path, moving_down: bool, cx: &App) {
+        let notes = self.notes.read(cx);
+        let row_of = |row: &Row| match *row {
+            Row::Note(ix) => notes.notes().get(ix).map(|note| note.path.as_path()),
+            Row::Hit(ix) => notes.search_hits()?.get(ix).map(|hit| hit.path.as_path()),
+            Row::Header(_) | Row::Draft => None,
+        };
+        if let Some(ix) = self.rows.iter().position(|row| row_of(row) == Some(path)) {
+            let strategy = if moving_down {
+                ScrollStrategy::Bottom
+            } else {
+                ScrollStrategy::Top
+            };
+            self.scroll.scroll_to_item(ix, strategy);
+        }
+    }
+
+    fn open_path(&self, cx: &App) -> Option<PathBuf> {
+        match self.notes.read(cx).selection() {
+            Selection::Note(path) => Some(path.clone()),
+            Selection::Draft(_) | Selection::None => None,
+        }
+    }
+
+    fn select_previous(
+        &mut self,
+        _: &SelectPreviousNote,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_adjacent(-1, window, cx);
+    }
+
+    fn select_next(&mut self, _: &SelectNextNote, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_adjacent(1, window, cx);
+    }
+
+    fn focus_open_note(&mut self, _: &FocusOpenNote, _: &mut Window, cx: &mut Context<Self>) {
+        if self.notes.read(cx).selection() != &Selection::None {
+            cx.emit(SidebarEvent::FocusEditor);
+        }
+    }
+
+    fn rename_open_note(&mut self, _: &RenameNote, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.open_path(cx) {
+            self.reveal(&path, true, cx);
+            self.start_rename(path, window, cx);
+        }
+    }
+
+    fn delete_open_note(&mut self, _: &DeleteNote, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.open_path(cx) {
+            self.delete(&path, cx);
+        }
     }
 
     /// Replaces the note's title in the list with a text field. Enter or clicking elsewhere
@@ -700,6 +787,11 @@ impl Render for Sidebar {
                     .id("note-list")
                     .track_focus(&self.list_focus)
                     .key_context("NoteList")
+                    .on_action(cx.listener(Self::select_previous))
+                    .on_action(cx.listener(Self::select_next))
+                    .on_action(cx.listener(Self::focus_open_note))
+                    .on_action(cx.listener(Self::rename_open_note))
+                    .on_action(cx.listener(Self::delete_open_note))
                     .flex_1()
                     .min_h_0()
                     .when_some(empty_text, |list, text| {

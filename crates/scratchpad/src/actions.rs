@@ -23,6 +23,16 @@ actions!(
         NewNote,
         /// Move focus to the note search (PLAN §28).
         SearchNotes,
+        /// Open the note above the open one in the note list.
+        SelectPreviousNote,
+        /// Open the note below the open one in the note list.
+        SelectNextNote,
+        /// Move from the note list into the open note.
+        FocusOpenNote,
+        /// Rename the open note in place.
+        RenameNote,
+        /// Move the open note to the recycle bin.
+        DeleteNote,
     ]
 );
 
@@ -33,6 +43,11 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-n", NewNote, None),
         KeyBinding::new("secondary-p", SearchNotes, None),
         KeyBinding::new("secondary-shift-f", SearchNotes, None),
+        KeyBinding::new("up", SelectPreviousNote, Some("NoteList")),
+        KeyBinding::new("down", SelectNextNote, Some("NoteList")),
+        KeyBinding::new("enter", FocusOpenNote, Some("NoteList")),
+        KeyBinding::new("f2", RenameNote, Some("NoteList")),
+        KeyBinding::new("delete", DeleteNote, Some("NoteList")),
     ];
     // Components that own their actions, scoped to their key context.
     bindings.extend(text_input::key_bindings());
