@@ -2,16 +2,20 @@ use std::ops::{Range, RangeInclusive};
 
 use crate::buffer::{Buffer, normalize_line_endings};
 use crate::coords::{Bias, ByteOffset, to_usize_range};
+use crate::history::{Edit, EditKind, History};
 use crate::motion::{self, Motion};
 use crate::selection::{Goal, Selection};
 
-/// Editor state for one document: buffer, selection and goal column. This is the source of truth the UI renders
-/// from; every mutation goes through its methods.
+/// Editor state for one document: buffer, selection, goal column, undo history and IME composition. This is
+/// the source of truth the UI renders from; every mutation goes through its methods.
 #[derive(Debug, Clone, Default)]
 pub struct Editor {
     buffer: Buffer,
     selection: Selection,
     goal: Goal,
+    history: History,
+    /// Text of an in-progress IME composition.
+    marked: Option<Range<ByteOffset>>,
 }
 
 impl Editor {
@@ -86,18 +90,32 @@ impl Editor {
         self.set_selection(Selection::new(range.start, range.end));
     }
 
-    /// Every selection change that is not an edit goes through here.
+    /// Every selection change that is not an edit goes through here. Moving the cursor ends the current
+    /// undo group and any IME composition.
     fn select(&mut self, selection: Selection, goal: Goal) {
         self.selection = Selection::new(
             self.buffer.clip_offset(selection.anchor, Bias::Left),
             self.buffer.clip_offset(selection.head, Bias::Left),
         );
         self.goal = goal;
+        self.marked = None;
+        self.history.break_group();
     }
 
-    /// Types `text`, replacing the selection.
+    /// Types `text`, replacing the selection — or, during IME composition, commits `text` in place of the
+    /// composed text.
     pub fn insert_text(&mut self, text: &str) {
-        self.edit(self.selection.range(), text, None);
+        if let Some(marked) = self.marked.clone() {
+            self.edit(marked, text, EditKind::Composition, None);
+            self.history.break_group();
+            return;
+        }
+        let kind = if text.contains(['\n', '\r']) {
+            EditKind::Other
+        } else {
+            EditKind::Typing
+        };
+        self.edit(self.selection.range(), text, kind, None);
     }
 
     pub fn insert_newline(&mut self) {
@@ -106,25 +124,33 @@ impl Editor {
 
     /// Deletes the selection, or the grapheme cluster before the cursor.
     pub fn backspace(&mut self) {
-        self.delete_selection_or(|buffer, head| buffer.prev_grapheme_boundary(head));
+        self.delete_selection_or(EditKind::DeleteBackward, |buffer, head| {
+            buffer.prev_grapheme_boundary(head)
+        });
     }
 
     /// Deletes the selection, or the grapheme cluster after the cursor.
     pub fn delete_forward(&mut self) {
-        self.delete_selection_or(|buffer, head| buffer.next_grapheme_boundary(head));
+        self.delete_selection_or(EditKind::DeleteForward, |buffer, head| {
+            buffer.next_grapheme_boundary(head)
+        });
     }
 
     /// Ctrl+Backspace: deletes the selection, or back to where Ctrl+Left would move.
     pub fn delete_word_backward(&mut self) {
-        self.delete_selection_or(motion::word_left);
+        self.delete_selection_or(EditKind::Other, motion::word_left);
     }
 
     /// Ctrl+Delete: deletes the selection, or up to where Ctrl+Right would move.
     pub fn delete_word_forward(&mut self) {
-        self.delete_selection_or(motion::word_right);
+        self.delete_selection_or(EditKind::Other, motion::word_right);
     }
 
-    fn delete_selection_or(&mut self, target: impl FnOnce(&Buffer, ByteOffset) -> ByteOffset) {
+    fn delete_selection_or(
+        &mut self,
+        kind: EditKind,
+        target: impl FnOnce(&Buffer, ByteOffset) -> ByteOffset,
+    ) {
         let range = if self.selection.is_empty() {
             let head = self.selection.head;
             let other = target(&self.buffer, head);
@@ -132,7 +158,7 @@ impl Editor {
         } else {
             self.selection.range()
         };
-        self.edit(range, "", None);
+        self.edit(range, "", kind, None);
     }
 
     /// Inserts a copy of the selected lines below them and moves the selection onto the copy.
@@ -144,7 +170,7 @@ impl Editor {
             .text_for_range(self.buffer.line_start(*lines.start())..end);
         let inserted = format!("\n{block}");
         let after = shifted(self.selection, inserted.len() as isize);
-        self.edit(end..end, &inserted, Some(after));
+        self.edit(end..end, &inserted, EditKind::Other, Some(after));
     }
 
     /// Swaps the selected lines with the line above them.
@@ -161,7 +187,7 @@ impl Editor {
             .text_for_range(self.buffer.line_start(*lines.start())..end);
         let replacement = format!("{block}\n{above_text}");
         let after = shifted(self.selection, -(above_text.len() as isize + 1));
-        self.edit(start..end, &replacement, Some(after));
+        self.edit(start..end, &replacement, EditKind::Other, Some(after));
     }
 
     /// Swaps the selected lines with the line below them.
@@ -179,7 +205,7 @@ impl Editor {
             .text_for_range(start..self.buffer.line_end(*lines.end()));
         let replacement = format!("{below_text}\n{block}");
         let after = shifted(self.selection, below_text.len() as isize + 1);
-        self.edit(start..end, &replacement, Some(after));
+        self.edit(start..end, &replacement, EditKind::Other, Some(after));
     }
 
     /// The lines touched by the selection. A selection ending at the very start of a line does not include
@@ -205,37 +231,127 @@ impl Editor {
     /// Like [`Editor::copy`], and deletes the selection.
     pub fn cut(&mut self) -> Option<String> {
         let text = self.copy()?;
-        self.edit(self.selection.range(), "", None);
+        self.edit(self.selection.range(), "", EditKind::Other, None);
         Some(text)
     }
 
-    /// Inserts clipboard text, replacing the selection. Line breaks are normalized.
+    /// Inserts clipboard text, replacing the selection, as its own undo step. Line breaks are normalized.
     pub fn paste(&mut self, text: &str) {
-        self.edit(self.selection.range(), text, None);
+        self.edit(self.selection.range(), text, EditKind::Other, None);
     }
 
-    /// Replaces `range` with `text` and puts the cursor after the inserted text. Line breaks in `text` are
-    /// normalized. The building block for programmatic edits such as Markdown formatting.
+    /// Replaces `range` with `text` as its own undo step and puts the cursor after the inserted text. Line
+    /// breaks in `text` are normalized. The building block for programmatic edits such as Markdown
+    /// formatting.
     pub fn replace_range(&mut self, range: Range<ByteOffset>, text: &str) {
-        self.edit(range, text, None);
+        self.edit(range, text, EditKind::Other, None);
+    }
+
+    /// The text of the in-progress IME composition, if any.
+    pub fn marked_range(&self) -> Option<Range<ByteOffset>> {
+        self.marked.clone()
+    }
+
+    /// Updates an IME composition: replaces `range` (default: the composed text, else the selection) with
+    /// `text` and marks it as composed. `selected` is the selection within `text`, in bytes relative to its
+    /// start; by default the cursor goes after it. All updates of one composition, and the final
+    /// [`Editor::insert_text`] that commits it, undo as a single step.
+    pub fn replace_and_mark(
+        &mut self,
+        range: Option<Range<ByteOffset>>,
+        text: &str,
+        selected: Option<Range<usize>>,
+    ) {
+        let text = normalize_line_endings(text);
+        let range = range
+            .or_else(|| self.marked.clone())
+            .unwrap_or_else(|| self.selection.range());
+        let start = self
+            .buffer
+            .clip_range_to_chars(to_usize_range(&range))
+            .start;
+        let selection_after = selected.map(|selected| {
+            let in_text = |i: usize| ByteOffset(start + i.min(text.len()));
+            Selection::new(in_text(selected.start), in_text(selected.end))
+        });
+        self.edit(range, &text, EditKind::Composition, selection_after);
+        self.marked = (!text.is_empty()).then(|| ByteOffset(start)..ByteOffset(start + text.len()));
+    }
+
+    /// Ends the IME composition, keeping its text.
+    pub fn unmark(&mut self) {
+        self.marked = None;
+        self.history.break_group();
+    }
+
+    /// Reverts the last undo step and restores the selection from before it. Returns false if there was
+    /// nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        let selection = self.history.undo(&mut self.buffer);
+        self.restore(selection)
+    }
+
+    /// Re-applies the last undone step and restores the selection from after it. Returns false if there was
+    /// nothing to redo.
+    pub fn redo(&mut self) -> bool {
+        let selection = self.history.redo(&mut self.buffer);
+        self.restore(selection)
+    }
+
+    fn restore(&mut self, selection: Option<Selection>) -> bool {
+        let Some(selection) = selection else {
+            return false;
+        };
+        self.selection = selection;
+        self.goal = Goal::None;
+        self.marked = None;
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    /// Makes the next edit start a new undo step even if it would otherwise merge with the previous one.
+    /// Call it on events such as focus changes or saves.
+    pub fn break_undo_group(&mut self) {
+        self.history.break_group();
     }
 
     /// The single path through which the buffer changes. `selection_after` defaults to a cursor after the
     /// inserted text; either way it is snapped to grapheme boundaries in the new text.
-    fn edit(&mut self, range: Range<ByteOffset>, text: &str, selection_after: Option<Selection>) {
-        let text = normalize_line_endings(text);
+    fn edit(
+        &mut self,
+        range: Range<ByteOffset>,
+        text: &str,
+        kind: EditKind,
+        selection_after: Option<Selection>,
+    ) {
+        let text = normalize_line_endings(text).into_owned();
         let range = self.buffer.clip_range_to_chars(to_usize_range(&range));
+        self.marked = None;
         if range.is_empty() && text.is_empty() {
             return;
         }
-        self.buffer.replace(range.clone(), &text);
-        let after =
-            selection_after.unwrap_or(Selection::cursor(ByteOffset(range.start + text.len())));
+        let deleted = self.buffer.replace(range.clone(), &text);
+        let after = selection_after
+            .unwrap_or_else(|| Selection::cursor(ByteOffset(range.start + text.len())));
+        let before = self.selection;
         self.selection = Selection::new(
             self.buffer.clip_offset(after.anchor, Bias::Right),
             self.buffer.clip_offset(after.head, Bias::Right),
         );
         self.goal = Goal::None;
+        let edit = Edit {
+            start: range.start,
+            deleted,
+            inserted: text,
+        };
+        self.history.record(edit, kind, before, self.selection);
     }
 }
 

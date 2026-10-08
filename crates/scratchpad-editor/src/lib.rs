@@ -4,6 +4,7 @@ mod buffer;
 mod coords;
 mod editor;
 mod graphemes;
+mod history;
 mod motion;
 mod selection;
 
