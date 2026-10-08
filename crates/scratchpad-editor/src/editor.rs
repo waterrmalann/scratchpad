@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 
 use crate::buffer::{Buffer, normalize_line_endings};
 use crate::coords::{Bias, ByteOffset, to_usize_range};
@@ -95,8 +95,127 @@ impl Editor {
         self.goal = goal;
     }
 
+    /// Types `text`, replacing the selection.
+    pub fn insert_text(&mut self, text: &str) {
+        self.edit(self.selection.range(), text, None);
+    }
+
+    pub fn insert_newline(&mut self) {
+        self.insert_text("\n");
+    }
+
+    /// Deletes the selection, or the grapheme cluster before the cursor.
+    pub fn backspace(&mut self) {
+        self.delete_selection_or(|buffer, head| buffer.prev_grapheme_boundary(head));
+    }
+
+    /// Deletes the selection, or the grapheme cluster after the cursor.
+    pub fn delete_forward(&mut self) {
+        self.delete_selection_or(|buffer, head| buffer.next_grapheme_boundary(head));
+    }
+
+    /// Ctrl+Backspace: deletes the selection, or back to where Ctrl+Left would move.
+    pub fn delete_word_backward(&mut self) {
+        self.delete_selection_or(motion::word_left);
+    }
+
+    /// Ctrl+Delete: deletes the selection, or up to where Ctrl+Right would move.
+    pub fn delete_word_forward(&mut self) {
+        self.delete_selection_or(motion::word_right);
+    }
+
+    fn delete_selection_or(&mut self, target: impl FnOnce(&Buffer, ByteOffset) -> ByteOffset) {
+        let range = if self.selection.is_empty() {
+            let head = self.selection.head;
+            let other = target(&self.buffer, head);
+            head.min(other)..head.max(other)
+        } else {
+            self.selection.range()
+        };
+        self.edit(range, "", None);
+    }
+
+    /// Inserts a copy of the selected lines below them and moves the selection onto the copy.
+    pub fn duplicate_lines(&mut self) {
+        let lines = self.selected_lines();
+        let end = self.buffer.line_end(*lines.end());
+        let block = self
+            .buffer
+            .text_for_range(self.buffer.line_start(*lines.start())..end);
+        let inserted = format!("\n{block}");
+        let after = shifted(self.selection, inserted.len() as isize);
+        self.edit(end..end, &inserted, Some(after));
+    }
+
+    /// Swaps the selected lines with the line above them.
+    pub fn move_lines_up(&mut self) {
+        let lines = self.selected_lines();
+        let Some(above) = lines.start().checked_sub(1) else {
+            return;
+        };
+        let start = self.buffer.line_start(above);
+        let end = self.buffer.line_end(*lines.end());
+        let above_text = self.buffer.line_text(above);
+        let block = self
+            .buffer
+            .text_for_range(self.buffer.line_start(*lines.start())..end);
+        let replacement = format!("{block}\n{above_text}");
+        let after = shifted(self.selection, -(above_text.len() as isize + 1));
+        self.edit(start..end, &replacement, Some(after));
+    }
+
+    /// Swaps the selected lines with the line below them.
+    pub fn move_lines_down(&mut self) {
+        let lines = self.selected_lines();
+        let below = lines.end() + 1;
+        if below >= self.buffer.line_count() {
+            return;
+        }
+        let start = self.buffer.line_start(*lines.start());
+        let end = self.buffer.line_end(below);
+        let below_text = self.buffer.line_text(below);
+        let block = self
+            .buffer
+            .text_for_range(start..self.buffer.line_end(*lines.end()));
+        let replacement = format!("{below_text}\n{block}");
+        let after = shifted(self.selection, below_text.len() as isize + 1);
+        self.edit(start..end, &replacement, Some(after));
+    }
+
+    /// The lines touched by the selection. A selection ending at the very start of a line does not include
+    /// that line, matching what users see highlighted.
+    fn selected_lines(&self) -> RangeInclusive<usize> {
+        let first = self.buffer.line_of(self.selection.start());
+        let mut last = self.buffer.line_of(self.selection.end());
+        if last > first && self.buffer.line_start(last) == self.selection.end() {
+            last -= 1;
+        }
+        first..=last
+    }
+
+    /// The selected text for the clipboard (with `\n` line breaks), or `None` if nothing is selected.
+    pub fn copy(&self) -> Option<String> {
+        (!self.selection.is_empty()).then(|| {
+            self.buffer
+                .text_for_range(self.selection.range())
+                .into_owned()
+        })
+    }
+
+    /// Like [`Editor::copy`], and deletes the selection.
+    pub fn cut(&mut self) -> Option<String> {
+        let text = self.copy()?;
+        self.edit(self.selection.range(), "", None);
+        Some(text)
+    }
+
+    /// Inserts clipboard text, replacing the selection. Line breaks are normalized.
+    pub fn paste(&mut self, text: &str) {
+        self.edit(self.selection.range(), text, None);
+    }
+
     /// Replaces `range` with `text` and puts the cursor after the inserted text. Line breaks in `text` are
-    /// normalized.
+    /// normalized. The building block for programmatic edits such as Markdown formatting.
     pub fn replace_range(&mut self, range: Range<ByteOffset>, text: &str) {
         self.edit(range, text, None);
     }
@@ -118,4 +237,9 @@ impl Editor {
         );
         self.goal = Goal::None;
     }
+}
+
+fn shifted(selection: Selection, delta: isize) -> Selection {
+    let shift = |offset: ByteOffset| ByteOffset(offset.0.saturating_add_signed(delta));
+    Selection::new(shift(selection.anchor), shift(selection.head))
 }
