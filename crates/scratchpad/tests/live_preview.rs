@@ -581,6 +581,49 @@ fn task_box(
     point(line.left() + px(7.), line.center().y)
 }
 
+/// A note written from scratch with the keyboard only, as a user would, then checked on disk.
+#[gpui::test]
+fn writing_a_note_from_scratch_by_keyboard(cx: &mut TestAppContext) {
+    let (note, cx) = open_note(cx, b"");
+
+    cx.simulate_input("# Trip");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("Pack ");
+    cx.simulate_keystrokes("ctrl-b");
+    cx.simulate_input("light");
+    cx.simulate_keystrokes("ctrl-b");
+    cx.simulate_input(", see ");
+    cx.simulate_keystrokes("ctrl-k");
+    cx.simulate_input("list");
+    cx.simulate_keystrokes("right right");
+    cx.simulate_input("https://example.com");
+    cx.simulate_keystrokes("end enter");
+    cx.simulate_input("- [ ] tickets");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("train");
+    cx.simulate_keystrokes("enter tab");
+    cx.simulate_input("seats");
+    cx.simulate_keystrokes("enter shift-tab");
+    cx.simulate_input("hotel");
+    cx.simulate_keystrokes("enter enter");
+    cx.simulate_input("> done");
+
+    let expected = "# Trip\nPack **light**, see [list](https://example.com)\n- [ ] tickets\n\
+                    - [ ] train\n  - [ ] seats\n- [ ] hotel\n\n> done";
+    assert_eq!(text(&note.editor, cx), expected);
+    common::wait(AUTOSAVE_DELAY, cx);
+    assert_eq!(on_disk(&note), expected);
+
+    // Selecting what is shown copies the Markdown behind it.
+    cx.simulate_keystrokes("ctrl-home down home shift-end ctrl-c");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("Pack **light**, see [list](https://example.com)")
+    );
+}
+
 #[gpui::test]
 fn formatting_shortcuts_and_task_clicks_are_saved_like_typing(cx: &mut TestAppContext) {
     let (note, cx) = open_note(cx, b"Ideas\n- [ ] call\nfirst");
