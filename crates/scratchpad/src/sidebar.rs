@@ -3,7 +3,7 @@
 //!
 //! Click opens a note, double-click renames it in place, right-click shows Rename / Delete /
 //! Show in Folder. With the list focused, Up/Down open the previous/next note, Enter moves
-//! into the note, F2 renames and Delete deletes it.
+//! into the note, F2 renames and Delete deletes it. Dragging the right edge resizes it.
 
 use std::io;
 use std::ops::Range;
@@ -14,10 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate};
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, HighlightStyle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, Pixels,
-    Point, ScrollStrategy, Stateful, StyledText, Subscription, UniformListScrollHandle, Window,
-    anchored, deferred, div, prelude::*, px, uniform_list,
+    AnyElement, App, ClickEvent, Context, CursorStyle, Div, DragMoveEvent, ElementId, Entity,
+    EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle, Hsla, KeyDownEvent,
+    MouseButton, MouseDownEvent, Pixels, Point, ScrollStrategy, Stateful, StyledText, Subscription,
+    UniformListScrollHandle, Window, anchored, deferred, div, prelude::*, px, uniform_list,
 };
 use scratchpad_core::{DateGroup, Note, local_date};
 
@@ -28,6 +28,10 @@ use crate::theme::{ActiveTheme, Theme, typography};
 use crate::toast;
 
 pub const DEFAULT_SIDEBAR_WIDTH: Pixels = px(260.);
+pub const MIN_SIDEBAR_WIDTH: Pixels = px(180.);
+pub const MAX_SIDEBAR_WIDTH: Pixels = px(480.);
+/// Width of the invisible strip along the right edge that resizes the sidebar.
+const RESIZE_HANDLE_WIDTH: Pixels = px(5.);
 
 /// Every list row has the same height so the list can be virtualized with `uniform_list`.
 /// Section headers put their label at the bottom, so the space above it separates sections.
@@ -75,6 +79,15 @@ impl MenuItem {
             MenuItem::Delete => "Delete",
             MenuItem::ShowInFolder => "Show in Folder",
         }
+    }
+}
+
+/// Drag payload (and its invisible drag preview) while resizing the sidebar.
+struct DraggedEdge;
+
+impl Render for DraggedEdge {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
     }
 }
 
@@ -138,6 +151,17 @@ impl Sidebar {
     fn rebuild_rows(&mut self, cx: &App) {
         self.rows_date = local_date(SystemTime::now());
         self.rows = rows(self.notes.read(cx), self.rows_date).into();
+    }
+
+    /// The current width. The integration persists it in the config (PLAN §32).
+    pub fn width(&self) -> Pixels {
+        self.width
+    }
+
+    /// Sets the width, clamped to what keeps both the list and the editor usable.
+    pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        self.width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+        cx.notify();
     }
 
     /// The text in the search field.
@@ -716,6 +740,7 @@ impl Render for Sidebar {
 
         div()
             .debug_selector(|| "sidebar".into())
+            .relative()
             .flex_none()
             .w(self.width)
             .h_full()
@@ -821,6 +846,24 @@ impl Render for Sidebar {
                             .track_scroll(self.scroll.clone()),
                         )
                     }),
+            )
+            .child(
+                div()
+                    .id("sidebar-resize-handle")
+                    .debug_selector(|| "sidebar-resize-handle".into())
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .h_full()
+                    .w(RESIZE_HANDLE_WIDTH)
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .on_drag(DraggedEdge, |_, _, _, cx| cx.new(|_| DraggedEdge)),
+            )
+            // Moves are reported here even when the pointer leaves the sidebar mid-drag.
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<DraggedEdge>, _, cx| {
+                    this.set_width(event.event.position.x - event.bounds.left(), cx)
+                }),
             )
             .when_some(self.menu.as_ref(), |sidebar, menu| {
                 sidebar.child(self.render_menu(menu, cx))
