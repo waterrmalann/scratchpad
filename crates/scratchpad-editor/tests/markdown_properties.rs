@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use scratchpad_editor::markdown::{Decoration, MarkdownState};
-use scratchpad_editor::{Buffer, ByteOffset};
+use scratchpad_editor::{Bias, Buffer, ByteOffset, Selection};
 
 /// Markdown syntax fragments, prose and hostile Unicode that combine into well-formed and malformed documents.
 const ATOMS: &[&str] = &[
@@ -109,5 +109,43 @@ proptest! {
         let buffer = Buffer::from_text(&text);
         let decorations = MarkdownState::new(&buffer).decorations(&buffer, ByteOffset(0)..buffer.end());
         check_well_formed(&buffer.normalized_text(), &decorations)?;
+    }
+
+    /// Styled lines cover each line with consecutive spans on char boundaries, and mapping a column to the
+    /// display and back lands on the same column or across the hidden markers next to it.
+    #[test]
+    fn styled_lines_cover_lines_and_columns_round_trip(
+        text in markdown_text(),
+        anchor in 0..200usize,
+        head in 0..200usize,
+    ) {
+        let buffer = Buffer::from_text(&text);
+        let selection = Selection::new(
+            buffer.clip_offset(ByteOffset(anchor), Bias::Left),
+            buffer.clip_offset(ByteOffset(head), Bias::Left),
+        );
+        let lines = MarkdownState::new(&buffer).styled_lines(&buffer, 0..buffer.line_count(), Some(selection));
+        prop_assert_eq!(lines.len(), buffer.line_count());
+        for (i, line) in lines.iter().enumerate() {
+            let line_text = buffer.line_text(i);
+            let mut end = 0;
+            for span in &line.spans {
+                prop_assert_eq!(span.columns.start, end);
+                prop_assert!(span.columns.start < span.columns.end);
+                prop_assert!(line_text.is_char_boundary(span.columns.end));
+                end = span.columns.end;
+            }
+            prop_assert_eq!(end, line_text.len());
+            let display = line.display_text(&line_text);
+            for column in (0..=line_text.len()).filter(|&c| line_text.is_char_boundary(c)) {
+                let shown = line.display_column(column);
+                prop_assert!(display.is_char_boundary(shown));
+                let left = line.buffer_column(shown, Bias::Left);
+                let right = line.buffer_column(shown, Bias::Right);
+                prop_assert!(left <= column && column <= right, "{column} -> {shown} -> {left}..{right}");
+                prop_assert_eq!(line.display_column(left), shown);
+                prop_assert_eq!(line.display_column(right), shown);
+            }
+        }
     }
 }

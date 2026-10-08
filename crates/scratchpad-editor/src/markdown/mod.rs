@@ -2,10 +2,14 @@
 //! replaces its text.
 //!
 //! [`MarkdownState`] splits the document into block regions (ADR 0041) and parses a region with pulldown-cmark
-//! (ADR 0040) only when something asks for its decorations.
+//! (ADR 0040) only when something asks for its decorations. A renderer asks for [`StyledLine`]s of the visible
+//! lines, which also say which syntax markers live preview hides around the selection (ADR 0042).
 
 mod blocks;
 mod parse;
+mod style;
+
+pub use style::{MarkerKind, SpanStyle, StyledLine, StyledSpan};
 
 use std::borrow::Cow;
 use std::ops::Range;
