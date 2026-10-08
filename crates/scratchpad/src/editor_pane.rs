@@ -172,10 +172,17 @@ impl Render for EditorPane {
                     .flex_1()
                     .min_h_0()
                     .child(self.editor.clone())
-                    // Clear of the scrollbar on the right edge.
-                    .children(
-                        find_bar.map(|bar| div().absolute().top(px(8.)).right(px(20.)).child(bar)),
-                    ),
+                    // Clear of the scrollbar on the right edge, and no wider than the editor.
+                    .children(find_bar.map(|bar| {
+                        div()
+                            .absolute()
+                            .top(px(8.))
+                            .left(px(8.))
+                            .right(px(20.))
+                            .flex()
+                            .justify_end()
+                            .child(bar)
+                    })),
             )
     }
 }

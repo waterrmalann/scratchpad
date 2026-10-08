@@ -243,6 +243,7 @@ impl Render for FindBar {
             .block_mouse_except_scroll()
             .debug_selector(|| "find-bar".into())
             .on_action(cx.listener(|this, _: &ToggleMatchCase, _, cx| this.toggle_match_case(cx)))
+            .min_w_0()
             .flex()
             .items_center()
             .gap_1()
@@ -255,7 +256,9 @@ impl Render for FindBar {
             .child(
                 div()
                     .id("find-field")
+                    // Narrower in a narrow editor, down to room for a few words.
                     .w(px(260.))
+                    .min_w(px(120.))
                     .h(px(28.))
                     .px_2()
                     .flex()

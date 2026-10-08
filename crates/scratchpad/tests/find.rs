@@ -466,6 +466,19 @@ fn small_notes_are_searched_on_the_ui_thread(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_bar_fits_in_a_narrow_editor(cx: &mut TestAppContext) {
+    let mut find = open(cx, "text");
+    find.cx.simulate_resize(size(px(560.), px(400.)));
+    find.keys("ctrl-f");
+    let pane = find.cx.debug_bounds("editor-pane").unwrap();
+    let bar = find.cx.debug_bounds("find-bar").unwrap();
+    assert!(
+        pane.left() < bar.left() && bar.right() < pane.right(),
+        "{bar:?} is not inside {pane:?}"
+    );
+}
+
+#[gpui::test]
 fn ctrl_f_with_the_settings_open_closes_them_and_opens_the_bar(cx: &mut TestAppContext) {
     let (root, cx) = common::open_main_window(cx);
     let bar = find_bar(&root, cx);
