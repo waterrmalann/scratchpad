@@ -6,6 +6,19 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+chrono.workspace = true
+dirs.workspace = true
+notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+trash.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
