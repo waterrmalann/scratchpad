@@ -185,6 +185,16 @@ fn check_invariants(editor: &Editor) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+/// How many steps undo can take.
+fn undo_depth(editor: &Editor) -> usize {
+    let mut editor = editor.clone();
+    let mut depth = 0;
+    while editor.undo() {
+        depth += 1;
+    }
+    depth
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -200,29 +210,39 @@ proptest! {
         editor.move_to(ByteOffset(start), false);
         let original = editor.buffer().normalized_text();
 
-        let mut before_first_edit: Option<Selection> = None;
-        let mut after_last_edit = None;
+        // The selection before and after each undo step. Edits that cancel out (typing and backspacing in one
+        // transaction, a composition committed as nothing) leave no step, so the steps are tracked by watching
+        // the undo depth: an op either adds a step, extends the last one (never a transaction), removes it, or
+        // leaves no trace.
+        let mut steps: Vec<(Selection, Selection)> = Vec::new();
         for op in &ops {
             let selection = editor.selection();
             let version = editor.buffer().version();
             apply(&mut editor, op);
-            if editor.buffer().version() != version {
-                before_first_edit.get_or_insert(selection);
-                after_last_edit = Some(editor.selection());
+            let depth = undo_depth(&editor);
+            if depth > steps.len() {
+                steps.push((selection, editor.selection()));
+            } else if depth < steps.len() {
+                steps.pop();
+            } else if editor.buffer().version() != version
+                && !matches!(op, Op::Transaction(_))
+                && let Some(last) = steps.last_mut()
+            {
+                last.1 = editor.selection();
             }
         }
         let edited = editor.buffer().normalized_text();
 
         while editor.undo() {}
         prop_assert_eq!(editor.buffer().normalized_text(), original);
-        if let Some(selection) = before_first_edit {
-            prop_assert_eq!(editor.selection(), selection);
+        if let Some((before_first, _)) = steps.first() {
+            prop_assert_eq!(editor.selection(), *before_first);
         }
 
         while editor.redo() {}
         prop_assert_eq!(editor.buffer().normalized_text(), edited);
-        if let Some(selection) = after_last_edit {
-            prop_assert_eq!(editor.selection(), selection);
+        if let Some((_, after_last)) = steps.last() {
+            prop_assert_eq!(editor.selection(), *after_last);
         }
     }
 
