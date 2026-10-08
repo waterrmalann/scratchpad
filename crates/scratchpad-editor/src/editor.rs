@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use crate::buffer::{Buffer, normalize_line_endings};
 use crate::coords::{Bias, ByteOffset, to_usize_range};
+use crate::motion::{self, Motion};
 use crate::selection::{Goal, Selection};
 
 /// Editor state for one document: buffer, selection and goal column. This is the source of truth the UI renders
@@ -37,6 +38,61 @@ impl Editor {
 
     pub fn goal(&self) -> Goal {
         self.goal
+    }
+
+    /// Sets the selection, snapping both ends to grapheme boundaries, and clears the goal.
+    pub fn set_selection(&mut self, selection: Selection) {
+        self.select(selection, Goal::None);
+    }
+
+    /// Moves the head to `offset` (a click), keeping the anchor when `extend` is set (a shift-click or
+    /// drag).
+    pub fn move_to(&mut self, offset: ByteOffset, extend: bool) {
+        self.move_to_with_goal(offset, extend, Goal::None);
+    }
+
+    /// Like [`Editor::move_to`] but sets the goal afterwards. The view uses this for vertical movement
+    /// over wrapped lines, storing its horizontal position as [`Goal::Horizontal`].
+    pub fn move_to_with_goal(&mut self, offset: ByteOffset, extend: bool, goal: Goal) {
+        let anchor = if extend {
+            self.selection.anchor
+        } else {
+            offset
+        };
+        self.select(Selection::new(anchor, offset), goal);
+    }
+
+    /// Applies a keyboard motion; with `extend` (Shift) the anchor stays put.
+    pub fn move_cursor(&mut self, motion: Motion, extend: bool) {
+        let (selection, goal) =
+            motion::apply(&self.buffer, self.selection, self.goal, motion, extend);
+        self.select(selection, goal);
+    }
+
+    pub fn select_all(&mut self) {
+        self.set_selection(Selection::new(ByteOffset(0), self.buffer.end()));
+    }
+
+    /// Selects the word, punctuation run or whitespace run at `offset` (double-click).
+    pub fn select_word_at(&mut self, offset: ByteOffset) {
+        let offset = self.buffer.clip_offset(offset, Bias::Left);
+        let range = motion::word_range_at(&self.buffer, offset);
+        self.set_selection(Selection::new(range.start, range.end));
+    }
+
+    /// Selects the line at `offset` including its line break (triple-click).
+    pub fn select_line_at(&mut self, offset: ByteOffset) {
+        let range = motion::line_range_at(&self.buffer, offset);
+        self.set_selection(Selection::new(range.start, range.end));
+    }
+
+    /// Every selection change that is not an edit goes through here.
+    fn select(&mut self, selection: Selection, goal: Goal) {
+        self.selection = Selection::new(
+            self.buffer.clip_offset(selection.anchor, Bias::Left),
+            self.buffer.clip_offset(selection.head, Bias::Left),
+        );
+        self.goal = goal;
     }
 
     /// Replaces `range` with `text` and puts the cursor after the inserted text. Line breaks in `text` are

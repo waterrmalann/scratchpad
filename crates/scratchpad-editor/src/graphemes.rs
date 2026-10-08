@@ -82,6 +82,18 @@ impl<'a> Graphemes<'a> {
         }
     }
 
+    /// The char at the cursor, i.e. the first char of the cluster after it; `None` at the end of the rope.
+    pub fn char_after(&self) -> Option<char> {
+        let offset = self.offset();
+        offset
+            .checked_sub(self.chunk_start)
+            .and_then(|i| self.chunk.get(i..)?.chars().next())
+            .or_else(|| {
+                (offset < self.rope.len_bytes())
+                    .then(|| self.rope.char(self.rope.byte_to_char(offset)))
+            })
+    }
+
     fn load_chunk_containing(&mut self, byte: usize) {
         let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(byte);
         self.chunk = Cow::Borrowed(chunk);
@@ -232,11 +244,28 @@ mod tests {
     }
 
     #[test]
+    fn char_after_follows_the_cursor_across_chunks() {
+        let text = "ab👍".repeat(1000);
+        let rope = Rope::from_str(&text);
+        let mut walk = Graphemes::at(&rope, 0);
+        loop {
+            assert_eq!(walk.char_after(), text[walk.offset()..].chars().next());
+            if walk.next().is_none() {
+                break;
+            }
+        }
+        while walk.prev().is_some() {
+            assert_eq!(walk.char_after(), text[walk.offset()..].chars().next());
+        }
+    }
+
+    #[test]
     fn empty_rope_has_a_single_boundary() {
         let rope = Rope::new();
         let mut graphemes = Graphemes::at(&rope, 0);
         assert!(graphemes.is_boundary());
         assert_eq!(graphemes.prev(), None);
         assert_eq!(graphemes.next(), None);
+        assert_eq!(graphemes.char_after(), None);
     }
 }
