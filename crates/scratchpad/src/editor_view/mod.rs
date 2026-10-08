@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, Pixels, Subscription, Task, Window,
-    WindowTextSystem, div, font, prelude::*, px,
+    App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Pixels,
+    Subscription, Task, Window, WindowTextSystem, div, font, prelude::*, px,
 };
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion};
 
@@ -36,6 +36,17 @@ const MIN_SIDE_PADDING: Pixels = px(32.);
 const TOP_PADDING: Pixels = px(32.);
 /// Rows kept between the cursor and the viewport edge when the view scrolls to the cursor.
 const AUTOSCROLL_MARGIN_ROWS: f32 = 2.;
+/// Inserted by the Tab key: spaces look the same in every font and Markdown reads them as
+/// indentation (ADR 0031).
+const TAB: &str = "    ";
+
+/// Emitted by [`EditorView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorEvent {
+    /// The text changed through user input (typing, IME, paste, undo, ...). Not emitted by
+    /// [`EditorView::set_text`].
+    Changed,
+}
 
 /// A text editor for one document.
 pub struct EditorView {
@@ -57,6 +68,8 @@ pub struct EditorView {
     input_at: Option<Instant>,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<EditorEvent> for EditorView {}
 
 impl Focusable for EditorView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -127,6 +140,17 @@ impl EditorView {
     }
 
     // --- Engine plumbing ---
+
+    /// Runs an edit, notifying observers if the text changed and scrolling to the cursor.
+    fn edit(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut Editor)) {
+        let version = self.editor.buffer().version();
+        edit(&mut self.editor);
+        if self.editor.buffer().version() != version {
+            cx.emit(EditorEvent::Changed);
+        }
+        self.autoscroll = true;
+        self.selection_changed(cx);
+    }
 
     fn selection_changed(&mut self, cx: &mut Context<Self>) {
         self.input_at.get_or_insert_with(Instant::now);
@@ -256,6 +280,26 @@ impl EditorView {
         self.editor.select_all();
         self.selection_changed(cx);
     }
+
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.editor.copy() {
+            cx.write_to_clipboard(clipboard_item(text));
+        }
+    }
+
+    fn cut(&mut self, cx: &mut Context<Self>) {
+        let mut cut = None;
+        self.edit(cx, |editor| cut = editor.cut());
+        if let Some(text) = cut {
+            cx.write_to_clipboard(clipboard_item(text));
+        }
+    }
+
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.edit(cx, |editor| editor.paste(&text));
+        }
+    }
 }
 
 impl Render for EditorView {
@@ -343,6 +387,36 @@ impl Render for EditorView {
                 this.move_in_row(true, true, window, cx)
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &Backspace, _, cx| this.edit(cx, Editor::backspace)))
+            .on_action(cx.listener(|this, _: &Delete, _, cx| this.edit(cx, Editor::delete_forward)))
+            .on_action(cx.listener(|this, _: &DeleteWordLeft, _, cx| {
+                this.edit(cx, Editor::delete_word_backward)
+            }))
+            .on_action(cx.listener(|this, _: &DeleteWordRight, _, cx| {
+                this.edit(cx, Editor::delete_word_forward)
+            }))
+            .on_action(
+                cx.listener(|this, _: &Newline, _, cx| this.edit(cx, Editor::insert_newline)),
+            )
+            .on_action(cx.listener(|this, _: &Tab, _, cx| this.edit(cx, |e| e.insert_text(TAB))))
+            .on_action(
+                cx.listener(|this, _: &DuplicateLines, _, cx| {
+                    this.edit(cx, Editor::duplicate_lines)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &MoveLinesUp, _, cx| this.edit(cx, Editor::move_lines_up)),
+            )
+            .on_action(
+                cx.listener(|this, _: &MoveLinesDown, _, cx| {
+                    this.edit(cx, Editor::move_lines_down)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &Undo, _, cx| this.edit(cx, |e| _ = e.undo())))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| this.edit(cx, |e| _ = e.redo())))
+            .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
+            .on_action(cx.listener(|this, _: &Cut, _, cx| this.cut(cx)))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
             .child(EditorElement::new(cx.entity()))
     }
 }
@@ -446,4 +520,15 @@ fn text_column(bounds: Bounds<Pixels>) -> (Pixels, Pixels) {
         .max(px(1.));
     let left = bounds.left() + ((bounds.size.width - width) / 2.).floor();
     (left, width)
+}
+
+/// Windows apps expect CRLF line breaks on the clipboard; the engine uses LF (ADR 0003). Pasted
+/// text is normalised by the engine.
+fn clipboard_item(text: String) -> ClipboardItem {
+    let text = if cfg!(windows) {
+        text.replace('\n', "\r\n")
+    } else {
+        text
+    };
+    ClipboardItem::new_string(text)
 }

@@ -5,11 +5,13 @@
 
 mod common;
 
+use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::{Entity, TestAppContext, VisualTestContext, px, size};
-use scratchpad::editor_view::EditorView;
+use gpui::{ClipboardItem, Entity, TestAppContext, VisualTestContext, px, size};
+use scratchpad::editor_view::{EditorEvent, EditorView};
 
 const CHARS_PER_ROW: usize = 75;
 
@@ -23,6 +25,10 @@ fn open_editor<'a>(
     editor.update(cx, |editor, cx| editor.set_text(text, cx));
     cx.run_until_parked();
     (editor, cx)
+}
+
+fn text(editor: &Entity<EditorView>, cx: &mut VisualTestContext) -> String {
+    editor.read_with(cx, |editor, _| editor.editor().buffer().normalized_text())
 }
 
 /// The selection as `(anchor, head)` byte offsets.
@@ -50,6 +56,58 @@ fn visible_lines(editor: &Entity<EditorView>, cx: &mut VisualTestContext) -> Ran
 
 fn numbered_lines(count: usize) -> String {
     (0..count).map(|i| format!("line {i}\n")).collect()
+}
+
+fn clipboard_line_break() -> &'static str {
+    if cfg!(windows) { "\r\n" } else { "\n" }
+}
+
+#[gpui::test]
+fn word_motions_and_word_deletion(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "one two  three");
+
+    cx.simulate_keystrokes("ctrl-right ctrl-right");
+    assert_eq!(cursor(&editor, cx), 7);
+    cx.simulate_keystrokes("ctrl-backspace");
+    assert_eq!(text(&editor, cx), "one   three");
+    assert_eq!(cursor(&editor, cx), 4);
+    cx.simulate_keystrokes("ctrl-delete");
+    assert_eq!(text(&editor, cx), "one ");
+    cx.simulate_keystrokes("ctrl-left");
+    assert_eq!(cursor(&editor, cx), 0);
+}
+
+#[gpui::test]
+fn select_all_and_cut_moves_the_document_to_the_clipboard(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "first\nsecond");
+
+    cx.simulate_keystrokes("ctrl-a ctrl-x");
+
+    assert_eq!(text(&editor, cx), "");
+    let clipboard = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        clipboard,
+        Some(format!("first{}second", clipboard_line_break()))
+    );
+
+    cx.simulate_keystrokes("ctrl-v");
+    assert_eq!(text(&editor, cx), "first\nsecond");
+}
+
+#[gpui::test]
+fn copy_keeps_the_document_and_paste_normalizes_line_breaks(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "ab");
+
+    cx.simulate_keystrokes("shift-right ctrl-c");
+    let clipboard = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(clipboard.as_deref(), Some("a"));
+    assert_eq!(text(&editor, cx), "ab");
+
+    cx.write_to_clipboard(ClipboardItem::new_string("x\r\ny\rz\n".into()));
+    cx.simulate_keystrokes("end ctrl-v");
+
+    assert_eq!(text(&editor, cx), "abx\ny\nz\n");
+    assert_eq!(cursor(&editor, cx), "abx\ny\nz\n".len());
 }
 
 #[gpui::test]
@@ -80,6 +138,29 @@ fn the_caret_blinks_only_while_focused(cx: &mut TestAppContext) {
     assert!(!caret_visible(cx), "hidden in an inactive window");
     wait(2_000, cx);
     assert!(!caret_visible(cx));
+}
+
+#[gpui::test]
+fn duplicate_and_move_lines(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "one\ntwo\nthree");
+
+    cx.simulate_keystrokes("ctrl-shift-d");
+    assert_eq!(text(&editor, cx), "one\none\ntwo\nthree");
+    assert_eq!(line_of_cursor(&editor, cx), 1);
+
+    cx.simulate_keystrokes("alt-down alt-down");
+    assert_eq!(text(&editor, cx), "one\ntwo\nthree\none");
+    cx.simulate_keystrokes("alt-up");
+    assert_eq!(text(&editor, cx), "one\ntwo\none\nthree");
+}
+
+#[gpui::test]
+fn tab_inserts_spaces(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "x");
+
+    cx.simulate_keystrokes("tab");
+
+    assert_eq!(text(&editor, cx), "    x");
 }
 
 /// Emoji ZWJ sequences, flags, stacked combining marks, CJK without spaces, tabs and a word wider
@@ -114,6 +195,32 @@ fn down_visits_every_row_and_home_and_end_stay_on_it(cx: &mut TestAppContext) {
     }
     // The paragraph wraps before the long word, which is broken once; then two short lines.
     assert_eq!(rows, 5);
+}
+
+#[gpui::test]
+fn text_changes_are_reported_but_loading_is_not(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let _subscription = cx.update(|_, cx| {
+        let events = events.clone();
+        cx.subscribe(&editor, move |_, event: &EditorEvent, _| {
+            events.borrow_mut().push(*event)
+        })
+    });
+
+    editor.update(cx, |editor, cx| editor.set_text("loaded", cx));
+    cx.simulate_keystrokes("right shift-right");
+    assert!(
+        events.borrow().is_empty(),
+        "loading and moving are not edits"
+    );
+
+    cx.simulate_keystrokes("enter ctrl-z");
+    assert_eq!(
+        *events.borrow(),
+        [EditorEvent::Changed, EditorEvent::Changed]
+    );
+    assert_eq!(editor.read_with(cx, |editor, _| editor.text()), "loaded");
 }
 
 #[gpui::test]
@@ -221,6 +328,6 @@ fn huge_documents_only_lay_out_visible_lines(cx: &mut TestAppContext) {
     assert!(visible.len() < 40, "{visible:?}");
     assert!(laid_out(cx) < 50, "{} lines shaped", laid_out(cx));
 
-    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_keystrokes("ctrl-end enter");
     assert!(laid_out(cx) < 100, "{} lines shaped", laid_out(cx));
 }
