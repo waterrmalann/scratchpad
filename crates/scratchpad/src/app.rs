@@ -18,6 +18,9 @@ const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1100.), px(720.));
 const MIN_WINDOW_SIZE: Size<Pixels> = size(px(560.), px(360.));
 /// Overrides the notes folder, e.g. to try the app against a scratch folder.
 const NOTES_DIR_ENV: &str = "SCRATCHPAD_NOTES_DIR";
+/// Overrides where the config file and recovery snapshots live, so a trial run (or a manual
+/// test) never touches the user's own settings. See ADR 0082.
+const CONFIG_DIR_ENV: &str = "SCRATCHPAD_CONFIG_DIR";
 
 /// Where the app keeps its files. [`run`] uses the platform's folders; tests use temp folders.
 #[derive(Clone, Debug)]
@@ -41,14 +44,21 @@ pub fn run() {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting Scratchpad");
 
     // Only the tiny config file is read before the window opens (PLAN §39).
-    let config_path = default_config_path();
+    let config_dir = config_dir_override();
+    let config_path = match &config_dir {
+        Some(dir) => Some(dir.join("config.json")),
+        None => default_config_path(),
+    };
     let config = config_path.as_deref().map(Config::load).unwrap_or_default();
     let notes_dir_env = env_var(NOTES_DIR_ENV);
     let storage = Storage {
         notes_dir_overridden: notes_dir_env.is_some(),
         notes: NotesLocation::new(notes_dir(notes_dir_env, &config)),
         config_path,
-        recovery_dir: RecoveryStore::default_dir(),
+        recovery_dir: match config_dir {
+            Some(dir) => Some(dir.join("recovery")),
+            None => RecoveryStore::default_dir(),
+        },
         watch: true,
     };
     tracing::info!(dir = %storage.notes.dir.display(), "notes folder");
@@ -86,6 +96,12 @@ pub fn init(cx: &mut App) {
     cx.bind_keys(actions::key_bindings());
     cx.bind_keys(actions::editor::key_bindings());
     actions::register_app_handlers(cx);
+}
+
+/// The folder from `SCRATCHPAD_CONFIG_DIR`, which then holds the config file, recovery
+/// snapshots and the release log instead of the platform folders.
+pub(crate) fn config_dir_override() -> Option<PathBuf> {
+    env_var(CONFIG_DIR_ENV).map(PathBuf::from)
 }
 
 /// The environment variable `name`, unless it is unset or empty.

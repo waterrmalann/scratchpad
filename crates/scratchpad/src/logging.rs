@@ -6,10 +6,10 @@ use tracing_subscriber::EnvFilter;
 /// Installs the global `tracing` subscriber.
 ///
 /// Debug builds log to stderr. Release builds have no console (see `main.rs`), so they log to
-/// `<local data dir>/Scratchpad/scratchpad.log` (`%LOCALAPPDATA%` on Windows) and also record
-/// panics there. The previous run's log is kept as `scratchpad.prev.log`, so the log of a
-/// crash survives the relaunch that follows it. If the file cannot be created, logs go to
-/// stderr.
+/// `<local data dir>/Scratchpad/scratchpad.log` (`%LOCALAPPDATA%` on Windows, or the folder
+/// `SCRATCHPAD_CONFIG_DIR` names) and also record panics there. The previous run's log is
+/// kept as `scratchpad.prev.log`, so the log of a crash survives the relaunch that follows it.
+/// If the file cannot be created, logs go to stderr.
 ///
 /// The filter comes from `SCRATCHPAD_LOG`, then `RUST_LOG`, defaulting to `info`. GPUI logs
 /// through the `log` crate; those records are bridged into the same subscriber.
@@ -36,7 +36,10 @@ fn release_log_file() -> Option<File> {
     if cfg!(debug_assertions) {
         return None;
     }
-    let dir = dirs::data_local_dir()?.join("Scratchpad");
+    let dir = match crate::app::config_dir_override() {
+        Some(dir) => dir,
+        None => dirs::data_local_dir()?.join("Scratchpad"),
+    };
     fs::create_dir_all(&dir).ok()?;
     let path = dir.join("scratchpad.log");
     let _ = fs::rename(&path, dir.join("scratchpad.prev.log"));
