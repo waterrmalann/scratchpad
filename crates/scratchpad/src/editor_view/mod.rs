@@ -71,6 +71,8 @@ pub struct EditorView {
     drag: Option<Drag>,
     /// When the input being processed arrived, for the input-to-paint trace (PLAN §37).
     input_at: Option<Instant>,
+    /// Edits are ignored, e.g. while a note loads; the cursor still moves.
+    read_only: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -126,6 +128,7 @@ impl EditorView {
             blink_task: None,
             drag: None,
             input_at: None,
+            read_only: false,
             _subscriptions: subscriptions,
         }
     }
@@ -139,6 +142,47 @@ impl EditorView {
         self.scroll = ScrollAnchor::top(&viewport(self.bounds));
         self.drag = None;
         cx.notify();
+    }
+
+    /// Replaces the document with a newer version of it (e.g. edited by another program), keeping
+    /// the cursor on the same line and column and the scroll position as far as the new text
+    /// allows. History starts afresh, as with [`set_text`](Self::set_text).
+    pub fn reload_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let cursor = self
+            .editor
+            .buffer()
+            .offset_to_point(self.editor.selection().head);
+        let scroll = self.scroll;
+        self.set_text(text, cx);
+        let offset = self.editor.buffer().point_to_offset(cursor);
+        self.editor.move_to(offset, false);
+        // Clamped to the new document when it is next laid out.
+        self.scroll = scroll;
+    }
+
+    /// Like [`reload_text`](Self::reload_text), but as one undoable edit: for the user's choice
+    /// between two versions of a note, so the one replaced stays one undo away. Not reported as
+    /// [`EditorEvent::Changed`] (the caller decides whether the note now needs saving), and done
+    /// even while read-only.
+    pub fn replace_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let cursor = self
+            .editor
+            .buffer()
+            .offset_to_point(self.editor.selection().head);
+        let end = ByteOffset(self.editor.buffer().len());
+        self.editor.replace_range(ByteOffset(0)..end, text);
+        let offset = self.editor.buffer().point_to_offset(cursor);
+        self.editor.move_to(offset, false);
+        cx.notify();
+    }
+
+    /// While set, edits from the keyboard, IME and clipboard are ignored.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// The document as it should be saved, with its original line endings.
@@ -172,6 +216,9 @@ impl EditorView {
 
     /// Runs an edit, notifying observers if the text changed and scrolling to the cursor.
     fn edit(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut Editor)) {
+        if self.read_only {
+            return;
+        }
         let version = self.editor.buffer().version();
         edit(&mut self.editor);
         if self.editor.buffer().version() != version {

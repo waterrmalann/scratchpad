@@ -472,6 +472,75 @@ fn text_changes_are_reported_but_loading_is_not(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn reloading_keeps_the_cursor_and_scroll_position_where_the_text_allows(cx: &mut TestAppContext) {
+    let numbered =
+        |prefix: &str| -> String { (0..300).map(|n| format!("{prefix} {n}\n")).collect() };
+    let (editor, cx) = open_editor(cx, &numbered("line"));
+    cx.simulate_keystrokes("pagedown pagedown right right");
+    let top = visible_lines(&editor, cx).start;
+    let line = line_of_cursor(&editor, cx);
+    assert!(top > 0);
+
+    editor.update(cx, |editor, cx| editor.reload_text(&numbered("row"), cx));
+    cx.run_until_parked();
+
+    assert_eq!(visible_lines(&editor, cx).start, top);
+    assert_eq!(line_of_cursor(&editor, cx), line);
+    let line_start = editor.read_with(cx, |editor, _| editor.editor().buffer().line_start(line));
+    assert_eq!(cursor(&editor, cx) - line_start.0, 2);
+
+    // Shorter text: the cursor goes to the nearest place that still exists.
+    editor.update(cx, |editor, cx| editor.reload_text("one\ntwo", cx));
+    cx.run_until_parked();
+    assert_eq!(cursor(&editor, cx), "one\ntw".len());
+    assert_eq!(visible_lines(&editor, cx).start, 0);
+}
+
+#[gpui::test]
+fn replacing_the_text_keeps_the_old_text_one_undo_away(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "mine\nline two");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let _subscription = cx.update(|_, cx| {
+        let events = events.clone();
+        cx.subscribe(&editor, move |_, event: &EditorEvent, _| {
+            events.borrow_mut().push(*event)
+        })
+    });
+    cx.simulate_keystrokes("down end");
+    editor.update(cx, |editor, _| editor.set_read_only(true));
+
+    editor.update(cx, |editor, cx| {
+        editor.replace_text("theirs\nother two", cx)
+    });
+
+    assert_eq!(text(&editor, cx), "theirs\nother two");
+    assert_eq!(cursor(&editor, cx), "theirs\nline two".len());
+    assert!(events.borrow().is_empty(), "not reported as an edit");
+    editor.update(cx, |editor, _| editor.set_read_only(false));
+    cx.simulate_keystrokes("ctrl-z");
+    assert_eq!(text(&editor, cx), "mine\nline two");
+}
+
+#[gpui::test]
+fn a_read_only_editor_moves_the_cursor_but_ignores_edits(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "fixed");
+    cx.write_to_clipboard(ClipboardItem::new_string("pasted".into()));
+    editor.update(cx, |editor, _| editor.set_read_only(true));
+
+    cx.simulate_input("typed");
+    cx.simulate_keystrokes("end backspace enter ctrl-v ctrl-x home shift-end");
+    editor.update_in(cx, |editor, window, cx| {
+        editor.replace_and_mark_text_in_range(None, "ime", None, window, cx)
+    });
+
+    assert_eq!(text(&editor, cx), "fixed");
+    assert_eq!(selection(&editor, cx), (0, 5));
+    editor.update(cx, |editor, _| editor.set_read_only(false));
+    cx.simulate_input("x");
+    assert_eq!(text(&editor, cx), "x");
+}
+
+#[gpui::test]
 fn up_down_home_and_end_follow_wrapped_rows(cx: &mut TestAppContext) {
     // 40 five-char words: wraps after every 15 words (75 chars).
     let line = "word ".repeat(40);
