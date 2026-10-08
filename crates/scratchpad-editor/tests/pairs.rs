@@ -34,7 +34,13 @@ fn typing_a_call_closes_and_then_steps_over_the_parenthesis() {
 fn openers_pair_only_before_whitespace_closers_punctuation_or_the_line_end() {
     assert_eq!(typed("a | b", "("), "a (|) b");
     assert_eq!(typed("|)", "["), "[|])");
-    assert_eq!(typed("|.", "{"), "{|}.");
+    for punctuation in [".", ",", ";", ":", "!", "?", "]", "}"] {
+        assert_eq!(
+            typed(&format!("|{punctuation}"), "{"),
+            format!("{{|}}{punctuation}")
+        );
+    }
+    assert_eq!(typed("|-", "("), "(|-");
     assert_eq!(typed("|\nx", "("), "(|)\nx");
     assert_eq!(typed("fo|o", "("), "fo(|o");
     assert_eq!(typed("|word", "\""), "\"|word");
