@@ -7,8 +7,8 @@ use std::path::Path;
 
 use common::{click, days_ago, editor_text, titles_on_disk, wait, write_note};
 use gpui::{
-    Entity, Focusable, KeyUpEvent, Keystroke, Modifiers, TestAppContext, VisualTestContext, point,
-    px,
+    Entity, EntityInputHandler, Focusable, KeyUpEvent, Keystroke, Modifiers, TestAppContext,
+    VisualTestContext, point, px,
 };
 use scratchpad::notes::Selection;
 use scratchpad::session::{AUTOSAVE_DELAY, Notice};
@@ -455,5 +455,59 @@ milk",
         fs::read_to_string(new.path().join("Shopping.md")).unwrap(),
         "Shopping
 milk"
+    );
+}
+
+/// Switches to `dir` the way the settings panel does once the folder has been opened.
+fn switch_folder(root: &Entity<AppWindow>, dir: &Path, cx: &mut VisualTestContext) {
+    let location = common::location(dir);
+    let store = location.open_writable().unwrap();
+    let session = common::session(root, cx);
+    let notes = common::notes(root, cx);
+    session.update(cx, |session, cx| session.change_folder(dir.to_owned(), cx));
+    notes.update(cx, |notes, cx| notes.change_folder(location, store, cx));
+}
+
+#[gpui::test]
+fn a_failed_save_heard_of_after_the_folder_changed_does_not_replace_newer_text(
+    cx: &mut TestAppContext,
+) {
+    let old = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let ideas = write_note(old.path(), "Ideas", "Ideas\nbody", days_ago(0, 10));
+    let (_data, storage, root, cx) = open_on(old.path(), cx);
+    let session = common::session(&root, cx);
+    let editor = common::editor(&root, cx);
+    let recovery = RecoveryStore::new(storage.recovery_dir.unwrap());
+    set_read_only(&ideas, true);
+    focus_editor(&root, cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input(" one");
+
+    // A save fails on a background thread and keeps its text in a snapshot...
+    session.update(cx, |session, cx| session.flush(cx));
+    while recovery.list().is_empty() {
+        assert!(cx.executor().tick());
+    }
+    // ...but before the app hears back, more is typed and the folder changes. That save
+    // fails too.
+    editor.update_in(cx, |editor, window, cx| {
+        editor.replace_text_in_range(None, " two", window, cx)
+    });
+    switch_folder(&root, new.path(), cx);
+    cx.run_until_parked();
+    set_read_only(&ideas, false);
+
+    assert_eq!(
+        notices(&root, cx),
+        [Notice::Recovered {
+            title: "Ideas".into(),
+            new_note: false
+        }]
+    );
+    click("choice:Restore", cx);
+    assert_eq!(
+        fs::read_to_string(new.path().join("Ideas.md")).unwrap(),
+        "Ideas\nbody one two"
     );
 }

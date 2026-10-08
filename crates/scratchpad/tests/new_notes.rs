@@ -9,7 +9,8 @@ use common::{click, days_ago, editor_text, titles_on_disk, wait, write_note};
 use gpui::{Entity, Focusable, TestAppContext, VisualTestContext};
 use scratchpad::AppWindow;
 use scratchpad::notes::Selection;
-use scratchpad::session::AUTOSAVE_DELAY;
+use scratchpad::session::{AUTOSAVE_DELAY, Choice, Notice};
+use scratchpad_core::NoteEvent;
 
 fn open_title(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Option<String> {
     let notes = common::notes(root, cx);
@@ -187,6 +188,194 @@ fn renaming_in_the_sidebar_while_a_save_runs_leaves_no_old_file(cx: &mut TestApp
     assert_eq!(
         fs::read_to_string(dir.path().join("Plans.md")).unwrap(),
         "Ideas\nand plans"
+    );
+}
+
+#[gpui::test]
+fn renaming_a_note_left_while_its_save_runs_keeps_its_edits(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "Ideas\n", days_ago(0, 10));
+    let meeting = write_note(dir.path(), "Meeting", "Meeting", days_ago(0, 9));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let session = common::session(&root, cx);
+    let notes = common::notes(&root, cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input("and plans");
+
+    // Leaving the note hands its save to a background thread; it has not run yet when the
+    // sidebar renames the note (e.g. on a slow network drive).
+    notes.update(cx, |notes, cx| notes.select(&meeting, cx));
+    while !session.read_with(cx, |session, _| session.is_writing()) {
+        assert!(cx.executor().tick());
+    }
+    notes
+        .update(cx, |notes, cx| notes.rename(&ideas, "Plans", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(titles_on_disk(dir.path()), ["Meeting", "Plans"]);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("Plans.md")).unwrap(),
+        "Ideas\nand plans"
+    );
+    assert_eq!(editor_text(&root, cx), "Meeting");
+}
+
+#[gpui::test]
+fn quitting_while_a_save_recreates_a_renamed_note_leaves_no_old_file(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "Ideas\nmine", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let session = common::session(&root, cx);
+    let notes = common::notes(&root, cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input(" edited");
+    fs::write(&ideas, "Ideas\ntheirs").unwrap();
+    session.update(cx, |session, cx| {
+        session.disk_events(vec![NoteEvent::Changed(ideas.clone())], cx)
+    });
+    cx.run_until_parked();
+
+    // Keeping my version saves over whatever the file holds. That save has not run yet when
+    // the sidebar renames the note, so it brings the old name back...
+    session.update_in(cx, |session, window, cx| {
+        session.choose(Choice::KeepMine, window, cx)
+    });
+    while !session.read_with(cx, |session, _| session.is_writing()) {
+        assert!(cx.executor().tick());
+    }
+    notes
+        .update(cx, |notes, cx| notes.rename(&ideas, "Plans", cx))
+        .unwrap();
+    while !ideas.exists() {
+        assert!(cx.executor().tick());
+    }
+    // ...and the app quits before it hears back. Nothing runs after that.
+    cx.cx.update(|cx| cx.shutdown());
+
+    assert_eq!(titles_on_disk(dir.path()), ["Plans"]);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("Plans.md")).unwrap(),
+        "Ideas\nmine edited"
+    );
+}
+
+#[gpui::test]
+fn renaming_a_note_and_back_while_its_save_runs_keeps_it(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "Ideas\n", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let session = common::session(&root, cx);
+    let notes = common::notes(&root, cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input("and plans");
+
+    // The save writes on a background thread; before the app hears back, the sidebar renames
+    // the note and then back.
+    session.update(cx, |session, cx| session.flush(cx));
+    while fs::read_to_string(&ideas).unwrap() != "Ideas\nand plans" {
+        assert!(cx.executor().tick());
+    }
+    let plans = notes
+        .update(cx, |notes, cx| notes.rename(&ideas, "Plans", cx))
+        .unwrap();
+    notes
+        .update(cx, |notes, cx| notes.rename(&plans, "Ideas", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(titles_on_disk(dir.path()), ["Ideas"]);
+    assert_eq!(fs::read_to_string(&ideas).unwrap(), "Ideas\nand plans");
+}
+
+#[gpui::test]
+fn renaming_a_note_twice_while_its_save_runs_leaves_one_file(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "Ideas\n", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let session = common::session(&root, cx);
+    let notes = common::notes(&root, cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input("and plans");
+
+    // The save has not run yet when the sidebar renames the note twice.
+    session.update(cx, |session, cx| session.flush(cx));
+    while !session.read_with(cx, |session, _| session.is_writing()) {
+        assert!(cx.executor().tick());
+    }
+    let plans = notes
+        .update(cx, |notes, cx| notes.rename(&ideas, "Plans", cx))
+        .unwrap();
+    notes
+        .update(cx, |notes, cx| notes.rename(&plans, "Goals", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(titles_on_disk(dir.path()), ["Goals"]);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("Goals.md")).unwrap(),
+        "Ideas\nand plans"
+    );
+}
+
+#[gpui::test]
+fn deleting_a_note_renamed_while_its_save_runs_does_not_bring_it_back(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "Ideas\n", days_ago(0, 10));
+    write_note(dir.path(), "Meeting", "Meeting", days_ago(0, 9));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let session = common::session(&root, cx);
+    let notes = common::notes(&root, cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input("and plans");
+
+    // The save has not run yet when the sidebar renames the note, then deletes it.
+    session.update(cx, |session, cx| session.flush(cx));
+    while !session.read_with(cx, |session, _| session.is_writing()) {
+        assert!(cx.executor().tick());
+    }
+    let plans = notes
+        .update(cx, |notes, cx| notes.rename(&ideas, "Plans", cx))
+        .unwrap();
+    notes
+        .update(cx, |notes, cx| notes.delete(&plans, cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(titles_on_disk(dir.path()), ["Meeting"]);
+}
+
+#[gpui::test]
+fn renaming_while_a_save_finds_a_change_by_another_program_keeps_it(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "Ideas\n", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let session = common::session(&root, cx);
+    let notes = common::notes(&root, cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input("mine");
+    // Not reported by the watcher yet.
+    fs::write(&ideas, "Ideas\ntheirs").unwrap();
+
+    // The save has not run yet when the sidebar renames the note.
+    session.update(cx, |session, cx| session.flush(cx));
+    while !session.read_with(cx, |session, _| session.is_writing()) {
+        assert!(cx.executor().tick());
+    }
+    notes
+        .update(cx, |notes, cx| notes.rename(&ideas, "Plans", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    // Neither version is overwritten without asking.
+    assert_eq!(
+        fs::read_to_string(dir.path().join("Plans.md")).unwrap(),
+        "Ideas\ntheirs"
+    );
+    assert_eq!(editor_text(&root, cx), "Ideas\nmine");
+    assert_eq!(
+        session.read_with(cx, |session, _| session.notices()),
+        [Notice::ChangedOnDisk]
     );
 }
 

@@ -561,25 +561,10 @@ impl Session {
         text: SaveText,
         expected: Option<SaveText>,
         result: scratchpad_core::Result<Note>,
-        moved: Option<Moved>,
         cx: &mut Context<Self>,
     ) {
-        match (result, moved) {
-            (Ok(_), Some(moved)) => {
-                // The note was renamed or deleted while this save ran, which may have brought
-                // the old file back. Remove it, and save to the new name.
-                let text = text.get().clone();
-                self.enqueue(Job::RemoveIfUnchanged { path, text }, cx);
-                if let Moved::Renamed(to) = moved
-                    && self.doc.is_note(&to)
-                {
-                    self.doc.dirty = true;
-                    // The renamed file holds the old or the new text, depending on which won.
-                    self.doc.overwrite = true;
-                    self.persist(false, cx);
-                }
-            }
-            (Ok(note), None) => {
+        match result {
+            Ok(note) => {
                 if self.doc.is_note(&path) {
                     self.doc.disk_text = text.get().clone();
                     self.doc.snapshot = false;
@@ -587,20 +572,14 @@ impl Session {
                 self.notes
                     .update(cx, |notes, cx| notes.note_saved(note, cx));
             }
-            (Err(error), moved) => {
+            Err(error) => {
                 toast::show_file_error(&title_of(&path), &error, cx);
-                self.writer.save_failed(&path, expected);
-                let open = match &moved {
-                    Some(Moved::Renamed(to)) => self.doc.is_note(to),
-                    // Dropped, as the delete asked.
-                    Some(Moved::Deleted) => false,
-                    None => self.doc.is_note(&path),
-                };
-                if open {
+                self.writer.set_expected(&path, expected);
+                if self.doc.is_note(&path) {
                     // Saved again after the next edit or flush; the text is in a snapshot.
                     self.doc.dirty = true;
                     self.doc.snapshot = true;
-                } else if moved.is_none() {
+                } else {
                     self.offer_unsaved(path, text.get().to_string(), cx);
                 }
             }
@@ -609,13 +588,53 @@ impl Session {
 
     // --- Renames and deletes from the sidebar ---
 
+    /// The note `path` was renamed or deleted from the sidebar while a save of `text` to it ran.
+    /// The save may have brought the old file back, or found it gone and kept the text in a
+    /// snapshot under the old name: both go. After a rename the text is saved again under the
+    /// new name, expecting that file to hold `holds` (`None`: whatever it holds, i.e. its text
+    /// from before or after the save, depending on which came first); after a delete it is
+    /// dropped, as the delete asked.
+    fn moved_while_saving(
+        &mut self,
+        path: PathBuf,
+        text: SaveText,
+        moved: Moved,
+        holds: Option<SaveText>,
+        cx: &mut Context<Self>,
+    ) {
+        let written = text.get().clone();
+        self.enqueue(
+            Job::RemoveIfUnchanged {
+                path: path.clone(),
+                text: written,
+            },
+            cx,
+        );
+        self.enqueue(Job::RemoveSnapshot(path), cx);
+        if let Moved::Renamed(to) = moved {
+            if self.writer.has_save_for(&to) {
+                // Newer text, queued after the rename.
+                self.writer.set_expected(&to, holds);
+            } else {
+                let save = Job::Save {
+                    path: to,
+                    text,
+                    expected: holds,
+                };
+                self.enqueue(save, cx);
+            }
+        }
+    }
+
     fn renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
         self.writer.retarget(from, to);
         if let Some(running) = &mut self.writer.running
-            && matches!(&running.job, Job::Save { path, .. } if path == from)
-            && !same_name_ignoring_case(from, to)
+            && running.saving_to() == Some(from)
+            && let Job::Save { path: saving, .. } = &running.job
         {
-            running.moved = Some(Moved::Renamed(to.to_owned()));
+            // Back at the name it saves to (in any spelling), the save writes to the note again.
+            running.moved =
+                (!same_name_ignoring_case(saving, to)).then(|| Moved::Renamed(to.to_owned()));
         }
         // A load running now reads the old name, so its result would not be taken.
         let load_again = matches!(
@@ -644,7 +663,7 @@ impl Session {
         self.writer
             .retain_for(path, |job| matches!(job, Job::RemoveIfUnchanged { .. }));
         if let Some(running) = &mut self.writer.running
-            && matches!(&running.job, Job::Save { path: saving, .. } if saving == path)
+            && running.saving_to() == Some(path)
         {
             running.moved = Some(Moved::Deleted);
         }
@@ -935,16 +954,16 @@ impl Session {
     /// Writes everything still pending, on this thread, before the window closes or the app
     /// quits: tasks do not run after that.
     pub fn flush_sync(&mut self, cx: &mut Context<Self>) {
-        let renamed_while_saving = self
-            .writer
-            .running
-            .as_ref()
-            .and_then(|running| match &running.moved {
-                Some(Moved::Renamed(to)) => Some(to.clone()),
-                _ => None,
-            });
-        if renamed_while_saving.is_some_and(|to| self.doc.is_note(&to)) {
-            self.doc.dirty = true;
+        if let Some(Running {
+            job: Job::Save { path, text, .. },
+            moved: Some(moved),
+            ..
+        }) = &self.writer.running
+        {
+            // Its jobs run below, after the save if that is writing right now. Whether it wrote
+            // is not known, so the new name may hold its text.
+            let (path, text, moved) = (path.clone(), text.clone(), moved.clone());
+            self.moved_while_saving(path, text, moved, None, cx);
         }
         self.persist(true, cx);
         let flushed = self.writer.flush_marker();
@@ -1069,11 +1088,28 @@ impl Session {
 
     fn finish_job(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
         let Some(Running { job, moved, .. }) = self.writer.running.take() else {
+            // Taken over by a synchronous flush.
             return;
         };
-        match (job, outcome) {
-            (Job::Load(path), Outcome::Loaded(result)) => self.loaded(path, result, cx),
-            (Job::Check(path), Outcome::Checked(result)) => self.checked(path, result, cx),
+        match (job, outcome, moved) {
+            (Job::Load(path), Outcome::Loaded(result), _) => self.loaded(path, result, cx),
+            (Job::Check(path), Outcome::Checked(result), _) => self.checked(path, result, cx),
+            (
+                Job::Save {
+                    path,
+                    text,
+                    expected,
+                },
+                outcome @ (Outcome::Saved(_) | Outcome::ChangedOnDisk(_)),
+                Some(moved),
+            ) => {
+                // Unless it wrote, the note holds what the save expected.
+                let holds = match outcome {
+                    Outcome::Saved(Ok(_)) => None,
+                    _ => expected,
+                };
+                self.moved_while_saving(path, text, moved, holds, cx);
+            }
             (
                 Job::Save {
                     path,
@@ -1081,21 +1117,11 @@ impl Session {
                     expected,
                 },
                 Outcome::Saved(result),
-            ) => self.saved(path, text, expected, result, moved, cx),
-            (Job::Save { path, text, .. }, Outcome::ChangedOnDisk(disk)) => match moved {
-                // Renamed or deleted from the sidebar meanwhile, so nothing was written; the
-                // text goes to the new name with the next save.
-                Some(moved) => {
-                    self.enqueue(Job::RemoveSnapshot(path), cx);
-                    if let Moved::Renamed(to) = moved
-                        && self.doc.is_note(&to)
-                    {
-                        self.doc.dirty = true;
-                        self.persist(false, cx);
-                    }
-                }
-                None => self.changed_before_save(path, &text, disk, cx),
-            },
+                None,
+            ) => self.saved(path, text, expected, result, cx),
+            (Job::Save { path, text, .. }, Outcome::ChangedOnDisk(disk), None) => {
+                self.changed_before_save(path, &text, disk, cx)
+            }
             _ => {}
         }
     }

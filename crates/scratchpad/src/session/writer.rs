@@ -140,6 +140,18 @@ pub(super) struct Running {
     pub number: u64,
 }
 
+impl Running {
+    /// Where the note this job saves to is now: `None` if it is not a save, or the note was
+    /// deleted.
+    pub fn saving_to(&self) -> Option<&Path> {
+        match (&self.job, &self.moved) {
+            (Job::Save { path, .. }, None) => Some(path),
+            (Job::Save { .. }, Some(Moved::Renamed(to))) => Some(to),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Moved {
     Renamed(PathBuf),
@@ -204,15 +216,16 @@ impl Writer {
             })
     }
 
-    /// After a save of `path` failed, the file still holds what that save expected.
-    pub fn save_failed(&mut self, path: &Path, failed_expected: Option<SaveText>) {
+    /// Makes the queued saves of `path` expect the file to hold `holds` (`None`: write over
+    /// whatever it holds), e.g. what a failed save before them expected.
+    pub fn set_expected(&mut self, path: &Path, holds: Option<SaveText>) {
         for job in &mut self.queue {
             if let Job::Save {
                 path: p, expected, ..
             } = job
                 && p == path
             {
-                *expected = failed_expected.clone();
+                *expected = holds.clone();
             }
         }
     }
@@ -237,16 +250,17 @@ impl Writer {
         retarget(self.queue.iter_mut(), from, to);
     }
 
-    /// Every job that has not finished, in order, for a synchronous flush: the running one
-    /// first, unless it would recreate a moved note or has already run (`flushed` is the
-    /// flush marker's value): a save run twice would find its own text and take it for a
-    /// change by another program.
+    /// Every job that has not finished, in order, for a synchronous flush, which takes over the
+    /// running job: its outcome is ignored when it arrives, as it may be older than what the
+    /// flush did. The running job comes first, unless it would recreate a moved note or has
+    /// already run (`flushed` is the flush marker's value): a save run twice would find its own
+    /// text and take it for a change by another program.
     pub fn take_unfinished(&mut self, flushed: u64) -> Vec<Job> {
         let running = self
             .running
-            .as_ref()
+            .take()
             .filter(|running| running.moved.is_none() && running.number > flushed)
-            .map(|running| running.job.clone());
+            .map(|running| running.job);
         running.into_iter().chain(self.queue.drain(..)).collect()
     }
 
