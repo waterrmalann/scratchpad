@@ -262,6 +262,28 @@ fn malformed_markdown_degrades_to_plain_text() {
 }
 
 #[test]
+fn escapes_html_images_and_tables_stay_plain_text() {
+    for text in [
+        r"\*not emphasis\* \`not code\` \[not](a link)",
+        "<!-- *hidden* -->",
+        "![alt](pic.png)",
+        "| a | b |\n| --- | --- |\n| 1 | 2 |",
+        "bare a@b.c www.x.y http://plain.url",
+    ] {
+        assert_eq!(describe(text), [], "{text:?}");
+    }
+    // Raw HTML is not a construct of its own; Markdown between its tags is still styled.
+    assert_eq!(
+        describe("<span>**x**</span>"),
+        [d("Strong", "**x**", "x", &["**", "**"])]
+    );
+    assert_eq!(
+        describe("<a@b.c>"),
+        [d("Link a@b.c", "<a@b.c>", "a@b.c", &["<", ">"])]
+    );
+}
+
+#[test]
 fn unicode_content_keeps_char_boundaries() {
     assert_eq!(
         describe("# 日本語 🇩🇪\n\n**e\u{301}** [👋🏽](ü)"),
@@ -317,7 +339,7 @@ fn link_at_finds_the_destination_under_the_pointer() {
         Some("https://a.b/c")
     );
     assert_eq!(markdown.link_at(&buffer, ByteOffset(2)), None);
-    // The char after the link is not part of it.
+    // The opening bracket is part of the link, the space after the closing parenthesis is not.
     assert!(markdown.link_at(&buffer, ByteOffset(4)).is_some());
     assert_eq!(markdown.link_at(&buffer, ByteOffset(25)), None);
 }

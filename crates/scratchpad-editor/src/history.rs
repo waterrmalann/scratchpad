@@ -310,6 +310,24 @@ mod tests {
         );
     }
 
+    /// Undo restores the selection from before the first edit of a step, so an edit made from some other
+    /// selection (it moved without the group being broken) must not be folded into the step.
+    #[test]
+    fn typing_from_another_selection_starts_a_new_step() {
+        let at = |offset| Selection::cursor(ByteOffset(offset));
+        let mut history = History::default();
+        history.record(edit(0, "", "a"), EditKind::Typing, at(0), at(1));
+        history.record(edit(1, "", "b"), EditKind::Typing, at(1), at(2));
+        assert_eq!(
+            history.undo.len(),
+            1,
+            "continuing from the cursor extends the step"
+        );
+
+        history.record(edit(2, "", "c"), EditKind::Typing, at(0), at(3));
+        assert_eq!(history.undo.len(), 2);
+    }
+
     #[test]
     fn edits_that_do_not_touch_stay_separate() {
         assert_folds(

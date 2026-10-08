@@ -129,6 +129,7 @@ fn insert_link_wraps_the_selection_and_waits_for_the_destination() {
     assert!(ed.undo());
     assert_eq!(state(&ed), "a |");
 }
+
 #[test]
 fn a_selection_partly_formatted_becomes_formatted_as_a_whole() {
     let mut ed = editor("^a **bo|ld** c");
