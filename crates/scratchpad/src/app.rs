@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui::{
@@ -6,12 +7,15 @@ use gpui::{
 };
 
 use crate::app_window::AppWindow;
+use crate::notes::NotesLocation;
 use crate::theme::{self, ThemeMode};
 use crate::{actions, logging};
 
 const WINDOW_TITLE: &str = "Scratchpad";
 const DEFAULT_WINDOW_SIZE: Size<gpui::Pixels> = size(px(1100.), px(720.));
 const MIN_WINDOW_SIZE: Size<gpui::Pixels> = size(px(560.), px(360.));
+/// Overrides the notes folder, e.g. to try the app against a scratch folder.
+const NOTES_DIR_ENV: &str = "SCRATCHPAD_NOTES_DIR";
 
 /// Entry point used by `main`: starts the platform event loop and opens the main window.
 pub fn run() {
@@ -19,9 +23,12 @@ pub fn run() {
     logging::init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting Scratchpad");
 
+    let notes = NotesLocation::new(notes_dir());
+    tracing::info!(dir = %notes.dir.display(), "notes folder");
+
     Application::new().run(move |cx| {
         init(cx);
-        let window = match open_main_window(cx) {
+        let window = match open_main_window(notes, cx) {
             Ok(window) => window,
             Err(err) => {
                 tracing::error!("failed to open main window: {err:#}");
@@ -51,7 +58,19 @@ pub fn init(cx: &mut App) {
     actions::register_app_handlers(cx);
 }
 
-pub fn open_main_window(cx: &mut App) -> gpui::Result<WindowHandle<AppWindow>> {
+fn notes_dir() -> PathBuf {
+    std::env::var_os(NOTES_DIR_ENV)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(scratchpad_core::default_notes_dir)
+}
+
+/// Opens the main window showing the notes in `notes`. The folder is listed in the background
+/// after the window has rendered.
+pub fn open_main_window(
+    notes: NotesLocation,
+    cx: &mut App,
+) -> gpui::Result<WindowHandle<AppWindow>> {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -66,6 +85,6 @@ pub fn open_main_window(cx: &mut App) -> gpui::Result<WindowHandle<AppWindow>> {
         ..Default::default()
     };
     cx.open_window(options, |window, cx| {
-        cx.new(|cx| AppWindow::new(window, cx))
+        cx.new(|cx| AppWindow::new(notes, window, cx))
     })
 }

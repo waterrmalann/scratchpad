@@ -103,6 +103,13 @@ pub mod typography {
         ".SystemUIFont"
     };
     pub const UI_FONT_SIZE: Pixels = px(13.);
+    /// Small chrome icons. Windows' own icon font, so they match the system; other platforms
+    /// get plain-text fallbacks.
+    pub const ICON_FONT_FAMILY: &str = if cfg!(windows) {
+        "Segoe MDL2 Assets"
+    } else {
+        UI_FONT_FAMILY
+    };
 
     /// Note text. Notes are for reading and writing, so the body uses the UI sans-serif
     /// rather than a code font.

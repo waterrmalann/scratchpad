@@ -1,7 +1,8 @@
 use gpui::{Context, Entity, FocusHandle, Focusable, Subscription, Window, div, prelude::*};
 
-use crate::actions::CloseWindow;
+use crate::actions::{CloseWindow, NewNote};
 use crate::editor_pane::EditorPane;
+use crate::notes::{Notes, NotesLocation};
 use crate::sidebar::Sidebar;
 use crate::theme::{self, ActiveTheme, typography};
 use crate::toast;
@@ -9,22 +10,25 @@ use crate::toast;
 /// Root view of the main window: sidebar on the left, editor pane filling the rest (PLAN §42).
 pub struct AppWindow {
     focus_handle: FocusHandle,
+    notes: Entity<Notes>,
     sidebar: Entity<Sidebar>,
     editor_pane: Entity<EditorPane>,
     _appearance_subscription: Subscription,
 }
 
 impl AppWindow {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(notes: NotesLocation, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let appearance_subscription = cx.observe_window_appearance(window, |_, window, cx| {
             theme::system_appearance_changed(window.appearance(), cx);
         });
         let focus_handle = cx.focus_handle();
         let editor_pane = cx.new(|cx| EditorPane::new(window, cx));
         editor_pane.focus_handle(cx).focus(window);
+        let notes = cx.new(|cx| Notes::new(notes, cx));
         Self {
             focus_handle,
-            sidebar: cx.new(|_| Sidebar),
+            sidebar: cx.new(|cx| Sidebar::new(notes.clone(), window, cx)),
+            notes,
             editor_pane,
             _appearance_subscription: appearance_subscription,
         }
@@ -32,6 +36,21 @@ impl AppWindow {
 
     pub fn editor_pane(&self) -> &Entity<EditorPane> {
         &self.editor_pane
+    }
+
+    /// The note list and the open note. The editor integration subscribes to its events.
+    pub fn notes(&self) -> &Entity<Notes> {
+        &self.notes
+    }
+
+    pub fn sidebar(&self) -> &Entity<Sidebar> {
+        &self.sidebar
+    }
+
+    // Window-wide commands live on the root so they work wherever focus is.
+    fn new_note(&mut self, _: &NewNote, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.new_note(window, cx));
     }
 
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
@@ -52,6 +71,7 @@ impl Render for AppWindow {
             .key_context("AppWindow")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::close_window))
+            .on_action(cx.listener(Self::new_note))
             .relative()
             .size_full()
             .flex()

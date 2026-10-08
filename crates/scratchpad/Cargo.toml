@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 scratchpad-core.workspace = true
 scratchpad-editor.workspace = true
+chrono.workspace = true
 dirs.workspace = true
 gpui.workspace = true
 tracing.workspace = true
@@ -16,6 +17,7 @@ unicode-segmentation.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

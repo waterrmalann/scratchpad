@@ -9,6 +9,7 @@ pub mod app_window;
 pub mod editor_pane;
 pub mod editor_view;
 mod logging;
+pub mod notes;
 pub mod sidebar;
 pub mod theme;
 pub mod toast;

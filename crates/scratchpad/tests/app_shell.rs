@@ -1,7 +1,7 @@
 mod common;
 
 use gpui::{TestAppContext, VisualTestContext, WindowAppearance, px, size};
-use scratchpad::sidebar::SIDEBAR_WIDTH;
+use scratchpad::sidebar::DEFAULT_SIDEBAR_WIDTH;
 use scratchpad::theme::{self, ActiveTheme, Appearance, ThemeMode};
 
 #[gpui::test]
@@ -27,7 +27,7 @@ fn sidebar_keeps_its_width_and_editor_pane_fills_the_rest(cx: &mut TestAppContex
             .debug_bounds("editor-pane")
             .expect("editor pane rendered");
         assert_eq!(sidebar.origin.x, px(0.));
-        assert_eq!(sidebar.size.width, SIDEBAR_WIDTH);
+        assert_eq!(sidebar.size.width, DEFAULT_SIDEBAR_WIDTH);
         assert_eq!(sidebar.size.height, window_size.height);
         assert_eq!(editor.left(), sidebar.right());
         assert_eq!(editor.right(), window_size.width);

@@ -17,6 +17,8 @@ actions!(
         Quit,
         /// Close the focused window.
         CloseWindow,
+        /// Start a new note (PLAN §9).
+        NewNote,
     ]
 );
 
@@ -24,6 +26,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, None),
+        KeyBinding::new("secondary-n", NewNote, None),
     ]
 }
 
