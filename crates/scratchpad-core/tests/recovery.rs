@@ -115,3 +115,39 @@ fn a_failed_write_is_reported() {
     assert!(error.to_string().contains("recovery"), "{error}");
     assert!(recovery.list().is_empty());
 }
+
+#[test]
+fn leftovers_are_snapshots_from_before_this_run_that_differ_from_their_note() {
+    let (_notes_dir, notes) = temp_store();
+    let (_recovery_dir, recovery) = recovery_store();
+    let unsaved = notes.create(Some("Unsaved")).unwrap();
+    let saved = notes.create(Some("Saved")).unwrap();
+    let gone = notes.create(Some("Gone")).unwrap();
+    notes.save(&saved.path, "same text").unwrap();
+    recovery.write(&unsaved.path, "lost work").unwrap();
+    recovery.write(&saved.path, "same text").unwrap();
+    recovery.write(&gone.path, "orphan").unwrap();
+    fs::remove_file(&gone.path).unwrap();
+    let started = SystemTime::now();
+    let current = notes.dir().join("Current.md");
+    recovery.write(&current, "this run").unwrap();
+
+    let mut leftovers: Vec<_> = recovery
+        .leftovers(started)
+        .into_iter()
+        .map(|snapshot| (snapshot.note_path, snapshot.text))
+        .collect();
+    leftovers.sort();
+
+    assert_eq!(
+        leftovers,
+        [
+            (gone.path.clone(), "orphan".to_owned()),
+            (unsaved.path.clone(), "lost work".to_owned())
+        ]
+    );
+    // The snapshot that matched its note is removed; this run's snapshot is left alone.
+    let mut remaining: Vec<_> = recovery.list().into_iter().map(|s| s.note_path).collect();
+    remaining.sort();
+    assert_eq!(remaining, [current, gone.path, unsaved.path]);
+}

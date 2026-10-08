@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::atomic::write_atomic;
 use crate::error::{Result, io_context};
+use crate::store::read_note;
 
 /// Unsaved text of an open note, as last written by [`RecoveryStore::write`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +102,25 @@ impl RecoveryStore {
             .collect();
         snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.saved_at));
         snapshots
+    }
+
+    /// Snapshots written before `before` (the start of this run) that hold text the note on
+    /// disk does not: the unsaved work a crash left behind, newest first. Snapshots whose text
+    /// equals their note were saved after all and are removed; a note that is missing or
+    /// unreadable counts as different.
+    pub fn leftovers(&self, before: SystemTime) -> Vec<Snapshot> {
+        self.list()
+            .into_iter()
+            .filter(|snapshot| snapshot.saved_at < before)
+            .filter(|snapshot| {
+                let saved = read_note(&snapshot.note_path)
+                    .is_ok_and(|note| !note.lossy && note.text == snapshot.text);
+                if saved {
+                    let _ = self.remove(&snapshot.note_path);
+                }
+                !saved
+            })
+            .collect()
     }
 
     fn file_for(&self, note_path: &Path) -> PathBuf {

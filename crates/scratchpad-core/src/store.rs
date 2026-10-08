@@ -104,22 +104,11 @@ impl NoteStore {
     /// [`NoteText::lossy`] is set. A leading UTF-8 byte order mark is dropped, so a note written
     /// by Notepad and saved again loses its BOM; Markdown tools do not need it.
     pub fn read(&self, path: &Path) -> Result<NoteText> {
-        let bytes = fs::read(path).map_err(io_context("read", path))?;
-        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-        let note = match std::str::from_utf8(bytes) {
-            Ok(text) => NoteText {
-                text: text.to_owned(),
-                lossy: false,
-            },
-            Err(_) => {
-                tracing::warn!(path = %path.display(), "note is not valid UTF-8, decoding lossily");
-                NoteText {
-                    text: String::from_utf8_lossy(bytes).into_owned(),
-                    lossy: true,
-                }
-            }
-        };
-        tracing::debug!(path = %path.display(), bytes = bytes.len(), "read note");
+        let note = read_note(path).map_err(io_context("read", path))?;
+        if note.lossy {
+            tracing::warn!(path = %path.display(), "note is not valid UTF-8, decoding lossily");
+        }
+        tracing::debug!(path = %path.display(), bytes = note.text.len(), "read note");
         Ok(note)
     }
 
@@ -207,6 +196,22 @@ impl NoteStore {
             .map(|name| name.to_string_lossy().to_lowercase())
             .collect())
     }
+}
+
+/// Reads and decodes a note file as [`NoteStore::read`] does, without logging.
+pub(crate) fn read_note(path: &Path) -> io::Result<NoteText> {
+    let bytes = fs::read(path)?;
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    Ok(match std::str::from_utf8(bytes) {
+        Ok(text) => NoteText {
+            text: text.to_owned(),
+            lossy: false,
+        },
+        Err(_) => NoteText {
+            text: String::from_utf8_lossy(bytes).into_owned(),
+            lossy: true,
+        },
+    })
 }
 
 fn move_to_recycle_bin(path: &Path) -> io::Result<()> {
