@@ -257,7 +257,7 @@ impl Editor {
         self.edit(range, text, EditKind::Other, None);
     }
 
-    /// The text of the in-progress IME composition, if any.
+    /// The range of the in-progress IME composition, if any.
     pub fn marked_range(&self) -> Option<Range<ByteOffset>> {
         self.marked.clone()
     }
