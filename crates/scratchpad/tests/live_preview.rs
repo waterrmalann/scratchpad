@@ -179,6 +179,44 @@ fn clicking_text_with_hidden_markers_puts_the_cursor_on_the_clicked_character(
 }
 
 #[gpui::test]
+fn double_and_triple_clicks_select_around_the_first_click_although_it_revealed_markers(
+    cx: &mut TestAppContext,
+) {
+    let (editor, cx) = open_editor(cx, "say **bold** now\nnext");
+    cx.simulate_keystrokes("ctrl-end");
+    let line = bounds(&editor, 0..0, cx);
+    // On the "o" of "bold" in the displayed "say bold now". The first click reveals the `**`,
+    // which moves "bold" two characters right, under the second click's position.
+    let on_o = point(line.left() + px(5. * ADVANCE + 2.), line.center().y);
+    for click_count in 1..=3 {
+        cx.simulate_event(MouseDownEvent {
+            position: on_o,
+            modifiers: Modifiers::none(),
+            button: MouseButton::Left,
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: on_o,
+            modifiers: Modifiers::none(),
+            button: MouseButton::Left,
+            click_count,
+        });
+        let selected = editor.read_with(cx, |editor, _| editor.editor().selection().range());
+        let expected = match click_count {
+            1 => 7..7,
+            2 => 6..10,
+            _ => 0..17,
+        };
+        assert_eq!(
+            selected.start.0..selected.end.0,
+            expected,
+            "click {click_count}"
+        );
+    }
+}
+
+#[gpui::test]
 fn left_and_right_step_through_markers_one_character_at_a_time(cx: &mut TestAppContext) {
     let text = "a **b** `c` d";
     let (editor, cx) = open_editor(cx, text);

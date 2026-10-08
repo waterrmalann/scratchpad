@@ -719,6 +719,7 @@ fn dragging_selects_by_the_unit_of_the_first_click(cx: &mut TestAppContext) {
 
     // Double-click on "world", then drag back into "hello": both whole words.
     let world = point_at(&editor, 7, 1., cx);
+    click(world, 1, Modifiers::none(), cx);
     cx.simulate_event(MouseDownEvent {
         position: world,
         modifiers: Modifiers::none(),

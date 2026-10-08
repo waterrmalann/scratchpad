@@ -81,6 +81,10 @@ pub struct EditorView {
     /// Running while the editor is focused in an active window.
     blink_task: Option<Task<()>>,
     drag: Option<Drag>,
+    /// Where the last click put the cursor, and the buffer version then. A double or triple click
+    /// selects around it rather than around what is under the pointer now: the first click may
+    /// have revealed markers and moved the text.
+    click_offset: Option<(u64, ByteOffset)>,
     /// When the input being processed arrived, for the input-to-paint trace (PLAN §37).
     input_at: Option<Instant>,
     /// Edits are ignored, e.g. while a note loads; the cursor still moves.
@@ -159,6 +163,7 @@ impl EditorView {
             cursor_visible: true,
             blink_task: None,
             drag: None,
+            click_offset: None,
             input_at: None,
             read_only: false,
             find: None,
@@ -176,6 +181,7 @@ impl EditorView {
         self.synced_version = self.editor.buffer().version();
         self.scroll = ScrollAnchor::top(&viewport(self.bounds));
         self.drag = None;
+        self.click_offset = None;
         self.find_text_changed(true, cx);
         cx.notify();
     }
@@ -503,6 +509,7 @@ impl EditorView {
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
+        let previous_click = self.click_offset.take();
         if event.click_count <= 1 && !event.modifiers.shift {
             // A read-only note's task boxes are text like any other: the click places the cursor.
             if !self.read_only
@@ -518,7 +525,12 @@ impl EditorView {
                 return;
             }
         }
-        let offset = self.offset_at(event.position, window);
+        let version = self.editor.buffer().version();
+        let offset = match previous_click {
+            Some((clicked_in, offset)) if event.click_count > 1 && clicked_in == version => offset,
+            _ => self.offset_at(event.position, window),
+        };
+        self.click_offset = Some((version, offset));
         let granularity = match event.click_count {
             0 | 1 => Granularity::Character,
             2 => Granularity::Word,
