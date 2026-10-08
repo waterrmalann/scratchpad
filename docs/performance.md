@@ -20,6 +20,11 @@ Release build, Windows 11, RTX 3050 Laptop GPU, 125 % scaling. Startup is from t
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-10-08 | Milestone 0 shell | release | ~550 ms | ~50 MB | ~76 MB | 5.5 MB |
 | 2026-10-08 | Milestone 0 shell | dev | ~810 ms | ~54 MB | ~76 MB | 14.7 MB |
+| 2026-10-08 | Packaging (notes, editor, icon) | release | not measured | not measured | not measured | 7.1 MB |
+
+The packaging row is the size only: `target/release/scratchpad.exe` is 7,075,840 bytes, of which the
+embedded icon and version resource are about 12 KB. The per-user MSI built from it
+(`packaging/build-installer.ps1`, ADR 0091) is 2.45 MB.
 
 Where the startup time goes (release log): ~20 ms to GPUI platform init, ~315 ms creating the
 Direct3D 11 device, ~160 ms DirectWrite setup, ~60 ms creating and drawing the window. Almost
