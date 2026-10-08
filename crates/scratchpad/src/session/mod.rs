@@ -699,8 +699,9 @@ impl Session {
     /// are checked against the disk; others re-read the note list.
     pub fn disk_events(&mut self, events: Vec<NoteEvent>, cx: &mut Context<Self>) {
         let open = match &self.doc.target {
-            Target::Note(path) => Some(path.clone()),
-            _ => None,
+            // A load may have read the file before this change: checked after it.
+            Target::Note(path) | Target::Loading(path) => Some(path.clone()),
+            Target::Draft { .. } | Target::None => None,
         };
         let (open_changed, others): (Vec<_>, Vec<_>) = events
             .iter()

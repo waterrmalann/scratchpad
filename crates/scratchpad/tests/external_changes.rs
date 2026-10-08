@@ -66,6 +66,29 @@ fn a_note_without_edits_reloads_and_keeps_the_cursor_line(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn a_change_reported_while_the_note_loads_is_not_missed(cx: &mut TestAppContext) {
+    let (dir, _ideas, root, cx) = open_ideas(cx);
+    let meeting = write_note(dir.path(), "Meeting", "Meeting", days_ago(1, 10));
+    let notes = common::notes(&root, cx);
+    let session = common::session(&root, cx);
+
+    // The note is read on a background thread (the only task left to run)...
+    notes.update(cx, |notes, cx| notes.select(&meeting, cx));
+    while !session.read_with(cx, |session, _| session.is_writing()) {
+        assert!(cx.executor().tick());
+    }
+    assert!(cx.executor().tick());
+    // ...then changed by another program, which is reported before the app has the text.
+    fs::write(&meeting, "Meeting\nagenda").unwrap();
+    session.update(cx, |session, cx| {
+        session.disk_events(vec![NoteEvent::Changed(meeting.clone())], cx)
+    });
+    cx.run_until_parked();
+
+    assert_eq!(editor_text(&root, cx), "Meeting\nagenda");
+}
+
+#[gpui::test]
 fn our_own_saves_are_not_taken_for_outside_changes(cx: &mut TestAppContext) {
     let (_dir, ideas, root, cx) = open_ideas(cx);
     cx.simulate_keystrokes("ctrl-end");
