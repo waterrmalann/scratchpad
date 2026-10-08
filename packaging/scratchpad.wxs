@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Per-user installer: no administrator rights, installs to %LOCALAPPDATA%\Programs\Scratchpad.
+     Built by build-installer.ps1, which passes Version, ExePath and IconPath. See ADR 0091. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Scratchpad" Manufacturer="Scratchpad" Version="$(Version)"
+           UpgradeCode="FE059411-3D28-4BBF-B7D6-3405845AD5E2" Scope="perUser" Language="1033">
+    <!-- The stable UpgradeCode above lets a newer MSI replace an older install in place; same-version
+         upgrades let a rebuilt MSI (new ProductCode) replace one built earlier from the same version. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Scratchpad is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="Scratchpad.ico" SourceFile="$(IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="Scratchpad.ico" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Scratchpad" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Windows requires a per-user component to be keyed on an HKCU registry value, not a file,
+         and such a component needs an explicit GUID. Never change it: it identifies this
+         component across upgrades. -->
+    <Component Id="Application" Directory="INSTALLFOLDER" Guid="F080979E-F638-4937-BA90-5FBA0A59A544">
+      <File Id="ScratchpadExe" Source="$(ExePath)" Name="scratchpad.exe">
+        <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Scratchpad"
+                  WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+      </File>
+      <RegistryValue Root="HKCU" Key="Software\Scratchpad" Name="Installed" Type="integer"
+                     Value="1" KeyPath="yes" />
+      <!-- Folders in the user profile are not cleaned up automatically (ICE64). Only empty folders
+           are removed, so a Programs folder shared with other apps survives. -->
+      <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+      <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsDir" On="uninstall" />
+    </Component>
+
+    <Feature Id="Main" Title="Scratchpad">
+      <ComponentRef Id="Application" />
+    </Feature>
+  </Package>
+</Wix>
