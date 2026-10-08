@@ -13,14 +13,29 @@ use gpui::{
     Entity, Global, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Point, Subscription,
     TestAppContext, VisualTestContext,
 };
-use scratchpad::AppWindow;
+use scratchpad::editor_view::EditorView;
 use scratchpad::notes::{DraftId, Notes, NotesEvent, NotesLocation};
+use scratchpad::{AppWindow, Storage};
+use scratchpad_core::Config;
 use tempfile::TempDir;
 
-/// Keeps the notes folder of [`open_main_window`] alive as long as the app.
-struct TempNotesDir(#[allow(dead_code)] TempDir);
+/// Keeps the temp folders of a test (notes, config) alive as long as the app.
+#[derive(Default)]
+struct TempDirs(#[allow(dead_code)] Vec<TempDir>);
 
-impl Global for TempNotesDir {}
+impl Global for TempDirs {}
+
+fn keep_alive(dir: TempDir, cx: &mut TestAppContext) {
+    if !cx.has_global::<TempDirs>() {
+        cx.set_global(TempDirs::default());
+    }
+    cx.update_global(|dirs: &mut TempDirs, _| dirs.0.push(dir));
+}
+
+/// Marks that `scratchpad::init` ran, so reopening the app in a test does not run it twice.
+struct Initialized;
+
+impl Global for Initialized {}
 
 /// Initialises the app exactly as `main` does and opens the real main window in GPUI's
 /// headless test platform, on an empty temporary notes folder.
@@ -31,19 +46,48 @@ impl Global for TempNotesDir {}
 pub fn open_main_window(cx: &mut TestAppContext) -> (Entity<AppWindow>, &mut VisualTestContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_owned();
-    cx.set_global(TempNotesDir(dir));
+    keep_alive(dir, cx);
     open_main_window_in(&path, cx)
 }
 
 /// Like [`open_main_window`] but on the notes in `dir`. Deleted notes go to [`trash_dir`]
-/// instead of the real recycle bin. Waits until the notes have been listed.
+/// instead of the real recycle bin; the config goes to a fresh temp folder.
+/// Waits until the notes have been listed.
 pub fn open_main_window_in<'a>(
     dir: &Path,
     cx: &'a mut TestAppContext,
 ) -> (Entity<AppWindow>, &'a mut VisualTestContext) {
-    cx.update(scratchpad::init);
-    let location = location(dir);
-    let window = cx.update(|cx| scratchpad::open_main_window(location, cx).expect("open window"));
+    let data = tempfile::tempdir().unwrap();
+    let storage = storage(dir, data.path());
+    keep_alive(data, cx);
+    open_with(storage, cx)
+}
+
+/// Where the app keeps its files in a test: notes in `notes_dir`, the config in `data_dir`.
+pub fn storage(notes_dir: &Path, data_dir: &Path) -> Storage {
+    Storage {
+        notes: location(notes_dir),
+        config_path: Some(data_dir.join("config.json")),
+    }
+}
+
+/// Opens the main window on `storage` with the config saved there, as the app does at launch.
+/// Opening again with the same storage is how tests restart the app.
+pub fn open_with(
+    storage: Storage,
+    cx: &mut TestAppContext,
+) -> (Entity<AppWindow>, &mut VisualTestContext) {
+    if !cx.has_global::<Initialized>() {
+        cx.update(scratchpad::init);
+        cx.set_global(Initialized);
+    }
+    let config = storage
+        .config_path
+        .as_deref()
+        .map(Config::load)
+        .unwrap_or_default();
+    let window =
+        cx.update(|cx| scratchpad::open_main_window(storage, config, cx).expect("open window"));
     let root = window.root(cx).expect("main window root view");
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
     // Like the real app's window after launch; focus-out events need an active window.
@@ -74,6 +118,28 @@ fn move_to_test_trash(path: &Path) -> io::Result<()> {
 
 pub fn notes(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Entity<Notes> {
     root.read_with(cx, |root, _| root.notes().clone())
+}
+
+pub fn editor(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Entity<EditorView> {
+    root.read_with(cx, |root, cx| root.editor_pane().read(cx).editor().clone())
+}
+
+/// The text in the editor.
+pub fn editor_text(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> String {
+    editor(root, cx).read_with(cx, |editor, _| editor.text())
+}
+
+/// Closes the window as the close button does: the app gets to save, then the window goes.
+pub fn close(cx: &mut VisualTestContext) {
+    assert!(cx.simulate_close());
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
+/// Lets simulated time pass, firing timers (autosave, debounces) that come due.
+pub fn wait(duration: std::time::Duration, cx: &mut VisualTestContext) {
+    cx.executor().advance_clock(duration);
+    cx.run_until_parked();
 }
 
 /// Collects every event the notes model emits from now on.

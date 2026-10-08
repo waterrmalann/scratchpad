@@ -19,9 +19,11 @@ fn assert_rendered_in_order(selectors: &[&str], cx: &mut VisualTestContext) {
 fn window_renders_before_the_notes_are_listed(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     write_note(dir.path(), "Ideas", "", days_ago(0, 9));
+    let data = tempfile::tempdir().unwrap();
+    let storage = common::storage(dir.path(), data.path());
     cx.update(scratchpad::init);
-    let location = common::location(dir.path());
-    let window = cx.update(|cx| scratchpad::open_main_window(location, cx).unwrap());
+    let window =
+        cx.update(|cx| scratchpad::open_main_window(storage, Default::default(), cx).unwrap());
     let root = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
     let notes = common::notes(&root, cx);

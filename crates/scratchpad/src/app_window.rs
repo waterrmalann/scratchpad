@@ -1,11 +1,12 @@
-use gpui::{Context, Entity, FocusHandle, Focusable, Subscription, Window, div, prelude::*};
+use gpui::{Context, Entity, FocusHandle, Focusable, Subscription, Window, div, prelude::*, px};
 
 use crate::actions::{CloseWindow, NewNote, SearchNotes};
+use crate::app::Storage;
 use crate::editor_pane::EditorPane;
-use crate::notes::{Notes, NotesLocation};
+use crate::notes::{Notes, Selection};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::theme::{self, ActiveTheme, typography};
-use crate::toast;
+use crate::{settings, toast};
 
 /// Root view of the main window: sidebar on the left, editor pane filling the rest (PLAN §42).
 pub struct AppWindow {
@@ -13,29 +14,65 @@ pub struct AppWindow {
     notes: Entity<Notes>,
     sidebar: Entity<Sidebar>,
     editor_pane: Entity<EditorPane>,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: Vec<Subscription>,
 }
 
 impl AppWindow {
-    pub fn new(notes: NotesLocation, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let appearance_subscription = cx.observe_window_appearance(window, |_, window, cx| {
-            theme::system_appearance_changed(window.appearance(), cx);
-        });
+    pub fn new(storage: Storage, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
+        let config = settings::get(cx);
+        let reopen = config.last_opened_note.clone();
+        let sidebar_width = config.sidebar_width;
+        let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
         let editor_pane = cx.new(|cx| EditorPane::new(window, cx));
         editor_pane.focus_handle(cx).focus(window);
-        let notes = cx.new(|cx| Notes::new(notes, None, cx));
-        let sidebar = cx.new(|cx| Sidebar::new(notes.clone(), window, cx));
-        let sidebar_subscription =
+        let sidebar = cx.new(|cx| {
+            let mut sidebar = Sidebar::new(notes.clone(), window, cx);
+            if let Some(width) = sidebar_width {
+                sidebar.set_width(px(width), cx);
+            }
+            sidebar
+        });
+
+        let subscriptions = vec![
+            cx.observe_window_appearance(window, |_, window, cx| {
+                theme::system_appearance_changed(window.appearance(), cx);
+            }),
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
                 SidebarEvent::FocusEditor => window.focus(&this.editor_pane.focus_handle(cx)),
-            });
+            }),
+            cx.observe(&notes, |_, notes, cx| {
+                if let Selection::Note(path) = notes.read(cx).selection() {
+                    let path = path.clone();
+                    settings::update(cx, |config| config.last_opened_note = Some(path));
+                }
+            }),
+            cx.observe(&sidebar, |_, sidebar, cx| {
+                let width = f32::from(sidebar.read(cx).width());
+                settings::update(cx, |config| config.sidebar_width = Some(width));
+            }),
+            cx.observe_window_bounds(window, |_, window, cx| {
+                let bounds = window_bounds(window);
+                settings::update(cx, |config| config.window = Some(bounds));
+            }),
+            // Quitting (Ctrl+Q, or the last window closing) runs this before the app exits.
+            cx.on_app_quit(|this, cx| {
+                this.save_all(cx);
+                async {}
+            }),
+        ];
+        let this = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            this.update(cx, |this, cx| this.save_all(cx)).ok();
+            true
+        });
+
         Self {
             focus_handle,
             sidebar,
             notes,
             editor_pane,
-            _subscriptions: [appearance_subscription, sidebar_subscription],
+            _subscriptions: subscriptions,
         }
     }
 
@@ -52,6 +89,11 @@ impl AppWindow {
         &self.sidebar
     }
 
+    /// Writes the settings before the window goes away.
+    fn save_all(&mut self, cx: &mut Context<Self>) {
+        settings::save_now(cx);
+    }
+
     // Window-wide commands live on the root so they work wherever focus is.
     fn new_note(&mut self, _: &NewNote, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar
@@ -63,8 +105,26 @@ impl AppWindow {
             .update(cx, |sidebar, cx| sidebar.focus_search(window, cx));
     }
 
-    fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
+    fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_all(cx);
         window.remove_window();
+    }
+}
+
+/// The window's restorable bounds (the normal size and position even while maximized).
+fn window_bounds(window: &Window) -> scratchpad_core::WindowBounds {
+    let (bounds, maximized) = match window.window_bounds() {
+        gpui::WindowBounds::Windowed(bounds) => (bounds, false),
+        gpui::WindowBounds::Maximized(bounds) | gpui::WindowBounds::Fullscreen(bounds) => {
+            (bounds, true)
+        }
+    };
+    scratchpad_core::WindowBounds {
+        x: bounds.origin.x.into(),
+        y: bounds.origin.y.into(),
+        width: bounds.size.width.into(),
+        height: bounds.size.height.into(),
+        maximized,
     }
 }
 

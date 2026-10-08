@@ -10,10 +10,11 @@ pub mod editor_pane;
 pub mod editor_view;
 mod logging;
 pub mod notes;
+pub mod settings;
 pub mod sidebar;
 pub mod text_input;
 pub mod theme;
 pub mod toast;
 
-pub use app::{init, open_main_window, run};
+pub use app::{Storage, init, open_main_window, run};
 pub use app_window::AppWindow;

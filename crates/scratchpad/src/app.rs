@@ -1,21 +1,31 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui::{
-    App, Application, Bounds, Size, TitlebarOptions, WindowBounds, WindowHandle, WindowOptions,
-    prelude::*, px, size,
+    App, Application, Bounds, DisplayId, Pixels, Size, TitlebarOptions, WindowBounds, WindowHandle,
+    WindowOptions, point, prelude::*, px, size,
 };
+use scratchpad_core::{Config, default_config_path};
 
 use crate::app_window::AppWindow;
 use crate::notes::NotesLocation;
 use crate::theme::{self, ThemeMode};
-use crate::{actions, logging};
+use crate::{actions, logging, settings};
 
 const WINDOW_TITLE: &str = "Scratchpad";
-const DEFAULT_WINDOW_SIZE: Size<gpui::Pixels> = size(px(1100.), px(720.));
-const MIN_WINDOW_SIZE: Size<gpui::Pixels> = size(px(560.), px(360.));
+const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1100.), px(720.));
+const MIN_WINDOW_SIZE: Size<Pixels> = size(px(560.), px(360.));
 /// Overrides the notes folder, e.g. to try the app against a scratch folder.
 const NOTES_DIR_ENV: &str = "SCRATCHPAD_NOTES_DIR";
+
+/// Where the app keeps its files. [`run`] uses the platform's folders; tests use temp folders.
+#[derive(Clone, Debug)]
+pub struct Storage {
+    pub notes: NotesLocation,
+    /// The config file. `None` keeps settings for this run only.
+    pub config_path: Option<PathBuf>,
+}
 
 /// Entry point used by `main`: starts the platform event loop and opens the main window.
 pub fn run() {
@@ -23,12 +33,18 @@ pub fn run() {
     logging::init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting Scratchpad");
 
-    let notes = NotesLocation::new(notes_dir());
-    tracing::info!(dir = %notes.dir.display(), "notes folder");
+    // Only the tiny config file is read before the window opens (PLAN §39).
+    let config_path = default_config_path();
+    let config = config_path.as_deref().map(Config::load).unwrap_or_default();
+    let storage = Storage {
+        notes: NotesLocation::new(notes_dir(std::env::var_os(NOTES_DIR_ENV), &config)),
+        config_path,
+    };
+    tracing::info!(dir = %storage.notes.dir.display(), "notes folder");
 
     Application::new().run(move |cx| {
         init(cx);
-        let window = match open_main_window(notes, cx) {
+        let window = match open_main_window(storage, config, cx) {
             Ok(window) => window,
             Err(err) => {
                 tracing::error!("failed to open main window: {err:#}");
@@ -58,25 +74,28 @@ pub fn init(cx: &mut App) {
     actions::register_app_handlers(cx);
 }
 
-fn notes_dir() -> PathBuf {
-    std::env::var_os(NOTES_DIR_ENV)
-        .filter(|dir| !dir.is_empty())
+/// The folder from `SCRATCHPAD_NOTES_DIR` (`env`), else from the config, else
+/// `Documents\Scratchpad`.
+fn notes_dir(env: Option<OsString>, config: &Config) -> PathBuf {
+    env.filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(scratchpad_core::default_notes_dir)
+        .unwrap_or_else(|| config.notes_dir_or_default())
 }
 
-/// Opens the main window showing the notes in `notes`. The folder is listed in the background
+/// Opens the main window on the notes in `storage`, restoring what `config` remembers: window
+/// bounds, theme, sidebar width and the last open note. The folder is listed in the background
 /// after the window has rendered.
 pub fn open_main_window(
-    notes: NotesLocation,
+    storage: Storage,
+    config: Config,
     cx: &mut App,
 ) -> gpui::Result<WindowHandle<AppWindow>> {
+    theme::set_mode(settings::theme_mode(config.theme), cx);
+    let (display_id, window_bounds) = window_bounds(config.window, cx);
+    settings::init(config, storage.config_path.clone(), cx);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            DEFAULT_WINDOW_SIZE,
-            cx,
-        ))),
+        window_bounds: Some(window_bounds),
+        display_id,
         titlebar: Some(TitlebarOptions {
             title: Some(WINDOW_TITLE.into()),
             ..Default::default()
@@ -85,6 +104,72 @@ pub fn open_main_window(
         ..Default::default()
     };
     cx.open_window(options, |window, cx| {
-        cx.new(|cx| AppWindow::new(notes, window, cx))
+        cx.new(|cx| AppWindow::new(storage, window, cx))
     })
+}
+
+/// The remembered window bounds, on the display that holds their centre, or the default size
+/// centred on the main display when that display is gone (PLAN §32).
+fn window_bounds(
+    saved: Option<scratchpad_core::WindowBounds>,
+    cx: &App,
+) -> (Option<DisplayId>, WindowBounds) {
+    let restored = saved.and_then(|saved| {
+        let bounds = Bounds::new(
+            point(px(saved.x), px(saved.y)),
+            size(px(saved.width), px(saved.height)).max(&MIN_WINDOW_SIZE),
+        );
+        let display = cx
+            .displays()
+            .into_iter()
+            .find(|display| display.bounds().contains(&bounds.center()))?;
+        // Keep the whole window, title bar included, on that display.
+        let area = display.bounds();
+        let size = bounds.size.min(&area.size);
+        let origin = point(
+            bounds
+                .origin
+                .x
+                .clamp(area.left(), area.right() - size.width),
+            bounds
+                .origin
+                .y
+                .clamp(area.top(), area.bottom() - size.height),
+        );
+        let bounds = Bounds::new(origin, size);
+        let window_bounds = if saved.maximized {
+            WindowBounds::Maximized(bounds)
+        } else {
+            WindowBounds::Windowed(bounds)
+        };
+        Some((Some(display.id()), window_bounds))
+    });
+    restored.unwrap_or_else(|| {
+        (
+            None,
+            WindowBounds::Windowed(Bounds::centered(None, DEFAULT_WINDOW_SIZE, cx)),
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_environment_overrides_the_configured_notes_folder() {
+        let config = Config {
+            notes_dir: Some(PathBuf::from("D:/Configured")),
+            ..Config::default()
+        };
+        let env = |dir: &str| Some(OsString::from(dir));
+
+        assert_eq!(notes_dir(env("D:/Env"), &config), PathBuf::from("D:/Env"));
+        assert_eq!(notes_dir(env(""), &config), PathBuf::from("D:/Configured"));
+        assert_eq!(notes_dir(None, &config), PathBuf::from("D:/Configured"));
+        assert_eq!(
+            notes_dir(None, &Config::default()),
+            scratchpad_core::default_notes_dir()
+        );
+    }
 }
