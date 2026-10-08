@@ -562,6 +562,16 @@ impl LineLayout {
         self.text_start
     }
 
+    /// Whether the byte at `column` belongs to a marker that is hidden.
+    pub fn hides(&self, column: usize) -> bool {
+        self.hides
+            && self
+                .styled
+                .spans
+                .iter()
+                .any(|span| span.hidden && span.columns.contains(&column))
+    }
+
     /// x of a cursor at `column`.
     pub fn x_for(&self, column: usize) -> Pixels {
         self.geometry.x_for(self.display(column))

@@ -27,7 +27,7 @@ with every new ADR.
 | [0040](0040-markdown-decorations-with-pulldown-cmark.md) | Markdown decorations parsed with pulldown-cmark | Accepted |
 | [0041](0041-block-regions-and-incremental-markdown-parsing.md) | Block regions with lazy, incremental Markdown parsing | Accepted |
 | [0042](0042-live-preview-styled-lines-and-marker-reveal.md) | Styled lines and marker reveal for live preview | Accepted |
-| [0043](0043-markdown-editing-commands.md) | Markdown editing commands edit the text | Accepted |
+| [0043](0043-markdown-editing-commands.md) | Markdown editing commands edit the text | Accepted; amended by 0126 |
 | [0044](0044-conservative-bracket-pairing.md) | Conservative, stateless bracket and quote pairing | Accepted |
 | [0050](0050-notes-model-and-new-note-lifecycle.md) | Notes model, background listing and the new-note lifecycle | Accepted |
 | [0051](0051-sidebar-note-list.md) | Sidebar note list: uniform virtual rows and iCloud-style interactions | Accepted |

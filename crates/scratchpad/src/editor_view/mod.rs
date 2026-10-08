@@ -315,6 +315,44 @@ impl EditorView {
         self.selection_changed(cx);
     }
 
+    /// Ctrl+Left/Right. Markers live preview hides are no word to stop at: the cursor moves on
+    /// over them as over text that is not there (ADR 0126).
+    fn word_motion(
+        &mut self,
+        motion: Motion,
+        extend: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let head = self.editor.selection().head;
+        let (mut lines, _) = self.lines(window);
+        let line = lines.buffer.line_of(head);
+        let line_start = lines.buffer.line_start(line).0;
+        let layout = lines.layout(line);
+        let mut from = head;
+        loop {
+            self.editor.move_cursor(motion, extend);
+            let to = self.editor.selection().head;
+            let buffer = self.editor.buffer();
+            if to == from || buffer.line_of(to) != line {
+                break;
+            }
+            let crossed = from.min(to)..from.max(to);
+            let shows_text = buffer
+                .text_for_range(crossed.clone())
+                .char_indices()
+                .any(|(i, c)| {
+                    !c.is_whitespace() && !layout.hides(crossed.start.0 + i - line_start)
+                });
+            if shows_text {
+                break;
+            }
+            from = to;
+        }
+        self.autoscroll = Some(Autoscroll::Cursor);
+        self.selection_changed(cx);
+    }
+
     /// Starts or stops the caret blink. Called on every paint with whether the editor is focused in
     /// the active window: focus events alone miss the focus the window starts with.
     fn set_blinking(&mut self, blinking: bool, cx: &mut Context<Self>) {
@@ -747,13 +785,11 @@ impl Render for EditorView {
             .on_action(
                 cx.listener(|this, _: &MoveRight, _, cx| this.motion(Motion::Right, false, cx)),
             )
-            .on_action(
-                cx.listener(|this, _: &MoveWordLeft, _, cx| {
-                    this.motion(Motion::WordLeft, false, cx)
-                }),
-            )
-            .on_action(cx.listener(|this, _: &MoveWordRight, _, cx| {
-                this.motion(Motion::WordRight, false, cx)
+            .on_action(cx.listener(|this, _: &MoveWordLeft, window, cx| {
+                this.word_motion(Motion::WordLeft, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveWordRight, window, cx| {
+                this.word_motion(Motion::WordRight, false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &MoveToDocumentStart, _, cx| {
                 this.motion(Motion::DocumentStart, false, cx)
@@ -767,11 +803,11 @@ impl Render for EditorView {
             .on_action(
                 cx.listener(|this, _: &SelectRight, _, cx| this.motion(Motion::Right, true, cx)),
             )
-            .on_action(cx.listener(|this, _: &SelectWordLeft, _, cx| {
-                this.motion(Motion::WordLeft, true, cx)
+            .on_action(cx.listener(|this, _: &SelectWordLeft, window, cx| {
+                this.word_motion(Motion::WordLeft, true, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &SelectWordRight, _, cx| {
-                this.motion(Motion::WordRight, true, cx)
+            .on_action(cx.listener(|this, _: &SelectWordRight, window, cx| {
+                this.word_motion(Motion::WordRight, true, window, cx)
             }))
             .on_action(cx.listener(|this, _: &SelectToDocumentStart, _, cx| {
                 this.motion(Motion::DocumentStart, true, cx)

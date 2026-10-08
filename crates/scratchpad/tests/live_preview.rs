@@ -291,6 +291,29 @@ fn home_goes_to_the_text_after_list_quote_and_heading_markers_then_to_the_line_s
 }
 
 #[gpui::test]
+fn ctrl_left_and_right_do_not_stop_at_hidden_markers(cx: &mut TestAppContext) {
+    let text = "say **bold** now `code` end";
+    let (editor, cx) = open_editor(cx, text);
+    let mut stops = Vec::new();
+    for _ in 0..7 {
+        cx.simulate_keystrokes("ctrl-right");
+        stops.push(cursor(&editor, cx));
+    }
+    // Hidden `**` and backticks are passed over; once the cursor reveals them they are stops.
+    assert_eq!(stops, [3, 10, 12, 16, 22, 23, 27]);
+    stops.clear();
+    for _ in 0..7 {
+        cx.simulate_keystrokes("ctrl-left");
+        stops.push(cursor(&editor, cx));
+    }
+    assert_eq!(stops, [24, 18, 17, 13, 6, 4, 0]);
+
+    cx.simulate_keystrokes("ctrl-shift-right ctrl-shift-right");
+    let selected = editor.read_with(cx, |editor, _| editor.editor().selection().range());
+    assert_eq!(selected.start.0..selected.end.0, 0..10);
+}
+
+#[gpui::test]
 fn left_and_right_step_through_markers_one_character_at_a_time(cx: &mut TestAppContext) {
     let text = "a **b** `c` d";
     let (editor, cx) = open_editor(cx, text);

@@ -1,6 +1,6 @@
 # 0043. Markdown editing commands edit the text
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted; formatting at the end of a span amended by ADR 0126
 
 ## Context
 Formatting shortcuts and Enter must manipulate Markdown source, toggle cleanly and undo as one step (PLAN §36,
