@@ -14,5 +14,6 @@ mod selection;
 pub use buffer::{Buffer, LineEnding, TextChange, TextSnapshot};
 pub use coords::{Bias, ByteOffset, Point, Utf16Offset};
 pub use editor::Editor;
+pub use history::UNDO_HISTORY_BUDGET_BYTES;
 pub use motion::Motion;
 pub use selection::{Goal, Selection};

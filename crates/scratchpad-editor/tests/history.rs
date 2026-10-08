@@ -3,7 +3,7 @@
 mod common;
 
 use common::{editor, state};
-use scratchpad_editor::{ByteOffset, Editor, Motion, Selection};
+use scratchpad_editor::{ByteOffset, Editor, Motion, Selection, UNDO_HISTORY_BUDGET_BYTES};
 
 fn type_chars(editor: &mut Editor, text: &str) {
     for c in text.chars() {
@@ -307,4 +307,29 @@ fn nested_transactions_join_the_outer_one() {
     });
     assert_eq!(state(&ed), "a\nb|");
     assert_eq!(undo_all(&mut ed), ["|"]);
+}
+
+#[test]
+fn the_oldest_steps_are_forgotten_beyond_the_history_budget() {
+    let over_half = UNDO_HISTORY_BUDGET_BYTES / 2 + 1;
+    let mut ed = editor("|");
+    type_chars(&mut ed, "note");
+    ed.paste(&"a".repeat(over_half));
+    ed.paste(&"b".repeat(over_half));
+
+    // The two pastes are over the budget together, so only the newest can be undone; the text
+    // stays.
+    assert!(ed.undo());
+    assert_eq!(ed.buffer().len(), "note".len() + over_half);
+    assert!(!ed.undo());
+    assert!(ed.redo());
+    assert_eq!(ed.buffer().len(), "note".len() + 2 * over_half);
+}
+
+#[test]
+fn a_step_larger_than_the_budget_can_still_be_undone() {
+    let mut ed = editor("keep|");
+    ed.paste(&"x".repeat(UNDO_HISTORY_BUDGET_BYTES + 1));
+    assert!(ed.undo());
+    assert_eq!(state(&ed), "keep|");
 }
