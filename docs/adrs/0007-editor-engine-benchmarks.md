@@ -23,4 +23,5 @@ typing going from 5 ms to 25 ms is visible. The engine is the part of the typing
 
 ## Consequences
 - Budgets are checked by eye for now; CI threshold enforcement can be added once CI exists.
-- Markdown parsing and layout benches will join this suite when those layers exist.
+- Markdown parsing, incremental update and line styling benches and their budgets are in ADR 0041; layout
+  benches will join this suite when that layer exists.

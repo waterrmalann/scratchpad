@@ -1,11 +1,12 @@
-//! Editing engine benchmarks (PLAN §38): opening, inserting into and deleting from large documents, and
-//! searching. Inputs are generated, so results are reproducible without fixture files.
+//! Editing engine benchmarks (PLAN §38): opening, inserting into and deleting from large documents, searching,
+//! and Markdown parsing and styling. Inputs are generated, so results are reproducible without fixture files.
 
 use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use scratchpad_editor::markdown::MarkdownState;
 use scratchpad_editor::search::{CaseSensitivity, find_all};
-use scratchpad_editor::{ByteOffset, Editor, Motion};
+use scratchpad_editor::{ByteOffset, Editor, Motion, Selection};
 
 const KB: usize = 1024;
 const MB: usize = 1024 * KB;
@@ -132,5 +133,73 @@ fn search(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, open, insert, delete, long_line_motion, search);
+/// Splitting a document into block regions (what opening costs) and parsing all of them (the worst case for
+/// a renderer, which normally parses only visible regions).
+fn markdown_parse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("markdown_parse");
+    for (name, size) in [("100KB", 100 * KB), ("1MB", MB), ("10MB", 10 * MB)] {
+        let editor = Editor::from_text(&markdown(size));
+        let buffer = editor.buffer();
+        group.bench_function(format!("scan_{name}"), |b| {
+            b.iter(|| MarkdownState::new(black_box(buffer)))
+        });
+        group.bench_function(format!("full_{name}"), |b| {
+            b.iter(|| {
+                MarkdownState::new(black_box(buffer))
+                    .decorations(buffer, ByteOffset(0)..buffer.end())
+            })
+        });
+    }
+    group.finish();
+}
+
+/// Keystrokes in a parsed 10 MB document, each followed by what the view does next: styling the edited line,
+/// which syncs the Markdown state and reparses the edited region. Each iteration types a char and deletes it
+/// again (two keystrokes), so the document does not grow during the measurement.
+fn markdown_keystroke(c: &mut Criterion) {
+    let mut group = c.benchmark_group("markdown_two_keystrokes_10MB");
+    let base = Editor::from_text(&markdown(10 * MB));
+    for (name, fraction) in [("beginning", 0.0), ("middle", 0.5), ("end", 1.0)] {
+        let mut editor = base.clone();
+        let offset = ByteOffset((editor.buffer().len() as f64 * fraction) as usize);
+        editor.move_to(offset, false);
+        let mut markdown = MarkdownState::new(editor.buffer());
+        markdown.decorations(editor.buffer(), ByteOffset(0)..editor.buffer().end());
+        let line = editor.buffer().line_of(offset);
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                editor.insert_text(black_box("x"));
+                markdown.styled_lines(editor.buffer(), line..line + 1, Some(editor.selection()));
+                editor.backspace();
+                markdown.styled_lines(editor.buffer(), line..line + 1, Some(editor.selection()))
+            })
+        });
+    }
+    group.finish();
+}
+
+/// Styling a screenful of lines in the middle of a parsed 1 MB document, as the view does every frame.
+fn markdown_styled_screen(c: &mut Criterion) {
+    let editor = Editor::from_text(&markdown(MB));
+    let buffer = editor.buffer();
+    let mut markdown = MarkdownState::new(buffer);
+    markdown.decorations(buffer, ByteOffset(0)..buffer.end());
+    let first = buffer.line_count() / 2;
+    let selection = Selection::cursor(buffer.line_start(first + 10));
+    c.bench_function("markdown_styled_lines_50", |b| {
+        b.iter(|| markdown.styled_lines(buffer, black_box(first..first + 50), Some(selection)))
+    });
+}
+
+criterion_group!(
+    benches,
+    open,
+    insert,
+    delete,
+    long_line_motion,
+    search,
+    markdown_parse,
+    markdown_keystroke,
+    markdown_styled_screen
+);
 criterion_main!(benches);
