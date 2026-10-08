@@ -25,6 +25,26 @@ fn windows_file_round_trips_and_edits_keep_crlf() {
 }
 
 #[test]
+fn a_snapshot_keeps_the_text_from_when_it_was_taken() {
+    let file = "# Plan\r\n- draft\r\n";
+    let mut editor = Editor::from_text(file);
+    let snapshot = editor.buffer().snapshot();
+
+    let end = editor.buffer().end();
+    editor.replace_range(end..end, "- review\r\n");
+    editor.replace_range(ByteOffset(2)..ByteOffset(6), "Goals");
+    let later = editor.buffer().snapshot();
+
+    assert_eq!(snapshot.to_text(), file);
+    assert_eq!(later.to_text(), "# Goals\r\n- draft\r\n- review\r\n");
+    // Sent to another thread, as the app does to write it out.
+    let sent = std::thread::spawn(move || snapshot.to_text())
+        .join()
+        .unwrap();
+    assert_eq!(sent, file);
+}
+
+#[test]
 fn unix_file_round_trips_unchanged() {
     let file = "line one\nline two\n\nline four";
     assert_eq!(Editor::from_text(file).to_text(), file);

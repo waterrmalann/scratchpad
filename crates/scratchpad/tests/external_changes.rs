@@ -83,6 +83,30 @@ fn our_own_saves_are_not_taken_for_outside_changes(cx: &mut TestAppContext) {
     assert_eq!(editor_text(&root, cx), "Ideas\nmine typed!");
 }
 
+// Saves serialize the text on the writer's thread (ADR 0111). What they write, and what the next
+// save and disk check compare the file with, must be the file's own bytes, line endings included.
+#[gpui::test]
+fn saves_of_a_windows_note_keep_its_line_endings_and_are_not_taken_for_outside_changes(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "Ideas\r\nmine\r\n", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input("typed");
+    wait(AUTOSAVE_DELAY, cx);
+    assert_eq!(fs::read(&ideas).unwrap(), b"Ideas\r\nmine\r\ntyped");
+
+    // Reported while there are unsaved edits, which a change by another program would put on hold.
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("more");
+    report(NoteEvent::Changed(ideas.clone()), &root, cx);
+    wait(AUTOSAVE_DELAY, cx);
+
+    assert!(notices(&root, cx).is_empty());
+    assert_eq!(fs::read(&ideas).unwrap(), b"Ideas\r\nmine\r\ntyped\r\nmore");
+}
+
 #[gpui::test]
 fn an_outside_change_during_editing_asks_and_keeping_mine_overwrites(cx: &mut TestAppContext) {
     let (_dir, ideas, root, cx) = open_ideas(cx);

@@ -11,7 +11,7 @@ mod pairs;
 pub mod search;
 mod selection;
 
-pub use buffer::{Buffer, LineEnding, TextChange};
+pub use buffer::{Buffer, LineEnding, TextChange, TextSnapshot};
 pub use coords::{Bias, ByteOffset, Point, Utf16Offset};
 pub use editor::Editor;
 pub use motion::Motion;

@@ -82,6 +82,26 @@ fn delete(c: &mut Criterion) {
     group.finish();
 }
 
+/// What a save or crash recovery snapshot of a 10 MB document costs: serializing the text (what the writer does
+/// off the UI thread, and the UI thread did before ADR 0111) versus taking a snapshot on the UI thread, which
+/// makes the next keystroke copy the rope nodes it touches.
+fn save(c: &mut Criterion) {
+    let mut group = c.benchmark_group("save_10MB");
+    let mut editor = Editor::from_text(&markdown(10 * MB));
+    group.bench_function("to_text", |b| b.iter(|| black_box(&editor).to_text()));
+    group.bench_function("snapshot", |b| {
+        b.iter(|| black_box(editor.buffer()).snapshot())
+    });
+    group.bench_function("snapshot_and_keystroke", |b| {
+        b.iter_with_large_drop(|| {
+            let snapshot = editor.buffer().snapshot();
+            editor.insert_text(black_box("x"));
+            snapshot
+        })
+    });
+    group.finish();
+}
+
 /// Cursor motions that walk a whole 1 MB line: vertical movement counts grapheme columns from the line start.
 /// Flags are the worst case, as each one's extent depends on every regional indicator before it.
 fn long_line_motion(c: &mut Criterion) {
@@ -212,6 +232,7 @@ criterion_group!(
     open,
     insert,
     delete,
+    save,
     long_line_motion,
     search,
     markdown_parse,

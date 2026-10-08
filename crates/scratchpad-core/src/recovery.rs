@@ -45,9 +45,16 @@ impl RecoveryStore {
 
     /// Stores `text` as the recovery snapshot of `note_path`, replacing any earlier one.
     pub fn write(&self, note_path: &Path, text: &str) -> Result<()> {
-        let snapshot = Snapshot {
-            note_path: note_path.to_owned(),
-            text: text.to_owned(),
+        /// [`Snapshot`] with borrowed fields, so a large note's text is not copied once more.
+        #[derive(Serialize)]
+        struct SnapshotRef<'a> {
+            note_path: &'a Path,
+            text: &'a str,
+            saved_at: SystemTime,
+        }
+        let snapshot = SnapshotRef {
+            note_path,
+            text,
             saved_at: SystemTime::now(),
         };
         let file = self.file_for(note_path);

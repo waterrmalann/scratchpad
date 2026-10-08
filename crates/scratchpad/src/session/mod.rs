@@ -20,14 +20,14 @@ use gpui::{AppContext, Context, Entity, Focusable, Subscription, Task, Window};
 use scratchpad_core::{
     Note, NoteEvent, NoteText, RecoveryStore, Snapshot, UNTITLED, title_from_content,
 };
-use scratchpad_editor::Buffer;
+use scratchpad_editor::{Buffer, TextSnapshot};
 
 use crate::app::Storage;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::notes::{DraftId, Notes, NotesEvent, title_of};
 use crate::toast;
 pub use watch::POLL_INTERVAL;
-use writer::{Job, Moved, Outcome, Running, Writer};
+use writer::{Job, Moved, Outcome, Running, SaveText, Writer};
 
 /// Quiet time after the last edit before the note is saved (PLAN §7).
 pub const AUTOSAVE_DELAY: Duration = Duration::from_millis(300);
@@ -405,9 +405,16 @@ impl Session {
         };
         if self.doc.dirty {
             self.doc.snapshot = true;
-            let text = self.editor.read(cx).text().into();
+            let text = self.text_snapshot(cx);
             self.enqueue(Job::Snapshot { key, text }, cx);
         }
+    }
+
+    /// The editor's text for a save or a recovery snapshot. These run while the user types, so
+    /// the text is not copied here (megabytes for a large note) but serialized by the writer,
+    /// off the UI thread.
+    fn text_snapshot(&self, cx: &Context<Self>) -> TextSnapshot {
+        self.editor.read(cx).editor().buffer().snapshot()
     }
 
     /// Saves after [`AUTOSAVE_DELAY`] without edits, or [`MAX_AUTOSAVE_DELAY`] after the
@@ -449,20 +456,21 @@ impl Session {
     fn persist_note(&mut self, path: PathBuf, flush: bool, cx: &mut Context<Self>) {
         let blocked = self.doc.notice.is_some();
         if self.doc.dirty {
-            let text: Arc<str> = self.editor.read(cx).text().into();
             if blocked {
                 // Keep the edits safe until the user decides.
                 self.doc.snapshot = true;
+                let text = self.text_snapshot(cx);
                 self.enqueue(Job::Snapshot { key: path, text }, cx);
                 return;
             }
+            let text = SaveText::snapshot(self.text_snapshot(cx));
             self.doc.dirty = false;
             let expected = if mem::take(&mut self.doc.overwrite) {
                 None
             } else {
                 // What the file holds once the saves before this one are done.
                 let pending = self.writer.pending_save(&path);
-                Some(pending.unwrap_or_else(|| self.doc.disk_text.clone()))
+                Some(pending.unwrap_or_else(|| self.doc.disk_text.clone().into()))
             };
             self.enqueue(
                 Job::Save {
@@ -509,6 +517,7 @@ impl Session {
         }
         if !(flush || title_finished) {
             self.doc.snapshot = true;
+            let text = self.text_snapshot(cx);
             self.enqueue(Job::Snapshot { key, text }, cx);
             return;
         }
@@ -527,8 +536,8 @@ impl Session {
                 self.enqueue(
                     Job::Save {
                         path: note.path,
-                        text,
-                        expected: Some(Arc::from("")),
+                        text: text.into(),
+                        expected: Some(Arc::<str>::from("").into()),
                     },
                     cx,
                 );
@@ -540,6 +549,7 @@ impl Session {
                 let name = title.as_deref().unwrap_or(UNTITLED);
                 toast::show_file_error(name, &error, cx);
                 self.doc.snapshot = true;
+                let text = self.text_snapshot(cx);
                 self.enqueue(Job::Snapshot { key, text }, cx);
             }
         }
@@ -548,8 +558,8 @@ impl Session {
     fn saved(
         &mut self,
         path: PathBuf,
-        text: Arc<str>,
-        expected: Option<Arc<str>>,
+        text: SaveText,
+        expected: Option<SaveText>,
         result: scratchpad_core::Result<Note>,
         moved: Option<Moved>,
         cx: &mut Context<Self>,
@@ -558,6 +568,7 @@ impl Session {
             (Ok(_), Some(moved)) => {
                 // The note was renamed or deleted while this save ran, which may have brought
                 // the old file back. Remove it, and save to the new name.
+                let text = text.get().clone();
                 self.enqueue(Job::RemoveIfUnchanged { path, text }, cx);
                 if let Moved::Renamed(to) = moved
                     && self.doc.is_note(&to)
@@ -570,7 +581,7 @@ impl Session {
             }
             (Ok(note), None) => {
                 if self.doc.is_note(&path) {
-                    self.doc.disk_text = text;
+                    self.doc.disk_text = text.get().clone();
                     self.doc.snapshot = false;
                 }
                 self.notes
@@ -590,7 +601,7 @@ impl Session {
                     self.doc.dirty = true;
                     self.doc.snapshot = true;
                 } else if moved.is_none() {
-                    self.offer_unsaved(path, text.to_string(), cx);
+                    self.offer_unsaved(path, text.get().to_string(), cx);
                 }
             }
         }
@@ -749,7 +760,7 @@ impl Session {
     fn changed_before_save(
         &mut self,
         path: PathBuf,
-        text: Arc<str>,
+        text: &SaveText,
         disk: Option<NoteText>,
         cx: &mut Context<Self>,
     ) {
@@ -766,7 +777,7 @@ impl Session {
                 None => DocumentNotice::Deleted,
             });
         } else {
-            self.offer_unsaved(path, text.to_string(), cx);
+            self.offer_unsaved(path, text.get().to_string(), cx);
         }
         self.refresh_list(cx);
         cx.notify();
@@ -970,7 +981,7 @@ impl Session {
                             Outcome::ChangedOnDisk(_) => {}
                             _ => continue,
                         }
-                        self.offer_unsaved(path, text.to_string(), cx);
+                        self.offer_unsaved(path, text.get().to_string(), cx);
                     }
                 }
             }
@@ -1083,7 +1094,7 @@ impl Session {
                         self.persist(false, cx);
                     }
                 }
-                None => self.changed_before_save(path, text, disk, cx),
+                None => self.changed_before_save(path, &text, disk, cx),
             },
             _ => {}
         }

@@ -48,6 +48,20 @@ pub struct Buffer {
     changes: VecDeque<TextChange>,
 }
 
+/// The text of a [`Buffer`] at one moment, from [`Buffer::snapshot`].
+#[derive(Debug, Clone)]
+pub struct TextSnapshot {
+    rope: Rope,
+    line_ending: LineEnding,
+}
+
+impl TextSnapshot {
+    /// The text as [`Buffer::to_text`] gave it when the snapshot was taken.
+    pub fn to_text(&self) -> String {
+        serialize(&self.rope, self.line_ending)
+    }
+}
+
 impl Buffer {
     /// Loads file text: detects the dominant line ending and normalizes all line breaks (`\r\n`, lone `\r`) to
     /// `\n`.
@@ -62,20 +76,16 @@ impl Buffer {
 
     /// Serializes the buffer for writing to disk, using [`Buffer::line_ending`] for every line break.
     pub fn to_text(&self) -> String {
-        match self.line_ending {
-            LineEnding::Lf => self.rope.to_string(),
-            LineEnding::Crlf => {
-                let mut out = String::with_capacity(self.rope.len_bytes() + self.rope.len_lines());
-                for chunk in self.rope.chunks() {
-                    for (i, piece) in chunk.split('\n').enumerate() {
-                        if i > 0 {
-                            out.push_str("\r\n");
-                        }
-                        out.push_str(piece);
-                    }
-                }
-                out
-            }
+        serialize(&self.rope, self.line_ending)
+    }
+
+    /// The text as it is now, to serialize later or on another thread (e.g. a crash recovery snapshot of a
+    /// 10 MB note while typing goes on). Taking one copies no text: it shares the rope, and the buffer copies
+    /// only the few nodes that later edits touch.
+    pub fn snapshot(&self) -> TextSnapshot {
+        TextSnapshot {
+            rope: self.rope.clone(),
+            line_ending: self.line_ending,
         }
     }
 
@@ -85,7 +95,7 @@ impl Buffer {
 
     /// The buffer contents with `\n` line breaks.
     pub fn normalized_text(&self) -> String {
-        self.rope.to_string()
+        String::from(&self.rope)
     }
 
     /// Length in bytes.
@@ -317,6 +327,25 @@ impl<'a> Iterator for Lines<'a> {
                 Cow::Owned(spanning)
             };
             return Some((start, line));
+        }
+    }
+}
+
+/// The text of `rope` with `line_ending` for every line break.
+fn serialize(rope: &Rope, line_ending: LineEnding) -> String {
+    match line_ending {
+        LineEnding::Lf => String::from(rope),
+        LineEnding::Crlf => {
+            let mut out = String::with_capacity(rope.len_bytes() + rope.len_lines());
+            for chunk in rope.chunks() {
+                for (i, piece) in chunk.split('\n').enumerate() {
+                    if i > 0 {
+                        out.push_str("\r\n");
+                    }
+                    out.push_str(piece);
+                }
+            }
+            out
         }
     }
 }

@@ -9,9 +9,10 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use scratchpad_core::{Note, NoteStore, NoteText, RecoveryStore};
+use scratchpad_editor::TextSnapshot;
 
 #[derive(Clone, Debug)]
 pub(super) enum Job {
@@ -23,8 +24,8 @@ pub(super) enum Job {
     /// or wrote): then another program changed it since and nothing is written.
     Save {
         path: PathBuf,
-        text: Arc<str>,
-        expected: Option<Arc<str>>,
+        text: SaveText,
+        expected: Option<SaveText>,
     },
     /// Rename the note after its title. Runs on the UI thread, through the notes model.
     Rename {
@@ -34,7 +35,7 @@ pub(super) enum Job {
     /// Keep unsaved text in the recovery folder; `key` is the note's path or a draft's key.
     Snapshot {
         key: PathBuf,
-        text: Arc<str>,
+        text: TextSnapshot,
     },
     RemoveSnapshot(PathBuf),
     /// Delete a file a save recreated after the note was renamed or deleted, if it still holds
@@ -43,6 +44,38 @@ pub(super) enum Job {
         path: PathBuf,
         text: Arc<str>,
     },
+}
+
+/// The text of a save, or what a save expects the file to hold.
+///
+/// The session takes the editor's text as a [`TextSnapshot`], which copies nothing, and the
+/// writer turns it into a string on the background thread, once: a large note's save costs the
+/// UI thread nothing (ADR 0111). What the session needs afterwards (the text on disk) has been
+/// serialized by then.
+#[derive(Clone, Debug)]
+pub(super) enum SaveText {
+    Text(Arc<str>),
+    Snapshot(Arc<(TextSnapshot, OnceLock<Arc<str>>)>),
+}
+
+impl SaveText {
+    pub fn snapshot(snapshot: TextSnapshot) -> Self {
+        Self::Snapshot(Arc::new((snapshot, OnceLock::new())))
+    }
+
+    /// The text, serialized now if nothing needed it before.
+    pub fn get(&self) -> &Arc<str> {
+        match self {
+            SaveText::Text(text) => text,
+            SaveText::Snapshot(snapshot) => snapshot.1.get_or_init(|| snapshot.0.to_text().into()),
+        }
+    }
+}
+
+impl From<Arc<str>> for SaveText {
+    fn from(text: Arc<str>) -> Self {
+        Self::Text(text)
+    }
 }
 
 impl Job {
@@ -159,7 +192,7 @@ impl Writer {
 
     /// The text of the latest save of `path` that has not finished: what the file will hold
     /// when a save queued now runs.
-    pub fn pending_save(&self, path: &Path) -> Option<Arc<str>> {
+    pub fn pending_save(&self, path: &Path) -> Option<SaveText> {
         let running = self.running.as_ref().map(|running| &running.job);
         self.queue
             .iter()
@@ -172,7 +205,7 @@ impl Writer {
     }
 
     /// After a save of `path` failed, the file still holds what that save expected.
-    pub fn save_failed(&mut self, path: &Path, failed_expected: Option<Arc<str>>) {
+    pub fn save_failed(&mut self, path: &Path, failed_expected: Option<SaveText>) {
         for job in &mut self.queue {
             if let Job::Save {
                 path: p, expected, ..
@@ -266,9 +299,10 @@ pub(super) fn run(
             text,
             expected,
         } => {
+            let text = text.get();
             if let Some(expected) = expected {
                 match check(store, path) {
-                    Ok(Some(disk)) if *disk.text == **expected => {}
+                    Ok(Some(disk)) if *disk.text == **expected.get() => {}
                     Ok(disk) => {
                         if let Some(recovery) = recovery {
                             log_recovery_error(recovery.write(path, text));
@@ -293,7 +327,7 @@ pub(super) fn run(
         }
         Job::Snapshot { key, text } => {
             if let Some(recovery) = recovery {
-                log_recovery_error(recovery.write(key, text));
+                log_recovery_error(recovery.write(key, &text.to_text()));
             }
             Outcome::Done
         }
@@ -343,12 +377,14 @@ fn log_recovery_error(result: scratchpad_core::Result<()>) {
 
 #[cfg(test)]
 mod tests {
+    use scratchpad_editor::Buffer;
+
     use super::*;
 
     fn snapshot(key: &str, text: &str) -> Job {
         Job::Snapshot {
             key: key.into(),
-            text: text.into(),
+            text: Buffer::from_text(text).snapshot(),
         }
     }
 
@@ -361,7 +397,7 @@ mod tests {
 
         let jobs: Vec<_> = std::iter::from_fn(|| writer.pop()).collect();
         assert!(
-            matches!(&jobs[..], [Job::RemoveSnapshot(_), Job::Snapshot { text, .. }] if &**text == "new"),
+            matches!(&jobs[..], [Job::RemoveSnapshot(_), Job::Snapshot { text, .. }] if text.to_text() == "new"),
             "{jobs:?}"
         );
     }
