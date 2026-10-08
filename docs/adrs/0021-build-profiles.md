@@ -23,7 +23,9 @@ recovery (PLAN §40) must not lose unsaved text when the app panics.
   first build (~6 min cold); dependencies are cached afterwards and incremental builds of
   the app take ~5 s.
 - `main.rs` sets `windows_subsystem = "windows"` only when `debug_assertions` are off, so
-  release builds open no console window and debug builds keep stderr logs visible.
+  release builds open no console window and debug builds keep stderr logs visible. Release
+  builds log to `%LOCALAPPDATA%\Scratchpad\scratchpad.log` instead (previous run kept as
+  `scratchpad.prev.log`).
 
 ## Consequences
 - Crash recovery cannot rely on `catch_unwind` or on running code after a panic: the panic
