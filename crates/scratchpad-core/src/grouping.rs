@@ -5,8 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use chrono::NaiveDate;
 use chrono::{DateTime, Local};
 
-use crate::note::Note;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DateGroup {
     Today,
@@ -53,15 +51,4 @@ pub fn local_date(time: SystemTime) -> NaiveDate {
         .and_then(|s| DateTime::from_timestamp(if negate { -s } else { s }, 0))
         .unwrap_or(DateTime::UNIX_EPOCH);
     utc.with_timezone(&Local).date_naive()
-}
-
-/// Splits `notes` into consecutive runs that share a section, in the given order. Pass the
-/// output of [`NoteStore::list`](crate::NoteStore::list), which is sorted by modification time
-/// and therefore yields each section at most once.
-pub fn group_notes(notes: &[Note], today: NaiveDate) -> Vec<(DateGroup, &[Note])> {
-    let group_of = |note: &Note| DateGroup::of(local_date(note.modified_at), today);
-    notes
-        .chunk_by(|a, b| group_of(a) == group_of(b))
-        .map(|run| (group_of(&run[0]), run))
-        .collect()
 }
