@@ -16,6 +16,9 @@ pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 /// Larger documents are copied and searched on the background executor: a 10 MB note takes
 /// tens of milliseconds.
 pub const BACKGROUND_SEARCH_BYTES: usize = 256 * 1024;
+/// A new query in a note up to this size is searched at once, without waiting for the query to
+/// settle: it takes well under a millisecond.
+const INSTANT_SEARCH_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -69,8 +72,8 @@ impl Find {
 
 impl EditorView {
     /// Highlights the matches of `query` and, once they are found, selects the first one from the
-    /// cursor. Searches after [`SEARCH_DEBOUNCE`], and again after every change to the text,
-    /// until [`end_find`](Self::end_find).
+    /// cursor. Searches at once in a short note, else after [`SEARCH_DEBOUNCE`], and again after
+    /// every change to the text, until [`end_find`](Self::end_find).
     pub fn find(&mut self, query: &str, case: CaseSensitivity, cx: &mut Context<Self>) {
         if self
             .find
@@ -100,6 +103,12 @@ impl EditorView {
             find.matches.clear();
             find.task = None;
             cx.notify();
+        } else if self.editor.buffer().len() <= INSTANT_SEARCH_BYTES {
+            find.task = None;
+            let buffer = self.editor.buffer();
+            let matches = search::find_all(&buffer.normalized_text(), query, case);
+            let version = buffer.version();
+            self.search_finished(matches, version, cx);
         } else {
             self.schedule_search(cx);
         }

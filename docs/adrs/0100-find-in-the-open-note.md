@@ -19,8 +19,10 @@ notes, and highlights must line up with live preview's hidden markers (ADR 0071)
 - The selected match is the current one ("n of m"); there is no separate index to go stale. A
   jump puts a match that is off screen (or within two rows of an edge) in the middle.
 - `EditorView` owns the query and the matches; the bar is only the field and the count. The
-  query and the text are searched 120 ms after they last changed. Notes over 256 KB are copied
-  (a rope clone, then `normalized_text`) and searched on the background executor. The pending
+  query and the text are searched 120 ms after they last changed, except that a new query in a
+  note up to 64 KB is searched at once (well under a millisecond), so the count follows each
+  key. Notes over 256 KB are copied (a rope clone, then `normalized_text`) and searched on the
+  background executor. The pending
   search is one task that every change replaces, so an older query or text never lands.
 - Between searches the matches follow edits (`search::adjust_matches`): later ones move, those
   an edit touched are dropped. They stay valid byte ranges, so highlights do not flicker while
@@ -33,7 +35,7 @@ notes, and highlights must line up with live preview's hidden markers (ADR 0071)
   opacity. The selected match is painted as the selection. No new theme token was needed.
 
 ## Consequences
-- Typing a query shows results 120 ms after the last key, even in short notes.
+- Typing a query in a note over 64 KB shows results 120 ms after the last key.
 - New matches an edit creates appear 120 ms after typing stops.
 - A match ending inside a grapheme cluster ("e" in an "e" with a combining accent) selects the
   whole cluster; one starting inside it (the accent on its own) is not counted as current.

@@ -156,21 +156,16 @@ fn a_selection_over_several_lines_or_a_long_one_is_not_used_as_the_query(cx: &mu
 }
 
 #[gpui::test]
-fn typing_a_query_finds_the_first_match_after_the_cursor_once_typing_pauses(
-    cx: &mut TestAppContext,
-) {
+fn typing_a_query_finds_the_first_match_after_the_cursor_with_every_key(cx: &mut TestAppContext) {
     let mut find = open(cx, "beta alpha beta gamma beta");
     find.keys("right right right right right right ctrl-f");
-    find.cx.simulate_input("BETA");
-
-    assert_eq!(find.status(), "", "not searched while typing");
-    assert_eq!(find.selection(), 6..6);
-    find.wait();
+    find.cx.simulate_input("B");
+    assert_eq!(find.status(), "2 of 3", "a short note is searched at once");
+    find.cx.simulate_input("ETA");
     assert_eq!(find.status(), "2 of 3");
     assert_eq!(find.selection(), 11..15);
 
     find.cx.simulate_input("x");
-    find.wait();
     assert_eq!(find.status(), "No results");
     assert_eq!(find.selection(), 11..15, "the selection stays");
 }
