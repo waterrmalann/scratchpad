@@ -21,6 +21,16 @@ fn title_strips_nested_block_markers() {
         Some("Second step")
     );
     assert_eq!(title_from_content("### Deep   ").as_deref(), Some("Deep"));
+    assert_eq!(
+        title_from_content("+ [X] Done").as_deref(),
+        Some("Done"),
+        "other bullets and an upper-case check mark"
+    );
+    assert_eq!(
+        title_from_content("3) Third").as_deref(),
+        Some("Third"),
+        "ordered items with a parenthesis"
+    );
 }
 
 #[test]
@@ -43,7 +53,7 @@ fn title_keeps_text_that_only_looks_like_a_marker() {
 #[test]
 fn title_skips_lines_without_text() {
     assert_eq!(
-        title_from_content("#\n---\n```rust\n* * *\n- \nReal title").as_deref(),
+        title_from_content("#\n---\n```rust\n~~~\n* * *\n___\n=====\n- \nReal title").as_deref(),
         Some("Real title")
     );
     assert_eq!(title_from_content("  \n\n#\n"), None);
