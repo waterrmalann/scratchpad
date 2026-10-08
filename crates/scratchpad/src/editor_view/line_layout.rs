@@ -56,6 +56,8 @@ pub(crate) struct BaseStyle {
     pub line_height: Pixels,
     pub theme: Theme,
     pub wrap_width: Pixels,
+    /// How far a heading's `#`s may hang into the margin left of the text column.
+    pub hang_room: Pixels,
 }
 
 /// Everything besides its text that a line's layout depends on. A cached layout is reused while its
@@ -362,12 +364,14 @@ impl LineLayout {
         if let Some(marker) = item_markers.next_back() {
             indents.rest += unwrapped_x(&glyphs, display_of(marker.columns.end), width);
         }
-        // A heading's `#`s hang in the margin, so revealing them does not move the heading's text.
+        // A heading's `#`s hang in the margin, so revealing them does not move the heading's text;
+        // in a margin too narrow for them, the text moves by what does not fit.
         if let Some(first) = shown.next()
             && first.marker == Some(MarkerKind::Heading)
             && first.columns.start == 0
         {
-            indents.first -= unwrapped_x(&glyphs, display_of(first.columns.end), width);
+            let markers = unwrapped_x(&glyphs, display_of(first.columns.end), width);
+            indents.first -= markers.min(base.hang_room);
         }
 
         let font_id = text_system.resolve_font(&line_font.font);

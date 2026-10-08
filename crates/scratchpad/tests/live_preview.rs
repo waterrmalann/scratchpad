@@ -126,6 +126,27 @@ fn a_typed_heading_is_set_large_and_its_marker_hangs_in_the_margin(cx: &mut Test
 }
 
 #[gpui::test]
+fn heading_markers_wider_than_a_narrow_margin_are_not_cut_off(cx: &mut TestAppContext) {
+    // The narrowest window leaves the text column a 32 px margin; `###### ` is 63 px wide.
+    let (editor, cx) = open_editor(cx, "body\n###### Six");
+    cx.simulate_resize(size(px(560.), px(400.)));
+    cx.simulate_keystrokes("ctrl-end");
+    let pane_left = cx.debug_bounds("editor-pane").unwrap().left();
+    let hash = bounds(&editor, 5..6, cx);
+    let body = bounds(&editor, 0..1, cx);
+    assert!(
+        hash.left() >= pane_left,
+        "{hash:?} starts left of {pane_left:?}"
+    );
+    assert_eq!(
+        hash.left(),
+        pane_left,
+        "the markers hang as far as the margin allows"
+    );
+    assert!(body.left() > pane_left);
+}
+
+#[gpui::test]
 fn markers_hide_away_from_the_cursor_and_show_when_it_touches_the_span(cx: &mut TestAppContext) {
     // "x **bold** y" displays as "x bold y" unless the cursor touches the strong span (2..10).
     let (editor, cx) = open_editor(cx, "x **bold** y\nnext");

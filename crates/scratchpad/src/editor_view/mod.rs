@@ -38,6 +38,9 @@ const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 /// text, a comfortable measure for prose.
 const MAX_TEXT_WIDTH: Pixels = px(680.);
 const MIN_SIDE_PADDING: Pixels = px(32.);
+/// The most a heading's `#`s hang left of the text column: enough for `###### ` at body size.
+/// Wider margins than this do not change the layout, so resizing a wide window re-shapes nothing.
+const MAX_HANG: Pixels = px(64.);
 const TOP_PADDING: Pixels = px(32.);
 /// Rows kept between the cursor and the viewport edge when the view scrolls to the cursor.
 const AUTOSCROLL_MARGIN_ROWS: f32 = 2.;
@@ -144,7 +147,7 @@ impl EditorView {
             this.editor.break_undo_group();
         })];
         let mono_family = SharedString::from(typography::mono_font_family(cx));
-        let base_style = base_style(cx, MAX_TEXT_WIDTH, &mono_family);
+        let base_style = base_style(cx, MAX_TEXT_WIDTH, MAX_HANG, &mono_family);
         let (editor, markdown) = open_document(text);
         Self {
             editor,
@@ -1223,7 +1226,13 @@ struct LineHit {
     position: Point<Pixels>,
 }
 
-fn base_style(cx: &App, wrap_width: Pixels, mono_family: &SharedString) -> BaseStyle {
+/// `hang_room` is the margin left of the text column, up to [`MAX_HANG`].
+fn base_style(
+    cx: &App,
+    wrap_width: Pixels,
+    hang_room: Pixels,
+    mono_family: &SharedString,
+) -> BaseStyle {
     let font_size = typography::BODY_FONT_SIZE;
     BaseStyle {
         font: font(typography::BODY_FONT_FAMILY),
@@ -1232,6 +1241,7 @@ fn base_style(cx: &App, wrap_width: Pixels, mono_family: &SharedString) -> BaseS
         line_height: font_size * typography::BODY_LINE_HEIGHT,
         theme: cx.theme().clone(),
         wrap_width,
+        hang_room: hang_room.min(MAX_HANG),
     }
 }
 

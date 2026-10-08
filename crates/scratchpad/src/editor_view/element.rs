@@ -96,8 +96,9 @@ impl EditorView {
     fn layout_frame(&mut self, bounds: Bounds<Pixels>, window: &Window, cx: &App) -> Frame {
         self.bounds = Some(bounds);
         let (left, width) = text_column(bounds);
+        let margin = left - bounds.left();
         self.layouts
-            .set_style(base_style(cx, width, &self.mono_family));
+            .set_style(base_style(cx, width, margin, &self.mono_family));
         let vp = self.viewport();
         let margin = self.layouts.style().line_height * AUTOSCROLL_MARGIN_ROWS;
         let selection = self.editor.selection();

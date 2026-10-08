@@ -19,7 +19,9 @@ fonts, colours and shapes using the seven theme tokens (ADR 0022).
 - Shapes instead of characters: bullets as a dot, task boxes as a rounded box (checked: `accent`
   fill and a check mark), a hidden `---` as a 1 px `border` rule, quotes as a 3 px bar with the text
   18 px in. Lines through and under text stop before the space a row wraps at.
-- Heading `#`s hang in the margin, so revealing them does not move the heading's text. Wrapped rows
+- Heading `#`s hang in the margin, so revealing them does not move the heading's text, as far as
+  the margin allows: where it is narrower (32 px in narrow windows), the text moves by the rest
+  rather than the markers being cut off. Wrapped rows
   of a list item line up with its text, and a nested item's leading spaces are widened so two spaces
   line up with the parent's text: spaces are narrow in a proportional font.
 - A line is shaped in segments of one font. GPUI 0.2.2's `layout_line` gives a run the previous
@@ -27,5 +29,5 @@ fonts, colours and shapes using the seven theme tokens (ADR 0022).
 
 ## Consequences
 - Lines mixing styles cost a few shaping calls instead of one; only changed lines are shaped.
-- Hanging `###`+ markers can be clipped in narrow windows, where the margin is only 32 px.
+- In narrow windows, revealing `###`+ markers moves the heading's text a little.
 - No syntax highlighting in code blocks yet (PLAN §48 allows postponing it).
