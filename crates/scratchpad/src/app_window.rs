@@ -9,6 +9,7 @@ use crate::actions::{CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes};
 use crate::app::Storage;
 use crate::editor_pane::EditorPane;
 use crate::editor_view::EditorView;
+use crate::find_bar::FindInNote;
 use crate::notes::{Notes, NotesLocation, Selection, folder_name};
 use crate::session::Session;
 use crate::settings_panel::{SettingsPanel, SettingsPanelEvent};
@@ -46,7 +47,7 @@ impl AppWindow {
         let editor = cx.new(|cx| EditorView::new("", window, cx));
         let session =
             cx.new(|cx| Session::new(notes.clone(), editor.clone(), &storage, window, cx));
-        let editor_pane = cx.new(|cx| EditorPane::new(editor.clone(), session.clone(), cx));
+        let editor_pane = cx.new(|cx| EditorPane::new(editor.clone(), session.clone(), window, cx));
         window.focus(&editor.focus_handle(cx));
         let sidebar = cx.new(|cx| {
             let mut sidebar = Sidebar::new(notes.clone(), window, cx);
@@ -151,6 +152,11 @@ impl AppWindow {
     fn search_notes(&mut self, _: &SearchNotes, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.focus_search(window, cx));
+    }
+
+    fn find_in_note(&mut self, _: &FindInNote, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_pane
+            .update(cx, |pane, cx| pane.find(window, cx));
     }
 
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
@@ -281,6 +287,7 @@ impl Render for AppWindow {
             .on_action(cx.listener(Self::new_note))
             .on_action(cx.listener(Self::save_note))
             .on_action(cx.listener(Self::search_notes))
+            .on_action(cx.listener(Self::find_in_note))
             .on_action(cx.listener(Self::open_settings))
             .relative()
             .size_full()

@@ -2,10 +2,11 @@
 //!
 //! [`EditorView`] owns the engine's [`Editor`], which is the source of truth for text, selection and
 //! history, and the document's [`MarkdownState`], which styles it. The view only adds what is about
-//! presentation: the scroll position, shaped line layouts, caret blinking and mouse drags.
-//! [`element::EditorElement`] lays out and paints the visible lines.
+//! presentation: the scroll position, shaped line layouts, caret blinking, mouse drags and the
+//! matches of the find bar. [`element::EditorElement`] lays out and paints the visible lines.
 
 mod element;
+mod find;
 mod geometry;
 mod layout_cache;
 mod line_layout;
@@ -26,6 +27,7 @@ use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Selectio
 use crate::actions::editor::*;
 use crate::theme::{ActiveTheme, typography};
 use element::{EditorElement, ScrollbarLayout};
+pub use find::{BACKGROUND_SEARCH_BYTES, Direction, FindStatus, SEARCH_DEBOUNCE};
 use layout_cache::LayoutCache;
 use line_layout::{BaseStyle, LineKey, LineLayout};
 use scroll::{LineHeights, ScrollAnchor, Viewport};
@@ -69,8 +71,8 @@ pub struct EditorView {
     /// Looked up once: enumerating fonts takes about a millisecond.
     mono_family: SharedString,
     scroll: ScrollAnchor,
-    /// Set by keyboard input; the next layout scrolls the cursor into view.
-    autoscroll: bool,
+    /// Set by keyboard input and search; the next layout scrolls the cursor into view.
+    autoscroll: Option<Autoscroll>,
     /// Element bounds from the last layout; `None` until the first frame.
     bounds: Option<Bounds<Pixels>>,
     visible_lines: Range<usize>,
@@ -83,7 +85,21 @@ pub struct EditorView {
     input_at: Option<Instant>,
     /// Edits are ignored, e.g. while a note loads; the cursor still moves.
     read_only: bool,
+    /// The find bar's query and its matches while the bar is open.
+    find: Option<find::Find>,
+    /// The match highlights painted in the last frame.
+    #[cfg(feature = "test-support")]
+    match_highlights: Vec<Bounds<Pixels>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// How the next layout brings the cursor into view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Autoscroll {
+    /// Scroll as little as possible: the cursor moved by a step (typing, arrow keys).
+    Cursor,
+    /// Put it in the middle if it is not on screen: the cursor jumped (to a search match).
+    Center,
 }
 
 enum Drag {
@@ -136,7 +152,7 @@ impl EditorView {
             styled_for: None,
             mono_family,
             scroll: ScrollAnchor::top(&viewport(None)),
-            autoscroll: false,
+            autoscroll: None,
             bounds: None,
             visible_lines: 0..0,
             scrollbar: None,
@@ -145,6 +161,9 @@ impl EditorView {
             drag: None,
             input_at: None,
             read_only: false,
+            find: None,
+            #[cfg(feature = "test-support")]
+            match_highlights: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -157,6 +176,7 @@ impl EditorView {
         self.synced_version = self.editor.buffer().version();
         self.scroll = ScrollAnchor::top(&viewport(self.bounds));
         self.drag = None;
+        self.find_text_changed(true, cx);
         cx.notify();
     }
 
@@ -189,6 +209,7 @@ impl EditorView {
         self.editor.replace_range(ByteOffset(0)..end, text);
         let offset = self.editor.buffer().point_to_offset(cursor);
         self.editor.move_to(offset, false);
+        self.find_text_changed(false, cx);
         cx.notify();
     }
 
@@ -234,6 +255,12 @@ impl EditorView {
         self.layouts.shaped()
     }
 
+    /// The search match highlights painted in the last frame, in window coordinates.
+    #[cfg(feature = "test-support")]
+    pub fn match_highlights(&self) -> &[Bounds<Pixels>] {
+        &self.match_highlights
+    }
+
     /// Whether every Markdown marker is shown (source mode) rather than only those near the
     /// selection (live preview).
     pub fn source_mode(&self) -> bool {
@@ -260,8 +287,9 @@ impl EditorView {
         edit(&mut self.editor, &mut self.markdown);
         if self.editor.buffer().version() != version {
             cx.emit(EditorEvent::Changed);
+            self.find_text_changed(false, cx);
         }
-        self.autoscroll = true;
+        self.autoscroll = Some(Autoscroll::Cursor);
         self.selection_changed(cx);
     }
 
@@ -277,7 +305,7 @@ impl EditorView {
 
     fn motion(&mut self, motion: Motion, extend: bool, cx: &mut Context<Self>) {
         self.editor.move_cursor(motion, extend);
-        self.autoscroll = true;
+        self.autoscroll = Some(Autoscroll::Cursor);
         self.selection_changed(cx);
     }
 
@@ -407,7 +435,7 @@ impl EditorView {
         let (offset, x) = vertical_target(&mut lines, selection.head, goal, distance);
         self.editor
             .move_to_with_goal(offset, extend, Goal::Horizontal(x.into()));
-        self.autoscroll = true;
+        self.autoscroll = Some(Autoscroll::Cursor);
         self.selection_changed(cx);
     }
 
@@ -437,7 +465,7 @@ impl EditorView {
         };
         let offset = lines.offset(point.line, column);
         self.editor.move_to(offset, extend);
-        self.autoscroll = true;
+        self.autoscroll = Some(Autoscroll::Cursor);
         self.selection_changed(cx);
     }
 
@@ -573,7 +601,7 @@ impl EditorView {
                 editor.set_selection(selection);
             })
         });
-        self.autoscroll = false;
+        self.autoscroll = None;
     }
 
     /// Extends a mouse selection to the pointer, by the unit the drag started with.

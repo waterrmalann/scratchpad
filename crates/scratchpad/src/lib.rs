@@ -8,6 +8,7 @@ mod app;
 pub mod app_window;
 pub mod editor_pane;
 pub mod editor_view;
+pub mod find_bar;
 mod logging;
 pub mod notes;
 pub mod session;

@@ -14,7 +14,7 @@ use scratchpad_editor::ByteOffset;
 
 use super::line_layout::LineLayout;
 use super::scroll::{LineHeights, ScrollAnchor};
-use super::{AUTOSCROLL_MARGIN_ROWS, EditorView, base_style, text_column};
+use super::{AUTOSCROLL_MARGIN_ROWS, Autoscroll, EditorView, base_style, text_column};
 use crate::theme::ActiveTheme;
 
 /// Lines shaped beyond each edge of the viewport so that they are ready when scrolled in.
@@ -65,6 +65,8 @@ pub(super) struct Frame {
     lines: Vec<(Arc<LineLayout>, gpui::Point<Pixels>)>,
     /// Backgrounds of code blocks, one per run of consecutive code lines.
     code_blocks: Vec<Bounds<Pixels>>,
+    /// Search matches other than the selected one.
+    found: Vec<Bounds<Pixels>>,
     selection: Vec<Bounds<Pixels>>,
     /// Underlines of IME composition text.
     marked: Vec<Bounds<Pixels>>,
@@ -75,6 +77,7 @@ pub(super) struct Frame {
 
 struct FrameColors {
     code_block: Hsla,
+    found: Hsla,
     selection: Hsla,
     caret: Hsla,
     composition: Hsla,
@@ -99,31 +102,48 @@ impl EditorView {
         let margin = self.layouts.style().line_height * AUTOSCROLL_MARGIN_ROWS;
         let selection = self.editor.selection();
         let marked = self.editor.marked_range();
-        let autoscroll = std::mem::take(&mut self.autoscroll);
+        let autoscroll = self.autoscroll.take();
+        // Out of `self` while the lines borrow it; put back below.
+        let find = self.find.take();
+        let found = find.as_ref().map_or(&[][..], |find| &find.matches[..]);
 
         let (mut lines, scroll) = self.lines(window);
         let buffer = lines.buffer;
-        *scroll = if autoscroll {
-            let head = buffer.offset_to_point(selection.head);
-            let layout = lines.layout(head.line);
-            let row_top = layout.row_top(layout.row_of(head.column));
-            let rows = row_top..row_top + layout.line_height();
-            scroll.revealing(head.line, rows, margin, &mut lines, &vp)
-        } else {
-            scroll.clamped(&mut lines, &vp)
+        *scroll = match autoscroll {
+            Some(autoscroll) => {
+                let head = buffer.offset_to_point(selection.head);
+                let layout = lines.layout(head.line);
+                let row_top = layout.row_top(layout.row_of(head.column));
+                let rows = row_top..row_top + layout.line_height();
+                match autoscroll {
+                    Autoscroll::Cursor => {
+                        scroll.revealing(head.line, rows, margin, &mut lines, &vp)
+                    }
+                    Autoscroll::Center => {
+                        scroll.centering(head.line, rows, margin, &mut lines, &vp)
+                    }
+                }
+            }
+            None => scroll.clamped(&mut lines, &vp),
         };
         let anchor = *scroll;
+        // Only the matches on visible lines are looked at (PLAN §29, rule 5).
+        let top_line_start = buffer.line_start(anchor.line);
+        let mut next_found = found.partition_point(|m| m.end <= top_line_start);
 
         let newline_width = lines.cache.style().font_size / 3.;
         let mut frame = Frame {
             lines: Vec::new(),
             code_blocks: Vec::new(),
+            found: Vec::new(),
             selection: Vec::new(),
             marked: Vec::new(),
             cursor: None,
             scrollbar: None,
             colors: FrameColors {
                 code_block: cx.theme().surface,
+                // A lighter shade of the selection: the selected match stands out among them.
+                found: cx.theme().selection.opacity(0.5),
                 selection: cx.theme().selection,
                 caret: cx.theme().accent,
                 composition: cx.theme().foreground,
@@ -141,6 +161,22 @@ impl EditorView {
                 let row_top = origin.y + layout.row_top(row);
                 Bounds::new(point(left + x0, row_top + top), size(x1 - x0, height))
             };
+            while let Some(m) = found.get(next_found).filter(|m| m.start <= line_range.end) {
+                // The selected match is painted as the selection.
+                if *m != selection.range()
+                    && let Some(columns) = columns_in(m, &line_range)
+                {
+                    for (row, x0, x1) in layout.spans(columns, false, px(0.)) {
+                        frame
+                            .found
+                            .push(rect(row, x0, x1, px(0.), layout.line_height()));
+                    }
+                }
+                if m.end > line_range.end {
+                    break; // It goes on on the next line.
+                }
+                next_found += 1;
+            }
             if let Some(columns) = columns_in(&selection.range(), &line_range) {
                 let newline = selection.end() > line_range.end;
                 for (row, x0, x1) in layout.spans(columns, newline, newline_width) {
@@ -201,6 +237,11 @@ impl EditorView {
                 max_position,
                 viewport_lines,
             ));
+        }
+        self.find = find;
+        #[cfg(feature = "test-support")]
+        {
+            self.match_highlights = frame.found.clone();
         }
         self.visible_lines = visible_lines;
         self.scrollbar = frame.scrollbar;
@@ -351,6 +392,9 @@ impl Element for EditorElement {
             }
             for (layout, origin) in &frame.lines {
                 layout.paint_background(*origin, window);
+            }
+            for rect in &frame.found {
+                window.paint_quad(fill(*rect, frame.colors.found));
             }
             for rect in &frame.selection {
                 window.paint_quad(fill(*rect, frame.colors.selection));

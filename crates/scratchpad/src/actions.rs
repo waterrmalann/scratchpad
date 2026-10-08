@@ -10,7 +10,7 @@
 
 use gpui::{App, KeyBinding, actions};
 
-use crate::{settings_panel, text_input};
+use crate::{find_bar, settings_panel, text_input};
 
 actions!(
     scratchpad,
@@ -58,6 +58,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     // Components that own their actions, scoped to their key context.
     bindings.extend(text_input::key_bindings());
     bindings.extend(settings_panel::key_bindings());
+    bindings.extend(find_bar::key_bindings());
     bindings
 }
 

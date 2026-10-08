@@ -113,6 +113,34 @@ impl ScrollAnchor {
         .clamped(lines, vp)
     }
 
+    /// Like [`revealing`](Self::revealing), but a jump rather than a step: rows outside the margins
+    /// are put in the middle of the viewport, so the text around them is in view too.
+    pub fn centering(
+        self,
+        line: usize,
+        rows: Range<Pixels>,
+        margin: Pixels,
+        lines: &mut impl LineHeights,
+        vp: &Viewport,
+    ) -> Self {
+        let anchor = self.normalized(lines, vp);
+        let height = rows.end - rows.start;
+        let margin = margin.min(((vp.height - height) / 2.).max(px(0.)));
+        let shown = anchor
+            .line_top(line, lines, vp.height)
+            .map(|top| top + rows.start)
+            .is_some_and(|top| top >= margin && top + height <= vp.height - margin);
+        if shown {
+            return anchor;
+        }
+        Self {
+            line,
+            offset: rows.start + height / 2. - vp.height / 2.,
+        }
+        .normalized(lines, vp)
+        .clamped(lines, vp)
+    }
+
     /// The y of `line`'s top relative to the viewport's top, if it is the anchor line or starts at
     /// most `limit` below the viewport's top.
     pub fn line_top(
@@ -286,6 +314,32 @@ mod tests {
         assert_eq!(reveal(90, 0.0..20.0, &mut lines), at(87, 0.));
         assert_eq!(reveal(2, 10.0..30.0, &mut lines), at(1, 10.));
         assert!(lines.1 < 40, "measured {} lines", lines.1);
+    }
+
+    #[test]
+    fn centering_puts_rows_outside_the_margins_in_the_middle() {
+        let mut lines = uniform(100);
+        let anchor = at(10, 0.);
+        let margin = px(20.);
+        let center =
+            |line, lines: &mut Heights| anchor.centering(line, px(0.)..px(20.), margin, lines, &VP);
+        assert_eq!(center(12, &mut lines), anchor, "already visible");
+        // The row's middle (10 px into its line) goes to y = 50.
+        assert_eq!(
+            center(14, &mut lines),
+            at(12, 0.),
+            "inside the bottom margin"
+        );
+        assert_eq!(center(10, &mut lines), at(8, 0.), "inside the top margin");
+        lines.1 = 0;
+        assert_eq!(center(90, &mut lines), at(88, 0.), "far below");
+        assert_eq!(center(3, &mut lines), at(1, 0.), "far above");
+        assert!(lines.1 < 40, "measured {} lines", lines.1);
+        assert_eq!(
+            center(0, &mut lines),
+            ScrollAnchor::top(&VP),
+            "clamped at the top"
+        );
     }
 
     #[test]
