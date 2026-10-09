@@ -30,7 +30,7 @@ get: names follow the first line (ADR 0061) and the sidebar lists the folder's `
   file in place; recovered text of a `.md` outside the notes folder still becomes a new note
   (ADR 0081), as an old folder's note looks the same; a toast says so.
 - `scratchpad.exe <file>` opens the file as Ctrl+O would (it is put in `last_opened_file`); a
-  path that is not an existing file is ignored and the last note opens.
+  path that is not an existing file is reported in a toast and the last document opens.
 
 ## Consequences
 - External files get a note's guarantees: other programs' changes are never overwritten unasked.

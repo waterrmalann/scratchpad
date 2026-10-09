@@ -23,7 +23,7 @@ line endings and encoding. It must cost nothing while typing in a 10 MB note.
   writes; a BOM is dropped on load (ADR 0013), so there is no `UTF-8 with BOM`. While a note
   that is not valid UTF-8 is shown read-only (ADR 0066) it reads `Not UTF-8`: we do not guess
   the legacy encoding.
-- `ToggleStatusBar` shows or hides it (no key; the View menu will offer it), remembered as
+- `ToggleStatusBar` shows or hides it (no key; View > Status bar), remembered as
   `Config::status_bar_hidden` so the default, shown, needs no custom `Default` impl.
 - Numbers use `,` as the thousands separator regardless of the Windows locale, like the dates
   in the sidebar (ADR 0051).
