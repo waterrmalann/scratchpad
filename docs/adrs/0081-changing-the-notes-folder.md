@@ -29,6 +29,8 @@ land in the wrong folder. `SCRATCHPAD_NOTES_DIR` overrides the folder (ADR 0065)
 - Recovered text of a note outside the current folder is restored into a new note here, not
   opened in place: renaming that note would move it into the current folder.
 - Notes are never moved or copied; the old folder stays as it is.
+- Amended by ADR 0145: an open file from outside the notes folder stays open, and recovered
+  text of a file that is not a note is restored into that file in place.
 - With `SCRATCHPAD_NOTES_DIR` set, the panel shows the folder and says the variable sets it;
   "Change…" is disabled and out of the Tab order. Open Folder still works.
 

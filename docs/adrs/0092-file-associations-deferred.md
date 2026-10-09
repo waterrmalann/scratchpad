@@ -19,3 +19,6 @@ Scratchpad is offered in "Open with" without taking over the default `.md` handl
 - Scratchpad is reachable from the Start Menu only for now.
 - Taking over `.md` as the default is deliberately not planned: Windows protects that choice for
   the user, and Scratchpad should not argue with other editors.
+- Amended by ADR 0145: `scratchpad.exe <file>` now opens the file (a note of the notes folder
+  as that note, any other file in place), so the "Open with" entries above can be registered.
+  The installer is unchanged for now.

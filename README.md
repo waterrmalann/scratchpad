@@ -9,6 +9,8 @@ Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Sh
 | --- | --- |
 | Ctrl+N | New note |
 | Ctrl+S | Save now |
+| Ctrl+O | Open a file; files outside the notes folder are edited in place, `.txt` and other non-Markdown files as plain text |
+| Ctrl+Shift+S | Save as another file and go on editing that one |
 | Ctrl+Shift+F, Ctrl+P | Search notes |
 | Ctrl+\ | Show or hide the note list (in a narrow window it floats over the note) |
 | Ctrl+F | Find in the note; Enter / F3 next, Shift+Enter / Shift+F3 previous, Alt+C match case, Esc close |

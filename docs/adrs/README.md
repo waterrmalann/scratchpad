@@ -45,11 +45,11 @@ with every new ADR.
 | [0071](0071-live-preview-layout-and-column-mapping.md) | Live preview layout and column mapping | Accepted; amended by 0125 |
 | [0072](0072-markdown-shortcuts-tasks-and-links.md) | Markdown shortcuts, task boxes and links | Accepted |
 | [0080](0080-a-small-settings-panel.md) | A small settings panel with two settings | Accepted |
-| [0081](0081-changing-the-notes-folder.md) | Changing the notes folder | Accepted |
+| [0081](0081-changing-the-notes-folder.md) | Changing the notes folder | Accepted; amended by 0145 |
 | [0082](0082-config-dir-override.md) | SCRATCHPAD_CONFIG_DIR keeps trial runs away from the user's settings | Accepted |
 | [0090](0090-app-icon-and-executable-resources.md) | App icon and executable resources | Accepted |
 | [0091](0091-per-user-msi-installer.md) | Per-user MSI installer built with WiX | Accepted |
-| [0092](0092-file-associations-deferred.md) | File associations are deferred until the app opens file arguments | Accepted |
+| [0092](0092-file-associations-deferred.md) | File associations are deferred until the app opens file arguments | Accepted; amended by 0145 |
 | [0100](0100-find-in-the-open-note.md) | Find in the open note | Accepted |
 | [0110](0110-startup-time-is-gpui-platform-init.md) | Startup time is GPUI's platform initialisation; load fonts alongside it | Accepted |
 | [0111](0111-saves-and-recovery-snapshots-share-the-rope.md) | Saves and recovery snapshots share the rope instead of copying the text | Accepted |
@@ -67,3 +67,6 @@ with every new ADR.
 | [0137](0137-notepad-style-status-bar.md) | A Notepad-style status bar | Accepted |
 | [0140](0140-replace-in-the-find-bar.md) | Replace in the find bar | Accepted |
 | [0141](0141-go-to-line.md) | Go to line | Accepted |
+| [0145](0145-files-from-outside-the-notes-folder.md) | Files from outside the notes folder are edited in place like notes | Accepted |
+| [0146](0146-save-as.md) | Save As writes the text to a chosen file and goes on editing that file | Accepted |
+| [0147](0147-plain-text-files.md) | Files not named like Markdown are edited as plain text | Accepted |
