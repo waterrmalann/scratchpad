@@ -70,4 +70,5 @@ with every new ADR.
 | [0145](0145-files-from-outside-the-notes-folder.md) | Files from outside the notes folder are edited in place like notes | Accepted |
 | [0146](0146-save-as.md) | Save As writes the text to a chosen file and goes on editing that file | Accepted |
 | [0147](0147-plain-text-files.md) | Files not named like Markdown are edited as plain text | Accepted |
+| [0150](0150-an-in-window-menu-bar.md) | An in-window menu bar whose keys come from the keymap | Accepted |
 | [0155](0155-recovery-snapshots-belong-to-their-instance.md) | Recovery snapshots belong to the instance that wrote them | Accepted |

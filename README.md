@@ -1,6 +1,10 @@
 # scratchpad
 
-## Keyboard shortcuts
+## Menus and keyboard shortcuts
+
+The menu bar under the title bar has File (new note, open, save, save as, settings, exit), Edit
+(undo, clipboard, find and replace, go to line, select all) and View (zoom, and ticks for the
+status bar, word wrap and the note list), each command with its key beside it.
 
 Notes save themselves; the usual Windows editing keys work as in Notepad (arrows, Home/End,
 Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Shift+Delete).
@@ -29,6 +33,7 @@ Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Sh
 | Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete (asks first) |
 | Ctrl+, | Settings |
 | Ctrl+W, Ctrl+Q | Close the window, quit |
+| Alt+F, Alt+E, Alt+V, F10 | Open the File, Edit or View menu (F10: File); arrows to move, Enter to choose, Esc to close |
 
 ## Build
 
