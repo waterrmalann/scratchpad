@@ -139,6 +139,15 @@ pub fn editor_text(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Stri
     editor(root, cx).read_with(cx, |editor, _| editor.text())
 }
 
+/// Ends the app the way a crash would: no flush, no tasks run afterwards. Its views go as they
+/// would with the process, releasing its recovery folder for the next start (ADR 0155), so the
+/// test must hold no other handles to them.
+pub fn crash(root: Entity<AppWindow>, cx: &mut VisualTestContext) {
+    drop(root);
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
 /// Closes the window as the close button does: the app gets to save, then the window goes.
 pub fn close(cx: &mut VisualTestContext) {
     assert!(cx.simulate_close());

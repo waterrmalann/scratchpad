@@ -943,8 +943,9 @@ impl Session {
     // --- Crash recovery ---
 
     fn find_recovered(recovery: RecoveryStore, cx: &mut Context<Self>) -> Task<()> {
-        let started = SystemTime::now();
-        let scan = cx.background_spawn(async move { recovery.leftovers(started) });
+        // Only what instances that are gone left behind: other running instances (ADR 0155)
+        // keep their snapshots.
+        let scan = cx.background_spawn(async move { recovery.leftovers() });
         cx.spawn(async move |this, cx| {
             let leftovers = scan.await;
             if leftovers.is_empty() {

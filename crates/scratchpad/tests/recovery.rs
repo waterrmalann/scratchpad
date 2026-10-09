@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use common::{click, days_ago, editor_text, titles_on_disk, wait, write_note};
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use common::{click, crash, days_ago, editor_text, titles_on_disk, wait, write_note};
+use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
 use scratchpad::AppWindow;
 use scratchpad::session::{AUTOSAVE_DELAY, Notice, SNAPSHOT_INTERVAL};
 use scratchpad_core::RecoveryStore;
@@ -44,12 +44,6 @@ impl Folders {
     }
 }
 
-/// Ends the app the way a crash would: no flush, no tasks run afterwards.
-fn crash(cx: &mut VisualTestContext) {
-    cx.update(|window, _| window.remove_window());
-    cx.run_until_parked();
-}
-
 fn notices(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Vec<Notice> {
     let session = common::session(root, cx);
     session.read_with(cx, |session, _| session.notices())
@@ -81,10 +75,10 @@ fn a_new_note_is_snapshotted_until_it_gets_its_file(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_new_note_lost_in_a_crash_is_restored_as_a_new_note(cx: &mut TestAppContext) {
     let folders = Folders::new();
-    let (_root, cx) = folders.open(cx);
+    let (root, cx) = folders.open(cx);
     cx.simulate_input("Lost idea");
     wait(AUTOSAVE_DELAY, cx);
-    crash(cx);
+    crash(root, cx);
 
     let (root, cx) = folders.open(cx);
     assert_eq!(
@@ -108,7 +102,7 @@ fn edits_that_could_not_be_saved_are_restored_after_a_crash(cx: &mut TestAppCont
     let folders = Folders::new();
     let ideas = write_note(folders.notes.path(), "Ideas", "Ideas", days_ago(0, 10));
     write_note(folders.notes.path(), "Other", "Other", days_ago(0, 9));
-    let (_root, cx) = folders.open(cx);
+    let (root, cx) = folders.open(cx);
     set_read_only(&ideas, true);
     cx.simulate_keystrokes("ctrl-end");
     cx.simulate_input(" unsaved");
@@ -117,7 +111,7 @@ fn edits_that_could_not_be_saved_are_restored_after_a_crash(cx: &mut TestAppCont
         folders.snapshots(),
         [(ideas.clone(), "Ideas unsaved".into())]
     );
-    crash(cx);
+    crash(root, cx);
     set_read_only(&ideas, false);
     // The app reopens on another note, so restoring has to open this one.
     fs::write(
@@ -171,7 +165,7 @@ fn recovered_text_survives_editing_its_note_without_restoring_it(cx: &mut TestAp
     wait(AUTOSAVE_DELAY, cx);
     assert_eq!(fs::read_to_string(&ideas).unwrap(), "Ideas typed");
     // ...and the app crashes before the recovered text was restored or discarded.
-    crash(cx);
+    crash(root, cx);
 
     let (root, cx) = folders.open(cx);
     // It now has a snapshot of its own, so it comes back as a new note.
@@ -191,17 +185,17 @@ fn recovered_text_survives_editing_its_note_without_restoring_it(cx: &mut TestAp
 #[gpui::test]
 fn discarded_recovered_text_is_not_offered_again(cx: &mut TestAppContext) {
     let folders = Folders::new();
-    let (_root, cx) = folders.open(cx);
+    let (root, cx) = folders.open(cx);
     cx.simulate_input("Not wanted");
     wait(AUTOSAVE_DELAY, cx);
-    crash(cx);
+    crash(root, cx);
 
     let (root, cx) = folders.open(cx);
     click("choice:Discard", cx);
     assert!(notices(&root, cx).is_empty());
     assert!(folders.snapshots().is_empty());
     assert!(titles_on_disk(folders.notes.path()).is_empty());
-    crash(cx);
+    crash(root, cx);
 
     let (root, cx) = folders.open(cx);
     assert!(notices(&root, cx).is_empty());
@@ -292,12 +286,14 @@ fn quitting_after_a_failed_save_offers_the_text_on_the_next_start(cx: &mut TestA
 body",
         days_ago(0, 10),
     );
-    let (_root, cx) = folders.open(cx);
+    let (root, cx) = folders.open(cx);
     set_read_only(&ideas, true);
     cx.simulate_keystrokes("ctrl-end");
     cx.simulate_input(" unsaved");
 
     cx.cx.update(|cx| cx.shutdown());
+    // Then the process ends: nothing of the app stays (see `crash`).
+    drop(root);
     cx.run_until_parked();
     set_read_only(&ideas, false);
 
@@ -335,14 +331,14 @@ older",
         )
         .unwrap();
     set_read_only(&ideas, true);
-    let (_root, cx) = folders.open(cx);
+    let (root, cx) = folders.open(cx);
     cx.simulate_keystrokes("ctrl-end");
     cx.simulate_input(" newer");
     wait(AUTOSAVE_DELAY, cx);
 
     click("choice:Discard", cx);
     wait(AUTOSAVE_DELAY, cx);
-    crash(cx);
+    crash(root, cx);
     set_read_only(&ideas, false);
 
     assert_eq!(
@@ -376,4 +372,47 @@ fn closing_just_after_a_background_save_leaves_nothing_to_recover(cx: &mut TestA
     common::close(cx);
 
     assert!(folders.snapshots().is_empty());
+}
+
+/// A second instance (e.g. `scratchpad.exe <file>` while one runs) shares the recovery folder.
+/// Offering the first one's live snapshots would let Discard delete them, or Restore copy text
+/// that the first one still has open. See ADR 0155.
+#[gpui::test]
+fn a_second_instance_leaves_the_running_ones_unsaved_text_alone(cx: &mut TestAppContext) {
+    let folders = Folders::new();
+    let ideas = write_note(
+        folders.notes.path(),
+        "Ideas",
+        "Ideas\nbody",
+        days_ago(0, 10),
+    );
+    let (first, cx) = folders.open(cx);
+    // The first instance has text it cannot save, so it is only in its snapshot.
+    set_read_only(&ideas, true);
+    cx.simulate_keystrokes("ctrl-end");
+    cx.simulate_input(" unsaved");
+    wait(AUTOSAVE_DELAY, cx);
+    let first_window = cx.update(|window, _| window.window_handle());
+
+    let (second, cx) = folders.open(cx);
+    assert!(notices(&second, cx).is_empty());
+    assert_eq!(
+        folders.snapshots(),
+        [(ideas.clone(), "Ideas\nbody unsaved".into())]
+    );
+
+    // Once the first instance is gone (see `crash`), its text is offered.
+    drop(first);
+    cx.update_window(first_window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    set_read_only(&ideas, false);
+    let (third, cx) = folders.open(cx);
+    assert_eq!(
+        notices(&third, cx),
+        [Notice::Recovered {
+            title: "Ideas".into(),
+            new_note: false
+        }]
+    );
 }

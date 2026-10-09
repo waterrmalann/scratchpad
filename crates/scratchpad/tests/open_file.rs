@@ -311,7 +311,7 @@ fn the_last_file_reopens_on_restart_and_a_missing_one_falls_back_to_the_last_not
 fn unsaved_text_of_a_file_is_recovered_after_a_crash(cx: &mut TestAppContext) {
     let folders = Folders::new();
     let log = folders.file("log.txt", b"saved");
-    let (_root, cx) = folders.open(cx);
+    let (root, cx) = folders.open(cx);
     open_file(&log, cx);
     cx.simulate_keystrokes("ctrl-end");
     // Too fast for the autosave delay, for longer than the snapshot interval.
@@ -322,9 +322,7 @@ fn unsaved_text_of_a_file_is_recovered_after_a_crash(cx: &mut TestAppContext) {
         typed_for += AUTOSAVE_DELAY / 2;
     }
     assert_eq!(fs::read_to_string(&log).unwrap(), "saved");
-    // A crash: no flush, no tasks run afterwards.
-    cx.update(|window, _| window.remove_window());
-    cx.run_until_parked();
+    common::crash(root, cx);
 
     let (root, cx) = folders.open(cx);
     assert_eq!(

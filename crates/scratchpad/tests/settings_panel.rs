@@ -332,8 +332,7 @@ fn unsaved_text_of_a_note_in_the_previous_folder_is_restored_as_a_new_note(
     let data = tempfile::tempdir().unwrap();
     let ideas = write_note(old.path(), "Ideas", "Ideas", days_ago(0, 10));
     // Left by a crash before the folder was changed to `new`.
-    let recovery = RecoveryStore::new(data.path().join("recovery"));
-    recovery
+    RecoveryStore::new(data.path().join("recovery"))
         .write(
             &ideas,
             "Ideas
