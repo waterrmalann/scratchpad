@@ -16,6 +16,7 @@ use crate::editor_pane::EditorPane;
 use crate::editor_view::{Direction, EditorView};
 use crate::find_bar::{FindInNote, FindNext, FindPrevious, ReplaceInNote};
 use crate::go_to_line::GoToLine;
+use crate::menu_bar::{MenuBar, OpenEditMenu, OpenFileMenu, OpenViewMenu};
 use crate::notes::{Notes, NotesLocation, Selection, folder_name};
 use crate::session::Session;
 use crate::settings_panel::{SettingsPanel, SettingsPanelEvent};
@@ -51,6 +52,7 @@ pub struct AppWindow {
     /// The window is narrower than [`AUTO_COLLAPSE_WIDTH`].
     narrow: bool,
     editor_pane: Entity<EditorPane>,
+    menu_bar: Entity<MenuBar>,
     session: Entity<Session>,
     notes_dir_overridden: bool,
     settings: Option<OpenSettingsPanel>,
@@ -108,6 +110,7 @@ impl AppWindow {
         let narrow = is_narrow(window);
         let sidebar_hidden = narrow || sidebar_collapsed;
         editor_pane.update(cx, |pane, cx| pane.set_sidebar_button(sidebar_hidden, cx));
+        let menu_bar = cx.new(|cx| MenuBar::new(editor.clone(), !sidebar_hidden, cx));
 
         let subscriptions = vec![
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -127,6 +130,14 @@ impl AppWindow {
                 if window.is_window_active() {
                     this.hide_sidebar_overlay(window, cx);
                 }
+            }),
+            // Focus was put back on something no longer shown, e.g. by a menu on the sidebar
+            // shown over the note, which closed when the menu opened: the keys go to the note.
+            // Deferred: this runs while the window is drawn, when focusing would not redraw it.
+            cx.on_focus_lost(window, |_, window, cx| {
+                cx.defer_in(window, |this, window, cx| {
+                    window.focus(&this.editor_pane.focus_handle(cx))
+                })
             }),
             cx.observe_in(&notes, window, |this, notes, window, cx| {
                 let selection = notes.read(cx).selection().clone();
@@ -193,6 +204,7 @@ impl AppWindow {
             narrow,
             notes,
             editor_pane,
+            menu_bar,
             session,
             notes_dir_overridden: storage.notes_dir_overridden,
             settings: None,
@@ -205,6 +217,10 @@ impl AppWindow {
     /// The settings panel, while it is open.
     pub fn settings_panel(&self) -> Option<&Entity<SettingsPanel>> {
         self.settings.as_ref().map(|settings| &settings.panel)
+    }
+
+    pub fn menu_bar(&self) -> &Entity<MenuBar> {
+        &self.menu_bar
     }
 
     pub fn editor_pane(&self) -> &Entity<EditorPane> {
@@ -394,6 +410,8 @@ impl AppWindow {
         }
         self.editor_pane
             .update(cx, |pane, cx| pane.set_sidebar_button(hidden, cx));
+        self.menu_bar
+            .update(cx, |bar, cx| bar.set_sidebar_shown(!hidden, cx));
         cx.notify();
     }
 
@@ -435,6 +453,12 @@ impl AppWindow {
             config.status_bar_hidden = !config.status_bar_hidden;
         });
         cx.notify();
+    }
+
+    /// Alt+F, Alt+E, Alt+V and F10 (ADR 0150).
+    fn open_menu(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_bar
+            .update(cx, |bar, cx| bar.open(index, true, window, cx));
     }
 
     // --- Settings ---
@@ -589,21 +613,39 @@ impl Render for AppWindow {
             }))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::save_as))
+            .on_action(
+                cx.listener(|this, _: &OpenFileMenu, window, cx| this.open_menu(0, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenEditMenu, window, cx| this.open_menu(1, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenViewMenu, window, cx| this.open_menu(2, window, cx)),
+            )
             .relative()
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
             .bg(theme.background)
             .text_color(theme.foreground)
             .font_family(typography::UI_FONT_FAMILY)
             .text_size(typography::UI_FONT_SIZE)
-            .when(mode == SidebarMode::Docked, |root| {
-                root.child(self.sidebar.clone())
-            })
-            .child(self.editor_pane.clone())
-            .when(mode == SidebarMode::Overlay, |root| {
-                root.child(self.render_sidebar_overlay(cx))
-            })
+            .child(self.menu_bar.clone())
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .when(mode == SidebarMode::Docked, |row| {
+                        row.child(self.sidebar.clone())
+                    })
+                    .child(self.editor_pane.clone())
+                    .when(mode == SidebarMode::Overlay, |row| {
+                        row.child(self.render_sidebar_overlay(cx))
+                    }),
+            )
             .children(self.settings_panel().cloned())
             .children(toast::render(cx))
     }

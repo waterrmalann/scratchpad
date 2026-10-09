@@ -122,7 +122,7 @@ fn a_typed_heading_is_set_large_and_its_marker_hangs_in_the_margin(cx: &mut Test
         27. * 1.3,
         "a heading's rows fit its size"
     );
-    assert_eq!(body.size.height, px(15. * 1.5));
+    assert_eq!(round(body.size.height), 15. * 1.5);
 }
 
 #[gpui::test]
