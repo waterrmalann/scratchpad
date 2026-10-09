@@ -97,6 +97,24 @@ fn the_settings_close_when_another_command_takes_the_focus(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn opening_a_file_or_saving_as_closes_the_settings(cx: &mut TestAppContext) {
+    // Their dialogs leave the focus in the panel, which would then hide the file.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let file = elsewhere.path().join("todo.txt");
+    fs::write(&file, "from elsewhere").unwrap();
+    let (root, cx) = common::open_main_window(cx);
+    cx.update(|_, cx| cx.set_global(scratchpad::file_dialogs::PickFileForTests(Some(file))));
+
+    cx.simulate_keystrokes("ctrl-, ctrl-o");
+    assert_eq!(editor_text(&root, cx), "from elsewhere");
+    assert!(!is_open(&root, cx));
+    assert!(editor_has_focus(&root, cx));
+
+    cx.simulate_keystrokes("ctrl-, ctrl-shift-s");
+    assert!(!is_open(&root, cx));
+}
+
+#[gpui::test]
 fn the_settings_stay_open_while_another_window_is_active(cx: &mut TestAppContext) {
     // Such as the folder dialog, whose answer the panel waits for.
     let (root, cx) = common::open_main_window(cx);

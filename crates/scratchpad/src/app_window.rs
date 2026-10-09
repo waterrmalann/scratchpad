@@ -268,7 +268,9 @@ impl AppWindow {
     }
 
     /// Ctrl+O: a note of the notes folder opens as a note, any other file in place.
-    fn open_file(&mut self, _: &OpenFile, _: &mut Window, cx: &mut Context<Self>) {
+    fn open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
+        // The dialog leaves focus where it is: the settings would stay over the file.
+        self.close_settings(window, cx);
         let picked = file_dialogs::pick_file(cx);
         let notes = self.notes.clone();
         cx.spawn(async move |_, cx| {
@@ -282,7 +284,8 @@ impl AppWindow {
     }
 
     /// Ctrl+Shift+S: writes the open note or file to a file the user picks and edits that.
-    fn save_as(&mut self, _: &SaveAs, _: &mut Window, cx: &mut Context<Self>) {
+    fn save_as(&mut self, _: &SaveAs, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_settings(window, cx);
         let session = self.session.clone();
         let Some((dir, name)) = session.update(cx, |session, cx| session.begin_save_as(cx)) else {
             return;
