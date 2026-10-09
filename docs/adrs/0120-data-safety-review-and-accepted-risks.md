@@ -38,3 +38,5 @@ Accepted, with the reason:
 - Notes are read whole; a multi-GB `.md` file can exhaust memory when opened or searched.
 - Conflicts are detected by content, never by time; a crash snapshot written while the clock was
   ahead is offered only once the clock passes it.
+- Amended by ADR 0155: a second instance no longer offers the other's live snapshots, and a
+  snapshot written while the clock was ahead is offered at the next start.

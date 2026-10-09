@@ -17,7 +17,7 @@ with every new ADR.
 | [0011](0011-delete-to-recycle-bin.md) | Delete moves notes to the OS recycle bin | Accepted |
 | [0012](0012-in-memory-note-search.md) | Note search: in-memory substring scan with a small text cache | Accepted |
 | [0013](0013-note-naming-and-encoding.md) | Note naming, collisions and text encoding | Accepted |
-| [0014](0014-config-and-recovery-storage.md) | Config and recovery data live outside the notes folder as small JSON files | Accepted |
+| [0014](0014-config-and-recovery-storage.md) | Config and recovery data live outside the notes folder as small JSON files | Accepted; amended by 0155 |
 | [0020](0020-e2e-testing-strategy.md) | End-to-end testing strategy | Accepted |
 | [0021](0021-build-profiles.md) | Build profiles and panic strategy | Accepted |
 | [0022](0022-theme-and-typography.md) | Theme tokens and typography | Accepted |
@@ -38,7 +38,7 @@ with every new ADR.
 | [0061](0061-new-note-files-and-title-renames.md) | When new notes get a file and when files follow their title | Accepted |
 | [0062](0062-autosave-timing-and-flush-points.md) | Autosave timing, flush points and failed saves | Accepted |
 | [0063](0063-changes-by-other-programs.md) | Changes made to notes by other programs | Accepted |
-| [0064](0064-crash-recovery-snapshots.md) | Crash recovery: snapshots of unsaved text | Accepted |
+| [0064](0064-crash-recovery-snapshots.md) | Crash recovery: snapshots of unsaved text | Accepted; amended by 0155 |
 | [0065](0065-settings-persistence-and-startup-order.md) | Remembered settings and the startup order | Accepted |
 | [0066](0066-notes-that-are-not-utf8.md) | Notes that are not valid UTF-8 open read-only until the user agrees | Accepted |
 | [0070](0070-markdown-typography-in-the-editor-view.md) | Markdown typography in the editor view | Accepted; amended by 0130 |
@@ -56,7 +56,7 @@ with every new ADR.
 | [0112](0112-undo-history-budget.md) | A size budget for the undo history | Accepted |
 | [0113](0113-where-idle-memory-goes.md) | Where idle memory goes, and what we keep after use | Accepted |
 | [0114](0114-measuring-and-guarding-performance.md) | Measuring performance and guarding against regressions | Accepted |
-| [0120](0120-data-safety-review-and-accepted-risks.md) | Data safety before V1: what the session guarantees and the risks accepted | Accepted |
+| [0120](0120-data-safety-review-and-accepted-risks.md) | Data safety before V1: what the session guarantees and the risks accepted | Accepted; amended by 0155 |
 | [0125](0125-cursor-targets-settle-on-revealed-markers.md) | Cursor targets settle on the markers they reveal | Accepted |
 | [0126](0126-keyboard-conventions-for-markdown-text.md) | Keyboard conventions for Markdown text | Accepted |
 | [0130](0130-the-text-uses-the-full-window-width.md) | The text uses the full window width | Accepted |
@@ -70,3 +70,4 @@ with every new ADR.
 | [0145](0145-files-from-outside-the-notes-folder.md) | Files from outside the notes folder are edited in place like notes | Accepted |
 | [0146](0146-save-as.md) | Save As writes the text to a chosen file and goes on editing that file | Accepted |
 | [0147](0147-plain-text-files.md) | Files not named like Markdown are edited as plain text | Accepted |
+| [0155](0155-recovery-snapshots-belong-to-their-instance.md) | Recovery snapshots belong to the instance that wrote them | Accepted |

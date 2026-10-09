@@ -34,3 +34,5 @@ folder for sync clients and Git; a snapshot goes to a private folder.
 - Snapshots never appear next to the user's notes and never hold text that is already saved.
 - A restored snapshot replaces what the editor showed for that note; the version on disk is still
   there until the restored text is saved.
+- Amended by ADR 0155: leftovers are the snapshots of instances that are no longer running,
+  not those written before this run, so a second instance never offers a running one's.

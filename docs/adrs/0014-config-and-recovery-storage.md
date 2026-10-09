@@ -29,3 +29,5 @@ recover unsaved text after a crash (PLAN §40), without adding metadata files to
   offer: it removes those whose text equals the note on disk, and keeps those of a missing note or
   of one that is not valid UTF-8 (saving its lossily decoded text would have replaced the original
   bytes).
+- Amended by ADR 0155: each running instance keeps its snapshots in a folder of its own, and
+  `leftovers` takes over only those of instances that are gone.
