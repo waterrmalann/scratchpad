@@ -4,7 +4,7 @@
 
 The menu bar under the title bar has File (new note, open, save, save as, settings, exit), Edit
 (undo, clipboard, find and replace, go to line, select all) and View (zoom, and ticks for the
-status bar, word wrap and the note list), each command with its key beside it.
+status bar, word wrap, source mode and the note list), each command with its key beside it.
 
 Notes save themselves; the usual Windows editing keys work as in Notepad (arrows, Home/End,
 Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Shift+Delete).

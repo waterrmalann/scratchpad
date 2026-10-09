@@ -30,7 +30,7 @@ menu bar is not available.
   only closes it, as the sidebar overlay does (ADR 0135). The open menu holds focus, so Up/Down,
   Left/Right (neighbouring menu, into and out of Zoom), Enter/Space and Escape work; Escape and
   closing put focus back. Alt+F, Alt+E, Alt+V and F10 open a menu with its first item highlighted.
-- View ticks show live state: the status bar, word wrap and the sidebar (Ctrl+\).
+- View ticks show live state: the status bar, word wrap, source mode (Ctrl+/) and the sidebar (Ctrl+\).
 
 ## Consequences
 - The bar takes 30 px of height in every window size; it cannot be hidden.

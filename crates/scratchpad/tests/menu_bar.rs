@@ -107,7 +107,13 @@ fn each_menu_lists_its_commands_with_the_keys_from_the_keymap(cx: &mut TestAppCo
     click("menu:View", cx);
     assert_eq!(
         labels(&root, false, cx),
-        ["Zoom", "Status bar", "Word wrap", "Sidebar Ctrl+\\"]
+        [
+            "Zoom",
+            "Status bar",
+            "Word wrap",
+            "Source mode Ctrl+/",
+            "Sidebar Ctrl+\\"
+        ]
     );
     hover("menu-item:Zoom", cx);
     assert_eq!(

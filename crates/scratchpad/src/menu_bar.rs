@@ -17,7 +17,7 @@ use gpui::{
     deferred, div, point, prelude::*, px, relative,
 };
 
-use crate::actions::editor::{Copy, Cut, Delete, Paste, Redo, SelectAll, Undo};
+use crate::actions::editor::{Copy, Cut, Delete, Paste, Redo, SelectAll, ToggleSourceMode, Undo};
 use crate::actions::view::{ResetZoom, ToggleWordWrap, ZoomIn, ZoomOut};
 use crate::actions::{
     NewNote, OpenFile, OpenSettings, Quit, SaveAs, SaveNote, ToggleSidebar, ToggleStatusBar,
@@ -318,6 +318,9 @@ impl MenuBar {
                     .into(),
                 item("Word wrap", ToggleWordWrap)
                     .checked(self.editor.read(cx).soft_wrap())
+                    .into(),
+                edit("Source mode", ToggleSourceMode)
+                    .checked(self.editor.read(cx).source_mode())
                     .into(),
                 item("Sidebar", ToggleSidebar)
                     .checked(self.sidebar_shown)
