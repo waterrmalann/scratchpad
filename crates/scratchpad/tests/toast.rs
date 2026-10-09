@@ -46,11 +46,16 @@ fn toast_hides_itself_and_a_newer_message_restarts_the_timer(cx: &mut TestAppCon
 
 #[gpui::test]
 fn clicking_the_toast_dismisses_it(cx: &mut TestAppContext) {
-    let (_root, cx) = common::open_main_window(cx);
+    let (root, cx) = common::open_main_window(cx);
+    let editor = common::editor(&root, cx);
+    editor.update(cx, |editor, cx| editor.set_text(&"text\n".repeat(100), cx));
     show("Could not save \"Ideas\". Disk full.", cx);
 
     let bounds = cx.debug_bounds("toast").expect("toast rendered");
     cx.simulate_click(bounds.center(), Modifiers::none());
 
     assert_eq!(shown(cx), None);
+    // Only that: the note under it keeps its caret.
+    let caret = editor.read_with(cx, |editor, _| editor.editor().selection().head.0);
+    assert_eq!(caret, 0);
 }

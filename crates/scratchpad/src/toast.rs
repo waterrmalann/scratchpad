@@ -95,6 +95,8 @@ pub fn render(cx: &App) -> Option<impl IntoElement + use<>> {
                     .bg(theme.foreground)
                     .text_color(theme.background)
                     .cursor_pointer()
+                    // The click only dismisses it, without also landing in the note under it.
+                    .block_mouse_except_scroll()
                     .on_click(|_, _, cx| dismiss(cx))
                     .child(message),
             ),
