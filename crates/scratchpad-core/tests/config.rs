@@ -40,6 +40,7 @@ fn save_and_load_round_trip_every_field() {
         notes_dir: Some(dir.path().join("my notes")),
         sidebar_collapsed: true,
         status_bar_hidden: true,
+        zoom_percent: Some(150),
     };
 
     config.save(&path).unwrap();
@@ -74,6 +75,7 @@ fn loads_the_documented_file_format() {
             "notes_dir": "C:/Notes",
             "sidebar_collapsed": true,
             "status_bar_hidden": true,
+            "zoom_percent": 120,
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -93,6 +95,7 @@ fn loads_the_documented_file_format() {
             notes_dir: Some("C:/Notes".into()),
             sidebar_collapsed: true,
             status_bar_hidden: true,
+            zoom_percent: Some(120),
         }
     );
 }
@@ -117,7 +120,8 @@ fn invalid_fields_fall_back_individually() {
             "sidebar_width": "wide",
             "theme": "solarized",
             "last_opened_note": 42,
-            "notes_dir": "C:/Notes"
+            "notes_dir": "C:/Notes",
+            "zoom_percent": -5
         }"#,
     );
     assert_eq!(

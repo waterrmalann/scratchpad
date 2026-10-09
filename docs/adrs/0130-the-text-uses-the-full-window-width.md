@@ -12,7 +12,8 @@ whole window. Heading `#`s hang left of the text (ADR 0070), so the left margin 
   and ends 24 px from its right edge, clear of the scrollbar. The vertical padding is unchanged.
 - The left padding is the room heading markers hang in. `### ` at the H3 size in Segoe UI
   semibold measures about 2.56 em of body text (`#` and `##` less); 2.8 em holds it with a few
-  pixels to spare, where 2.5 left the markers touching the sidebar. `####` and deeper still
+  pixels to spare, where 2.5 left the markers touching the sidebar. It scales with the zoom
+  (ADR 0131), as the markers do, so they hang the same at every size. `####` and deeper still
   move their text by what does not fit, never off the edge.
 - The hang room no longer depends on the window width, so resizing re-shapes only because the
   wrap width changes.

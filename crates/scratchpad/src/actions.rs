@@ -72,12 +72,42 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     bindings.extend(text_input::key_bindings());
     bindings.extend(settings_panel::key_bindings());
     bindings.extend(find_bar::key_bindings());
+    bindings.extend(view::key_bindings());
     bindings
 }
 
 /// Handlers for actions that act on the whole application rather than one window.
 pub fn register_app_handlers(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
+}
+
+/// How the note is shown: its text size. Handled by the main window, so they work wherever focus
+/// is, and they apply to the note's text only, not to the rest of the window.
+pub mod view {
+    use gpui::{KeyBinding, actions};
+
+    actions!(
+        view,
+        [
+            /// Makes the note's text 10% larger.
+            ZoomIn,
+            /// Makes the note's text 10% smaller.
+            ZoomOut,
+            /// Back to the normal text size.
+            ResetZoom,
+        ]
+    );
+
+    pub fn key_bindings() -> Vec<KeyBinding> {
+        // Windows reports Ctrl+Shift+= and Ctrl+numpad-plus as `ctrl-+`, and Ctrl+numpad-minus
+        // as `ctrl--`.
+        vec![
+            KeyBinding::new("secondary-=", ZoomIn, None),
+            KeyBinding::new("secondary-+", ZoomIn, None),
+            KeyBinding::new("secondary--", ZoomOut, None),
+            KeyBinding::new("secondary-0", ResetZoom, None),
+        ]
+    }
 }
 
 /// Text editing commands, handled by [`EditorView`](crate::editor_view::EditorView) while it has

@@ -19,6 +19,8 @@ Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Sh
 | Tab / Shift+Tab | Nest a list item / move it out (elsewhere Tab inserts four spaces) |
 | Ctrl+Shift+D, Alt+Up/Down | Duplicate lines, move lines |
 | Ctrl+/ | Show all Markdown markers (source mode) |
+| Ctrl+= / Ctrl+-, Ctrl+wheel | Make the note's text larger / smaller (50% to 400%) |
+| Ctrl+0 | Normal text size |
 | Ctrl+click | Open a link |
 | Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete (asks first) |
 | Ctrl+, | Settings |

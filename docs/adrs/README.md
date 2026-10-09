@@ -60,6 +60,7 @@ with every new ADR.
 | [0125](0125-cursor-targets-settle-on-revealed-markers.md) | Cursor targets settle on the markers they reveal | Accepted |
 | [0126](0126-keyboard-conventions-for-markdown-text.md) | Keyboard conventions for Markdown text | Accepted |
 | [0130](0130-the-text-uses-the-full-window-width.md) | The text uses the full window width | Accepted |
+| [0131](0131-zooming-the-note.md) | Zooming the note | Accepted |
 | [0135](0135-collapsible-sidebar-and-narrow-windows.md) | A collapsible sidebar that floats over the note in narrow windows | Accepted |
 | [0136](0136-confirm-before-deleting-a-note.md) | Confirm before deleting a note | Accepted |
 | [0137](0137-notepad-style-status-bar.md) | A Notepad-style status bar | Accepted |

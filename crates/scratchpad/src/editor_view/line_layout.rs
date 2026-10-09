@@ -35,10 +35,12 @@ const HEADING_LINE_HEIGHT: f32 = 1.3;
 const HEADING_SPACE_ABOVE: [f32; 6] = [1.0, 0.8, 0.6, 0.4, 0.4, 0.4];
 /// Monospace fonts look larger than the body font at the same size.
 const CODE_SCALE: f32 = 0.88;
-/// Room between a code block's text and the left edge of its background.
+/// Room between a code block's text and the left edge of its background, at the normal text size.
 const CODE_BLOCK_PADDING: Pixels = px(14.);
+/// Room left and right of inline code on its background, at the normal text size.
+const INLINE_CODE_PADDING: Pixels = px(3.);
 const INLINE_CODE_RADIUS: Pixels = px(3.);
-/// Quote text sits this far right of the quote's bar.
+/// Quote text sits this far right of the quote's bar, at the normal text size.
 const QUOTE_INDENT: Pixels = px(18.);
 const QUOTE_BAR_WIDTH: Pixels = px(3.);
 /// Width of a bullet, and of a task box, with the space after it, in multiples of the font size.
@@ -52,12 +54,20 @@ const TASK_BOX_SIZE: f32 = 0.92;
 pub(crate) struct BaseStyle {
     pub font: Font,
     pub mono_family: SharedString,
+    /// The body text size, zoom included.
     pub font_size: Pixels,
     pub line_height: Pixels,
     pub theme: Theme,
     pub wrap_width: Pixels,
     /// How far a heading's `#`s may hang into the margin left of the text column.
     pub hang_room: Pixels,
+}
+
+impl BaseStyle {
+    /// A distance given for the normal text size, scaled with the zoom.
+    fn scaled(&self, pixels: Pixels) -> Pixels {
+        (pixels * (self.font_size / typography::BODY_FONT_SIZE)).round()
+    }
 }
 
 /// Everything besides its text that a line's layout depends on. A cached layout is reused while its
@@ -354,10 +364,11 @@ impl LineLayout {
         let mut indents = Indents::default();
         let mut wrap_width = base.wrap_width;
         if block.code_block {
-            indents.first = CODE_BLOCK_PADDING;
-            wrap_width -= CODE_BLOCK_PADDING;
+            let padding = base.scaled(CODE_BLOCK_PADDING);
+            indents.first = padding;
+            wrap_width -= padding;
         } else if block.quote {
-            indents.first = QUOTE_INDENT;
+            indents.first = base.scaled(QUOTE_INDENT);
         }
         indents.rest = indents.first;
         // Wrapped rows of a list item line up with its text rather than with its bullet.
@@ -434,9 +445,10 @@ impl LineLayout {
         for columns in merged(runs, |run| run.style.code && !run.style.code_block) {
             for (row, x0, x1) in self.text_spans(display, columns) {
                 let top = self.row_top(row) + baseline - code_size;
+                let padding = base.scaled(INLINE_CODE_PADDING);
                 let bounds = Bounds::new(
-                    point(x0 - px(3.), top),
-                    size(x1 - x0 + px(6.), code_size * 1.38),
+                    point(x0 - padding, top),
+                    size(x1 - x0 + padding * 2., code_size * 1.38),
                 );
                 self.below.push(Shape::Rect {
                     bounds,

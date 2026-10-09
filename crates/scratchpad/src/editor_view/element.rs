@@ -15,7 +15,7 @@ use scratchpad_editor::ByteOffset;
 use super::line_layout::LineLayout;
 use super::scroll::{LineHeights, ScrollAnchor};
 use super::{AUTOSCROLL_MARGIN_ROWS, Autoscroll, EditorView, base_style, text_column};
-use crate::theme::{ActiveTheme, typography};
+use crate::theme::ActiveTheme;
 
 /// Lines shaped beyond each edge of the viewport so that they are ready when scrolled in.
 const OVERSCAN_LINES: usize = 4;
@@ -95,7 +95,7 @@ impl EditorView {
     /// Scrolls as requested, shapes the visible lines and computes everything paint needs.
     fn layout_frame(&mut self, bounds: Bounds<Pixels>, window: &Window, cx: &App) -> Frame {
         self.bounds = Some(bounds);
-        let font_size = typography::BODY_FONT_SIZE;
+        let font_size = self.font_size();
         let (left, width) = text_column(bounds, font_size);
         self.layouts
             .set_style(base_style(cx, font_size, width, &self.mono_family));
@@ -123,11 +123,18 @@ impl EditorView {
                     Autoscroll::Center => {
                         scroll.centering(head.line, rows, margin, &mut lines, &vp)
                     }
+                    Autoscroll::Keep(top) => ScrollAnchor {
+                        line: head.line,
+                        offset: rows.start - top,
+                    }
+                    .clamped(&mut lines, &vp)
+                    .revealing(head.line, rows, margin, &mut lines, &vp),
                 }
             }
             None => scroll.clamped(&mut lines, &vp),
         };
         let anchor = *scroll;
+        let mut cursor_row_top = None;
         // Only the matches on visible lines are looked at (PLAN §29, rule 5).
         let top_line_start = buffer.line_start(anchor.line);
         let mut next_found = found.partition_point(|m| m.end <= top_line_start);
@@ -199,6 +206,10 @@ impl EditorView {
                 let x = layout.x_for(column) - CARET_WIDTH / 2.;
                 let (text_top, text_height) = layout.text_extent();
                 frame.cursor = Some(rect(row, x, x + CARET_WIDTH, text_top, text_height));
+                let row_top = y + layout.row_top(row);
+                if row_top + layout.line_height() > px(0.) && row_top < vp.height {
+                    cursor_row_top = Some(row_top);
+                }
             }
             let height = layout.height();
             if layout.code_block() {
@@ -245,6 +256,7 @@ impl EditorView {
             self.match_highlights = frame.found.clone();
         }
         self.visible_lines = visible_lines;
+        self.cursor_row_top = cursor_row_top;
         self.scrollbar = frame.scrollbar;
         self.layouts.trim_around(anchor.line);
         frame

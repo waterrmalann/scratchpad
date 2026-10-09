@@ -18,8 +18,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, SharedString,
-    Subscription, Task, UTF16Selection, Window, WindowTextSystem, div, font, prelude::*, px,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    SharedString, Subscription, Task, UTF16Selection, Window, WindowTextSystem, div, font,
+    prelude::*, px,
 };
 use scratchpad_editor::markdown::MarkdownState;
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Selection, Utf16Offset};
@@ -36,11 +37,19 @@ use scroll::{LineHeights, ScrollAnchor, Viewport};
 const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 /// Space left of the text, in multiples of the font size: room for a heading's `#`s to hang in
 /// (ADR 0070, 0130). `### ` at the H3 size is about 2.56 em of body text in Segoe UI semibold;
-/// deeper headings move their text by what does not fit.
+/// deeper headings move their text by what does not fit. It scales with the zoom, as the markers
+/// do.
 const LEFT_PADDING_EMS: f32 = 2.8;
 /// Space right of the text, clear of the scrollbar.
 const RIGHT_PADDING: Pixels = px(24.);
 const TOP_PADDING: Pixels = px(32.);
+/// The text size range, in percent of the normal size, and the step of Ctrl+= and Ctrl+-.
+const MIN_ZOOM: u16 = 50;
+const MAX_ZOOM: u16 = 400;
+const ZOOM_STEP: u16 = 10;
+/// Ctrl+wheel distance per zoom step: one notch of a mouse wheel at Windows' default of three
+/// lines. A precision touchpad sends fractions of a notch, which add up.
+const ZOOM_WHEEL_LINES: f32 = 3.;
 /// Rows kept between the cursor and the viewport edge when the view scrolls to the cursor.
 const AUTOSCROLL_MARGIN_ROWS: f32 = 2.;
 /// How often the view scrolls while a selection is dragged past its top or bottom edge.
@@ -64,6 +73,10 @@ pub struct EditorView {
     markdown: MarkdownState,
     /// Shows every Markdown marker instead of hiding them away from the cursor (live preview).
     source_mode: bool,
+    /// Text size in percent of the normal size.
+    zoom: u16,
+    /// Ctrl+wheel distance, in lines, not yet turned into a zoom step.
+    zoom_wheel: f32,
     focus_handle: FocusHandle,
     layouts: LayoutCache,
     /// Buffer version the layouts and scroll anchor were last updated to.
@@ -75,6 +88,8 @@ pub struct EditorView {
     scroll: ScrollAnchor,
     /// Set by keyboard input and search; the next layout scrolls the cursor into view.
     autoscroll: Option<Autoscroll>,
+    /// The top of the cursor's row below the viewport's top in the last frame, if it was on screen.
+    cursor_row_top: Option<Pixels>,
     /// Element bounds from the last layout; `None` until the first frame.
     bounds: Option<Bounds<Pixels>>,
     visible_lines: Range<usize>,
@@ -106,6 +121,9 @@ enum Autoscroll {
     Cursor,
     /// Put it in the middle if it is not on screen: the cursor jumped (to a search match).
     Center,
+    /// Put its row's top this far below the viewport's top: the text changed size, and the
+    /// cursor stays where it was on screen.
+    Keep(Pixels),
 }
 
 enum Drag {
@@ -153,6 +171,8 @@ impl EditorView {
             editor,
             markdown,
             source_mode: false,
+            zoom: 100,
+            zoom_wheel: 0.,
             focus_handle,
             layouts: LayoutCache::new(base_style),
             synced_version: 0,
@@ -160,6 +180,7 @@ impl EditorView {
             mono_family,
             scroll: ScrollAnchor::top(&viewport(None)),
             autoscroll: None,
+            cursor_row_top: None,
             bounds: None,
             visible_lines: 0..0,
             scrollbar: None,
@@ -274,6 +295,57 @@ impl EditorView {
     /// selection (live preview).
     pub fn source_mode(&self) -> bool {
         self.source_mode
+    }
+
+    /// The note's text size in percent of the normal size.
+    pub fn zoom_percent(&self) -> u16 {
+        self.zoom
+    }
+
+    /// Sets the text size, within 50% to 400%. The cursor's row stays where it is on screen;
+    /// with the cursor off screen, the text at the top stays there.
+    pub fn set_zoom_percent(&mut self, percent: u16, cx: &mut Context<Self>) {
+        let percent = percent.clamp(MIN_ZOOM, MAX_ZOOM);
+        if percent == self.zoom {
+            return;
+        }
+        let scale = f32::from(percent) / f32::from(self.zoom);
+        self.zoom = percent;
+        self.keep_place(scale);
+        cx.notify();
+    }
+
+    /// Zooms in (positive `steps`) or out by steps of 10%, to a multiple of 10%.
+    pub fn zoom_by(&mut self, steps: i32, cx: &mut Context<Self>) {
+        // A level off the steps (edited by hand) first goes to the nearest step that way.
+        let from = if steps > 0 {
+            self.zoom / ZOOM_STEP
+        } else {
+            self.zoom.div_ceil(ZOOM_STEP)
+        };
+        let percent = (i32::from(from) + steps) * i32::from(ZOOM_STEP);
+        let percent = percent.clamp(MIN_ZOOM.into(), MAX_ZOOM.into());
+        self.set_zoom_percent(percent as u16, cx);
+    }
+
+    /// Before the line heights change by about `scale`: the next layout puts the cursor's row back
+    /// where it was on screen, or, with the cursor off screen, keeps the top line in place.
+    fn keep_place(&mut self, scale: f32) {
+        match self.cursor_row_top {
+            Some(top) => self.autoscroll = Some(Autoscroll::Keep(top)),
+            // Not the top padding, which does not scale.
+            None if self.scroll.offset > px(0.) => self.scroll.offset *= scale,
+            None => {}
+        }
+    }
+
+    fn font_size(&self) -> Pixels {
+        typography::BODY_FONT_SIZE * (f32::from(self.zoom) / 100.)
+    }
+
+    /// The left edge of the text column in window coordinates, and the column's width.
+    fn text_column(&self, bounds: Bounds<Pixels>) -> (Pixels, Pixels) {
+        text_column(bounds, self.font_size())
     }
 
     // --- Engine plumbing ---
@@ -426,7 +498,7 @@ impl EditorView {
     /// Above or below the text, the first or last line.
     fn line_at(&mut self, position: Point<Pixels>, window: &Window) -> Option<LineHit> {
         let bounds = self.bounds?;
-        let (left, _) = text_column(bounds, typography::BODY_FONT_SIZE);
+        let (left, _) = self.text_column(bounds);
         let (mut lines, scroll) = self.lines(window);
         let (line, y) = scroll.line_at(position.y - bounds.top(), &mut lines);
         Some(LineHit {
@@ -713,6 +785,10 @@ impl EditorView {
     }
 
     fn scroll_wheel(&mut self, event: &ScrollWheelEvent, window: &Window, cx: &mut Context<Self>) {
+        if event.modifiers.control {
+            self.zoom_wheel(event.delta, cx);
+            return;
+        }
         self.input_at.get_or_insert_with(Instant::now);
         let delta = event.delta.pixel_delta(self.layouts.style().line_height);
         let vp = self.viewport();
@@ -722,6 +798,28 @@ impl EditorView {
             self.extend_drag_selection(window, cx);
         }
         cx.notify();
+    }
+
+    /// Ctrl+wheel: a step of zoom per notch of a mouse wheel, forward to zoom in. Touchpads send
+    /// fractions of a notch, which add up; at most one step is taken per event, so a wheel set to
+    /// scroll more lines than usual still zooms a step per notch.
+    fn zoom_wheel(&mut self, delta: ScrollDelta, cx: &mut Context<Self>) {
+        let lines = match delta {
+            ScrollDelta::Lines(lines) => lines.y,
+            ScrollDelta::Pixels(pixels) => {
+                pixels.y / (typography::BODY_FONT_SIZE * typography::BODY_LINE_HEIGHT)
+            }
+        };
+        // Turning the other way starts afresh rather than first undoing what had added up.
+        if lines == 0. || lines.signum() != self.zoom_wheel.signum() {
+            self.zoom_wheel = 0.;
+        }
+        self.zoom_wheel += lines;
+        if self.zoom_wheel.abs() >= ZOOM_WHEEL_LINES {
+            let step = self.zoom_wheel.signum() as i32;
+            self.zoom_wheel %= ZOOM_WHEEL_LINES;
+            self.zoom_by(step, cx);
+        }
     }
 
     fn scrollbar_mouse_down(
@@ -1014,7 +1112,7 @@ impl EntityInputHandler for EditorView {
     ) -> Option<Bounds<Pixels>> {
         let range = self.range_from_utf16(&range_utf16);
         let bounds = self.bounds?;
-        let (left, _) = text_column(bounds, typography::BODY_FONT_SIZE);
+        let (left, _) = self.text_column(bounds);
         let vp = self.viewport();
         let (mut lines, scroll) = self.lines(window);
         let buffer = lines.buffer;
@@ -1226,7 +1324,7 @@ struct LineHit {
     position: Point<Pixels>,
 }
 
-/// The style of body text at `font_size` in a text column `width` wide.
+/// The style of body text at `font_size` (the zoomed body size) in a text column `width` wide.
 fn base_style(cx: &App, font_size: Pixels, width: Pixels, mono_family: &SharedString) -> BaseStyle {
     BaseStyle {
         font: font(typography::BODY_FONT_FAMILY),

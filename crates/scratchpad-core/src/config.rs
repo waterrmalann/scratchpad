@@ -57,6 +57,9 @@ pub struct Config {
     /// The user hid the status bar; it is shown by default.
     #[serde(deserialize_with = "or_default")]
     pub status_bar_hidden: bool,
+    /// Size of the note's text in percent of the normal size (View > Zoom).
+    #[serde(deserialize_with = "or_default")]
+    pub zoom_percent: Option<u16>,
 }
 
 impl Config {
