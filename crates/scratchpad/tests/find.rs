@@ -493,3 +493,269 @@ fn ctrl_f_with_the_settings_open_closes_them_and_opens_the_bar(cx: &mut TestAppC
     cx.simulate_keystrokes("escape");
     assert!(!bar.read_with(cx, |bar, _| bar.is_open()));
 }
+
+// --- Replace (ADR 0140) ---
+
+impl Find<'_> {
+    fn text(&mut self) -> String {
+        self.editor.read_with(self.cx, |editor, _| editor.text())
+    }
+
+    fn replacement(&mut self) -> String {
+        self.bar.read_with(self.cx, |bar, cx| bar.replacement(cx))
+    }
+
+    fn is_replacing(&mut self) -> bool {
+        self.bar.read_with(self.cx, |bar, _| bar.is_replacing())
+    }
+
+    /// Searches for `query`, then opens the replace row and types `replacement`.
+    fn replace_with(&mut self, query: &str, replacement: &str) {
+        self.keys("ctrl-f");
+        self.cx.simulate_input(query);
+        self.wait();
+        self.keys("ctrl-h");
+        self.cx.simulate_input(replacement);
+    }
+}
+
+/// The find bar of the window on the notes in `dir`.
+fn open_in<'a>(dir: &std::path::Path, cx: &'a mut TestAppContext) -> Find<'a> {
+    let (root, cx) = common::open_main_window_in(dir, cx);
+    Find {
+        editor: common::editor(&root, cx),
+        bar: find_bar(&root, cx),
+        cx,
+    }
+}
+
+#[gpui::test]
+fn ctrl_h_opens_the_replace_row_and_tab_goes_between_the_fields(cx: &mut TestAppContext) {
+    let mut find = open(cx, "beta alpha beta");
+    find.keys("shift-right shift-right shift-right shift-right ctrl-h");
+    assert!(find.is_open() && find.is_replacing());
+    assert_eq!(
+        find.query(),
+        "beta",
+        "the selection is the query, as with Ctrl+F"
+    );
+    find.cx.simulate_input("gamma");
+    assert_eq!(
+        (find.query(), find.replacement()),
+        ("beta".into(), "gamma".into())
+    );
+
+    // Each field is selected when Tab goes to it, so typing replaces it.
+    find.keys("tab");
+    find.cx.simulate_input("alpha");
+    find.keys("shift-tab");
+    find.cx.simulate_input("delta");
+    assert_eq!(
+        (find.query(), find.replacement()),
+        ("alpha".into(), "delta".into())
+    );
+
+    // Ctrl+F goes back to finding only; the chevron shows the replace row again.
+    find.keys("ctrl-f");
+    assert!(find.is_open() && !find.is_replacing());
+    find.keys("tab");
+    find.cx.simulate_input("x");
+    assert_eq!(find.query(), "x", "with one field, Tab stays in it");
+    common::click("find-toggle-replace", find.cx);
+    assert!(find.is_replacing());
+    assert_eq!(find.replacement(), "delta");
+
+    find.keys("tab escape");
+    assert!(!find.is_open());
+    assert!(find.editor_focused());
+}
+
+#[gpui::test]
+fn replace_replaces_the_selected_match_and_selects_the_next(cx: &mut TestAppContext) {
+    let mut find = open(cx, "beta alpha beta gamma beta");
+    find.replace_with("beta", "x");
+    assert_eq!(find.selection(), 0..4);
+
+    find.keys("enter");
+    assert_eq!(find.text(), "x alpha beta gamma beta");
+    assert_eq!((find.status(), find.selection()), ("1 of 2".into(), 8..12));
+    find.keys("enter");
+    assert_eq!(find.text(), "x alpha x gamma beta");
+    assert_eq!(find.selected_text(), "beta");
+    find.keys("enter");
+    assert_eq!(find.text(), "x alpha x gamma x");
+    find.wait();
+    assert_eq!(find.status(), "No results");
+    find.keys("enter");
+    assert_eq!(find.text(), "x alpha x gamma x", "nothing left to replace");
+}
+
+#[gpui::test]
+fn replace_without_a_match_selected_only_selects_the_next_one(cx: &mut TestAppContext) {
+    let mut find = open(cx, "beta one beta two");
+    find.replace_with("beta", "x");
+    find.focus_editor();
+    find.keys("ctrl-home shift-right shift-right shift-right shift-right shift-right");
+    assert_eq!(
+        find.selected_text(),
+        "beta ",
+        "more than a match is not the match"
+    );
+
+    common::click("replace-next", find.cx);
+    assert_eq!(find.text(), "beta one beta two");
+    assert_eq!(find.selection(), 9..13);
+    common::click("replace-next", find.cx);
+    assert_eq!(find.text(), "beta one x two");
+    assert_eq!(find.selection(), 0..4, "wraps around to the first");
+}
+
+#[gpui::test]
+fn replace_all_ignores_case_unless_asked_and_undoes_in_one_step(cx: &mut TestAppContext) {
+    let original = "beta Beta BETA gamma";
+    let mut find = open(cx, original);
+    find.replace_with("beta", "x");
+    find.keys("ctrl-alt-enter");
+    assert_eq!(find.text(), "x x x gamma");
+    assert_eq!(find.status(), "Replaced 3");
+    find.wait();
+    assert_eq!(find.status(), "Replaced 3", "until something else happens");
+
+    find.focus_editor();
+    find.keys("ctrl-z");
+    assert_eq!(find.text(), original, "one undo brings back every match");
+    assert_eq!(find.selection(), 0..4, "and the selection");
+    find.wait();
+    assert_eq!(find.status(), "1 of 3");
+
+    // Without a selection Ctrl+H keeps the query.
+    find.keys("ctrl-end ctrl-h alt-c alt-a");
+    assert_eq!(find.text(), "x Beta BETA gamma");
+    assert_eq!(find.status(), "Replaced 1");
+    find.keys("enter");
+    assert_eq!(find.status(), "No results");
+}
+
+#[gpui::test]
+fn a_replacement_containing_the_query_is_not_replaced_again(cx: &mut TestAppContext) {
+    let mut find = open(cx, "ab ab");
+    find.replace_with("ab", "abab");
+    find.keys("enter");
+    assert_eq!(find.text(), "abab ab");
+    assert_eq!(
+        find.selection(),
+        5..7,
+        "the next match after the replacement"
+    );
+    find.keys("alt-a");
+    assert_eq!(find.text(), "abababab abab");
+    assert_eq!(find.status(), "Replaced 3");
+}
+
+#[gpui::test]
+fn replacing_text_between_hidden_markers_keeps_the_markers(cx: &mut TestAppContext) {
+    let mut find = open(cx, "a **word** b\n\nword and *word*");
+    find.replace_with("word", "term");
+    assert_eq!(find.selection(), 4..8);
+    find.keys("enter");
+    assert_eq!(find.text(), "a **term** b\n\nword and *word*");
+    assert_eq!(find.selection(), 14..18);
+    find.keys("alt-a");
+    assert_eq!(find.text(), "a **term** b\n\nterm and *term*");
+}
+
+#[gpui::test]
+fn replace_changes_only_the_matched_part_of_a_letter_with_an_accent(cx: &mut TestAppContext) {
+    // "é" written as "e" and a combining accent: the whole letter is selected (ADR 0100), but
+    // Replace, like Replace All, replaces the "e" and leaves the accent.
+    let mut find = open(cx, "cafe\u{301} cafe\u{301}");
+    // Not `replace_with`: Ctrl+H on the selected letter would make all of it the query.
+    find.keys("ctrl-h");
+    find.cx.simulate_input("x");
+    find.keys("shift-tab");
+    find.cx.simulate_input("e");
+    find.keys("tab");
+    assert_eq!(find.selection(), 3..6);
+    find.keys("enter");
+    assert_eq!(find.text(), "cafx\u{301} cafe\u{301}");
+    assert_eq!(find.selection(), 10..13);
+    find.keys("enter");
+    assert_eq!(find.text(), "cafx\u{301} cafx\u{301}");
+}
+
+#[gpui::test]
+fn replace_in_a_large_note_never_uses_an_older_search(cx: &mut TestAppContext) {
+    let line = "lorem ipsum dolor sit amet\n";
+    let filler = line.repeat(BACKGROUND_SEARCH_BYTES / line.len() + 1);
+    let mut find = open(cx, &format!("{filler}needle"));
+    find.keys("ctrl-h");
+    find.cx.simulate_input("pin");
+    find.keys("shift-tab");
+    find.cx.simulate_input("needle");
+    assert_eq!(find.status(), "", "searched once typing pauses");
+    find.keys("tab enter");
+    assert_eq!(find.selected_text(), "needle", "searched for Replace");
+
+    // The edit's search is pending too: Replace searches again rather than trust the matches
+    // the edit moved, which miss the one it made.
+    find.focus_editor();
+    find.keys("ctrl-home");
+    find.cx.simulate_input("needle ");
+    find.keys("ctrl-home");
+    common::click("replace-next", find.cx);
+    assert_eq!(find.selection(), 0..6);
+    common::click("replace-next", find.cx);
+    assert!(find.text().starts_with("pin lorem"));
+    assert_eq!(find.selected_text(), "needle");
+    common::click("replace-all", find.cx);
+    assert!(find.text().ends_with("amet\npin"));
+}
+
+#[gpui::test]
+fn replace_all_is_saved(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "Pets\ncat and cat food";
+    let path = common::write_note(dir.path(), "Pets", text, common::days_ago(0, 10));
+    let mut find = open_in(dir.path(), cx);
+    find.replace_with("cat", "dog");
+    find.keys("alt-a");
+    common::wait(scratchpad::session::AUTOSAVE_DELAY, find.cx);
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "Pets\ndog and dog food"
+    );
+}
+
+#[gpui::test]
+fn a_read_only_note_is_not_replaced(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Latin1.md");
+    std::fs::write(&path, b"caf\xE9 cat cat").unwrap();
+    let mut find = open_in(dir.path(), cx);
+    find.replace_with("cat", "dog");
+    let selection = find.selection();
+    find.keys("enter");
+    common::click("replace-next", find.cx);
+    find.keys("alt-a ctrl-alt-enter");
+    common::click("replace-all", find.cx);
+    assert_eq!(find.text(), "caf\u{FFFD} cat cat");
+    assert_eq!(find.selection(), selection);
+    assert_eq!(find.status(), "1 of 2");
+    common::wait(scratchpad::session::AUTOSAVE_DELAY, find.cx);
+    assert_eq!(std::fs::read(&path).unwrap(), b"caf\xE9 cat cat");
+}
+
+#[gpui::test]
+fn the_bar_with_the_replace_row_fits_in_a_narrow_editor(cx: &mut TestAppContext) {
+    let mut find = open(cx, "text");
+    find.cx.simulate_resize(size(px(560.), px(400.)));
+    find.keys("ctrl-h");
+    let pane = find.cx.debug_bounds("editor-pane").unwrap();
+    for part in ["find-bar", "replace-all", "find-close"] {
+        let bounds = find.cx.debug_bounds(part).unwrap();
+        assert!(
+            pane.left() < bounds.left() && bounds.right() < pane.right(),
+            "{part} {bounds:?} is not inside {pane:?}"
+        );
+    }
+}

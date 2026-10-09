@@ -67,6 +67,12 @@ impl EditorPane {
         self.find_bar.update(cx, |bar, cx| bar.open(window, cx));
     }
 
+    /// Ctrl+H: opens the find bar with its replace row, in the replacement.
+    pub fn replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_bar
+            .update(cx, |bar, cx| bar.open_replace(window, cx));
+    }
+
     fn select_match(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
         self.find_bar
             .update(cx, |bar, cx| bar.select_match(direction, window, cx));

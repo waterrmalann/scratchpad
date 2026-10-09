@@ -1,20 +1,23 @@
-//! Find in the open note (PLAN §29): a small bar over the top right of the editor. See ADR 0100.
+//! Find and replace in the open note (PLAN §29): a small bar over the top right of the editor. See
+//! ADR 0100 and ADR 0140.
 //!
 //! Ctrl+F opens it with the selected text (if it is short and on one line) as the query. Typing
 //! searches after a pause and selects the first match from the cursor; Enter and F3 go to the
 //! next match, Shift+Enter and Shift+F3 to the previous one, wrapping around. Escape closes it and
-//! puts the caret back in the note with the match still selected. The editor finds and highlights
-//! the matches; this view is the query field, the count and the buttons.
+//! puts the caret back in the note with the match still selected. Ctrl+H, or the chevron on the
+//! left, adds a second row with the replacement: Enter there replaces the selected match and
+//! selects the next, Ctrl+Alt+Enter (or Alt+A) replaces them all. The editor finds, highlights and
+//! replaces the matches; this view is the fields, the count and the buttons.
 
 use gpui::{
-    App, ClickEvent, Context, Entity, FocusHandle, Focusable, KeyBinding, SharedString,
-    Subscription, Window, actions, div, prelude::*, px,
+    App, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, SharedString,
+    Stateful, Subscription, Window, actions, div, prelude::*, px,
 };
 use scratchpad_editor::search::CaseSensitivity;
 
 use crate::editor_view::{Direction, EditorView};
 use crate::text_input::{TextInput, TextInputEvent};
-use crate::theme::{ActiveTheme, typography};
+use crate::theme::{ActiveTheme, Theme, typography};
 
 actions!(
     find,
@@ -29,6 +32,12 @@ actions!(
         CloseFind,
         /// Switch between ignoring case (the default) and matching it.
         ToggleMatchCase,
+        /// Open the find bar with its replace row, in the replacement field.
+        ReplaceInNote,
+        /// Replace every match.
+        ReplaceAll,
+        /// Move between the query and the replacement fields.
+        SwitchField,
     ]
 );
 
@@ -47,6 +56,13 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-enter", FindPrevious, Some(CONTEXT)),
         KeyBinding::new("alt-c", ToggleMatchCase, Some(CONTEXT)),
         KeyBinding::new("escape", CloseFind, Some("Editor")),
+        // Replace (ADR 0140). Enter in the replacement field is its Confirm, which replaces.
+        KeyBinding::new("secondary-h", ReplaceInNote, None),
+        // VS Code's key, and the access key of Notepad's Replace All button.
+        KeyBinding::new("ctrl-alt-enter", ReplaceAll, Some(CONTEXT)),
+        KeyBinding::new("alt-a", ReplaceAll, Some(CONTEXT)),
+        KeyBinding::new("tab", SwitchField, Some(CONTEXT)),
+        KeyBinding::new("shift-tab", SwitchField, Some(CONTEXT)),
     ]
 }
 
@@ -67,28 +83,41 @@ const CLOSE_ICON: &str = if cfg!(windows) {
 } else {
     "\u{00D7}"
 };
+const COLLAPSED_ICON: &str = if cfg!(windows) {
+    "\u{E76C}"
+} else {
+    "\u{203A}"
+};
+const EXPANDED_ICON: &str = NEXT_ICON;
 
 pub struct FindBar {
     editor: Entity<EditorView>,
     query: Entity<TextInput>,
+    replacement: Entity<TextInput>,
     case: CaseSensitivity,
     open: bool,
+    /// The replace row is shown.
+    replacing: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl FindBar {
     pub fn new(editor: Entity<EditorView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| TextInput::new("Find in note", cx));
+        let replacement = cx.new(|cx| TextInput::new("Replace with", cx));
         let subscriptions = vec![
             cx.subscribe_in(&query, window, Self::on_query_event),
+            cx.subscribe_in(&replacement, window, Self::on_replacement_event),
             // The count follows the editor's selection and searches.
             cx.observe(&editor, |_, _, cx| cx.notify()),
         ];
         Self {
             editor,
             query,
+            replacement,
             case: CaseSensitivity::Insensitive,
             open: false,
+            replacing: false,
             _subscriptions: subscriptions,
         }
     }
@@ -97,16 +126,29 @@ impl FindBar {
         self.open
     }
 
+    /// Whether the replace row is shown.
+    pub fn is_replacing(&self) -> bool {
+        self.open && self.replacing
+    }
+
     pub fn query(&self, cx: &App) -> String {
         self.query.read(cx).text().to_owned()
     }
 
+    pub fn replacement(&self, cx: &App) -> String {
+        self.replacement.read(cx).text().to_owned()
+    }
+
     /// The count shown next to the query: "3 of 12", "12 matches", "No results", or nothing
-    /// while there is no query or it has not been searched yet.
+    /// while there is no query or it has not been searched yet. After Replace All, how many
+    /// matches it replaced.
     pub fn status(&self, cx: &App) -> String {
         let Some(status) = self.editor.read(cx).find_status() else {
             return String::new();
         };
+        if let Some(replaced) = status.replaced {
+            return format!("Replaced {replaced}");
+        }
         match (status.current, status.total) {
             (_, 0) => "No results".into(),
             (Some(current), total) => format!("{} of {total}", current + 1),
@@ -119,9 +161,18 @@ impl FindBar {
         self.case == CaseSensitivity::Sensitive
     }
 
-    /// Opens the bar with the selected text as the query, if it is short and on one line, and moves
-    /// focus to the query with all of it selected.
+    /// Ctrl+F: opens the bar without the replace row, with the selected text as the query if it
+    /// is short and on one line, and moves focus to the query with all of it selected.
     pub fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show(false, window, cx);
+    }
+
+    /// Ctrl+H: like [`open`](Self::open), but with the replace row, and focus in the replacement.
+    pub fn open_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show(true, window, cx);
+    }
+
+    fn show(&mut self, replacing: bool, window: &mut Window, cx: &mut Context<Self>) {
         let editor = self.editor.read(cx).editor();
         let selection = editor.selection().range();
         // Checked before copying: the selection may be all of a 10 MB note.
@@ -134,9 +185,15 @@ impl FindBar {
             }
         }
         self.open = true;
+        self.replacing = replacing;
         self.search(cx);
-        window.focus(&self.query.focus_handle(cx));
-        self.query.update(cx, |query, cx| query.select_all(cx));
+        let field = if replacing {
+            &self.replacement
+        } else {
+            &self.query
+        };
+        window.focus(&field.focus_handle(cx));
+        field.update(cx, |field, cx| field.select_all(cx));
         cx.notify();
     }
 
@@ -178,6 +235,44 @@ impl FindBar {
         cx.notify();
     }
 
+    /// Shows or hides the replace row. Hiding it takes focus out of the replacement.
+    fn toggle_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.replacing = !self.replacing;
+        if !self.replacing && self.replacement.focus_handle(cx).is_focused(window) {
+            window.focus(&self.query.focus_handle(cx));
+        }
+        cx.notify();
+    }
+
+    /// Tab and Shift+Tab go between the two fields; with one field they stay in it.
+    fn switch_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.replacing {
+            return;
+        }
+        let field = if self.query.focus_handle(cx).is_focused(window) {
+            &self.replacement
+        } else {
+            &self.query
+        };
+        window.focus(&field.focus_handle(cx));
+        field.update(cx, |field, cx| field.select_all(cx));
+    }
+
+    /// Replace and Replace All act only while the replace row shows what they replace with.
+    fn replace(&mut self, all: bool, cx: &mut Context<Self>) {
+        if !self.is_replacing() {
+            return;
+        }
+        let replacement = self.replacement(cx);
+        self.editor.update(cx, |editor, cx| {
+            if all {
+                editor.replace_all(&replacement, cx);
+            } else {
+                editor.replace_match(&replacement, cx);
+            }
+        });
+    }
+
     fn search(&self, cx: &mut Context<Self>) {
         let query = self.query(cx);
         let case = self.case;
@@ -202,6 +297,91 @@ impl FindBar {
             TextInputEvent::Cancelled => self.close(window, cx),
         }
     }
+
+    fn on_replacement_event(
+        &mut self,
+        _: &Entity<TextInput>,
+        event: &TextInputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TextInputEvent::Changed => {}
+            TextInputEvent::Confirmed => self.replace(false, cx),
+            TextInputEvent::Cancelled => self.close(window, cx),
+        }
+    }
+}
+
+/// A text field in the find bar's style: an outlined box around `input` that focuses it when
+/// clicked, after an icon if there is one. An empty icon leaves the room for one, so that the
+/// text of fields above each other lines up. Also used by Go to line.
+pub(crate) fn input_box(
+    id: &'static str,
+    icon: Option<&'static str>,
+    input: &Entity<TextInput>,
+    theme: &Theme,
+    window: &Window,
+    cx: &App,
+) -> Stateful<Div> {
+    let focus = input.focus_handle(cx);
+    let focused = focus.is_focused(window);
+    div()
+        .id(id)
+        .h(px(28.))
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded_md()
+        .bg(theme.background)
+        .border_1()
+        .border_color(if focused { theme.accent } else { theme.border })
+        .on_click(move |_: &ClickEvent, window, _| window.focus(&focus))
+        .children(icon.map(|icon| {
+            div()
+                .flex_none()
+                .w(px(12.))
+                .font_family(typography::ICON_FONT_FAMILY)
+                .text_xs()
+                .text_color(theme.muted)
+                .child(icon)
+        }))
+        .child(div().flex_1().min_w_0().child(input.clone()))
+}
+
+/// A small push button in the find bar's style; muted and inert while not `enabled`.
+pub(crate) fn text_button(
+    id: &'static str,
+    label: &'static str,
+    enabled: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let accent = theme.accent;
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex_none()
+        .h(px(26.))
+        .px_2()
+        .flex()
+        .items_center()
+        .rounded_md()
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.background)
+        .text_xs()
+        .map(|button| {
+            if enabled {
+                button
+                    .text_color(theme.foreground)
+                    .cursor_pointer()
+                    .hover(move |style| style.border_color(accent))
+            } else {
+                button.text_color(theme.muted)
+            }
+        })
+        .child(label)
 }
 
 impl Focusable for FindBar {
@@ -213,7 +393,6 @@ impl Focusable for FindBar {
 impl Render for FindBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let focused = self.query.focus_handle(cx).is_focused(window);
         let status = self.status(cx);
         let icon_button = |id: &'static str, icon: &'static str| {
             div()
@@ -237,56 +416,33 @@ impl Render for FindBar {
                 .child(icon)
         };
         let match_case = self.match_case();
+        let can_replace = !self.editor.read(cx).is_read_only();
 
-        div()
-            .key_context(CONTEXT)
-            .block_mouse_except_scroll()
-            .debug_selector(|| "find-bar".into())
-            .on_action(cx.listener(|this, _: &ToggleMatchCase, _, cx| this.toggle_match_case(cx)))
+        let find_row = div()
             .min_w_0()
             .flex()
             .items_center()
             .gap_1()
-            .p_1()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface)
-            .shadow_md()
             .child(
-                div()
-                    .id("find-field")
-                    // Narrower in a narrow editor, down to room for a few words.
-                    .w(px(260.))
-                    .min_w(px(120.))
-                    .h(px(28.))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded_md()
-                    .bg(theme.background)
-                    .border_1()
-                    .border_color(if focused { theme.accent } else { theme.border })
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        window.focus(&this.query.focus_handle(cx))
-                    }))
-                    .child(
-                        div()
-                            .font_family(typography::ICON_FONT_FAMILY)
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child(SEARCH_ICON),
-                    )
-                    .child(div().flex_1().min_w_0().child(self.query.clone()))
-                    .child(
-                        div()
-                            .debug_selector(|| "find-status".into())
-                            .flex_none()
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child(SharedString::from(status)),
-                    ),
+                input_box(
+                    "find-field",
+                    Some(SEARCH_ICON),
+                    &self.query,
+                    &theme,
+                    window,
+                    cx,
+                )
+                // Narrower in a narrow editor, down to room for a few words.
+                .w(px(260.))
+                .min_w(px(120.))
+                .child(
+                    div()
+                        .debug_selector(|| "find-status".into())
+                        .flex_none()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(status)),
+                ),
             )
             .child(
                 div()
@@ -331,6 +487,93 @@ impl Render for FindBar {
                 icon_button("find-close", CLOSE_ICON).on_click(
                     cx.listener(|this, _: &ClickEvent, window, cx| this.close(window, cx)),
                 ),
+            );
+        let replace_row = self.replacing.then(|| {
+            div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    // Lined up with the query, except in a narrow editor, where the buttons
+                    // after it take more room than those after the query.
+                    input_box(
+                        "replace-field",
+                        Some(""),
+                        &self.replacement,
+                        &theme,
+                        window,
+                        cx,
+                    )
+                    .w(px(260.))
+                    .min_w(px(64.)),
+                )
+                .child(
+                    text_button("replace-next", "Replace", can_replace, &theme).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.replace(false, cx)),
+                    ),
+                )
+                .child(
+                    text_button("replace-all", "Replace all", can_replace, &theme).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.replace(true, cx)),
+                    ),
+                )
+        });
+        let toggle_replace = div()
+            .id("find-toggle-replace")
+            .debug_selector(|| "find-toggle-replace".into())
+            .flex_none()
+            .w(px(18.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .font_family(typography::ICON_FONT_FAMILY)
+            .text_size(px(10.))
+            .text_color(theme.muted)
+            .cursor_pointer()
+            .hover(|style| {
+                style
+                    .bg(theme.foreground.opacity(0.06))
+                    .text_color(theme.foreground)
+            })
+            .on_click(
+                cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_replace(window, cx)),
+            )
+            .child(if self.replacing {
+                EXPANDED_ICON
+            } else {
+                COLLAPSED_ICON
+            });
+
+        // Not aligned: the chevron stretches over both rows.
+        div()
+            .key_context(CONTEXT)
+            .block_mouse_except_scroll()
+            .debug_selector(|| "find-bar".into())
+            .on_action(cx.listener(|this, _: &ToggleMatchCase, _, cx| this.toggle_match_case(cx)))
+            .on_action(cx.listener(|this, _: &ReplaceAll, _, cx| this.replace(true, cx)))
+            .on_action(
+                cx.listener(|this, _: &SwitchField, window, cx| this.switch_field(window, cx)),
+            )
+            .min_w_0()
+            .flex()
+            .gap_1()
+            .p_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .shadow_md()
+            .child(toggle_replace)
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(find_row)
+                    .children(replace_row),
             )
     }
 }

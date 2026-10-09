@@ -1,12 +1,12 @@
 //! In-document search (PLAN §29, ADR 0100): the matches of the find bar's query, kept up to date
-//! with the text, and stepping through them.
+//! with the text, stepping through them and replacing them (ADR 0140).
 
 use std::ops::Range;
 use std::time::Duration;
 
 use gpui::{Context, Task};
 use scratchpad_editor::search::{self, CaseSensitivity};
-use scratchpad_editor::{Bias, ByteOffset, Selection};
+use scratchpad_editor::{Bias, Buffer, ByteOffset, Selection};
 
 use super::{Autoscroll, EditorView};
 
@@ -32,6 +32,8 @@ pub struct FindStatus {
     /// The index of the match that is selected, if any.
     pub current: Option<usize>,
     pub total: usize,
+    /// How many matches the last Replace All replaced, until the next step, query or edit.
+    pub replaced: Option<usize>,
 }
 
 pub(super) struct Find {
@@ -51,6 +53,8 @@ pub(super) struct Find {
     /// The pending search. Replacing it cancels the previous one, so only the latest query and
     /// text are ever searched to the end.
     task: Option<Task<()>>,
+    /// See [`FindStatus::replaced`].
+    replaced: Option<usize>,
     #[cfg(feature = "test-support")]
     background_searches: usize,
 }
@@ -67,6 +71,12 @@ impl Find {
             .partition_point(|m| m.start < selection.start());
         let found = self.matches.get(index)?;
         (found.start == selection.start()).then_some(index)
+    }
+
+    /// The current match, if the selection is that match and nothing more: what Replace replaces.
+    fn selected_match(&self, selection: Selection, buffer: &Buffer) -> Option<Range<ByteOffset>> {
+        let found = &self.matches[self.current(selection)?];
+        (buffer.clip_offset(found.end, Bias::Right) == selection.end()).then(|| found.clone())
     }
 }
 
@@ -92,6 +102,7 @@ impl EditorView {
             select_first: false,
             pending_step: None,
             task: None,
+            replaced: None,
             #[cfg(feature = "test-support")]
             background_searches: 0,
         });
@@ -99,6 +110,7 @@ impl EditorView {
         find.case = case;
         find.select_first = true;
         find.pending_step = None;
+        find.replaced = None;
         if query.is_empty() {
             find.matches.clear();
             find.task = None;
@@ -131,7 +143,64 @@ impl EditorView {
         Some(FindStatus {
             current: find.current(self.editor.selection()),
             total: find.matches.len(),
+            replaced: find.replaced,
         })
+    }
+
+    /// Replaces the selected match with `replacement` and selects the next match, wrapping around.
+    /// If the selection is not a match, only selects the next one, so that what Replace changes is
+    /// always on screen first (as in Notepad and VS Code). Does nothing in a read-only note.
+    pub fn replace_match(&mut self, replacement: &str, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
+        self.search_if_stale();
+        let Some(find) = &self.find else {
+            return;
+        };
+        if let Some(found) = find.selected_match(self.editor.selection(), self.editor.buffer()) {
+            // The cursor goes after the replacement, so a replacement containing the query is
+            // stepped over rather than found again.
+            self.edit(cx, |editor| editor.replace_range(found, replacement));
+        }
+        self.step(Direction::Next, cx);
+    }
+
+    /// Replaces every match of the query, searched afresh, as one undo step. Does nothing in a
+    /// read-only note.
+    pub fn replace_all(&mut self, replacement: &str, cx: &mut Context<Self>) {
+        let Some(find) = &self.find else {
+            return;
+        };
+        let (query, case) = (find.query.clone(), find.case);
+        let mut replaced = 0;
+        self.edit(cx, |editor| {
+            replaced = editor.replace_all(&query, case, replacement)
+        });
+        if let Some(find) = &mut self.find
+            && replaced > 0
+        {
+            find.replaced = Some(replaced);
+        }
+    }
+
+    /// Searches now unless the matches are the query's in the text as it is: a pending search may
+    /// be for an older query, and the matches an edit moved miss those it created. Replacing must
+    /// not act on either.
+    fn search_if_stale(&mut self) {
+        let Some(find) = &mut self.find else {
+            return;
+        };
+        let buffer = self.editor.buffer();
+        if find.searched && find.task.is_none() && find.version == buffer.version() {
+            return;
+        }
+        find.matches = search::find_all(&buffer.normalized_text(), &find.query, find.case);
+        find.version = buffer.version();
+        find.searched = true;
+        find.task = None;
+        find.select_first = false;
+        find.pending_step = None;
     }
 
     /// Selects the next or previous match from the selection, wrapping around, and scrolls it
@@ -156,9 +225,10 @@ impl EditorView {
     }
 
     fn step(&mut self, direction: Direction, cx: &mut Context<Self>) {
-        let Some(find) = &self.find else {
+        let Some(find) = &mut self.find else {
             return;
         };
+        find.replaced = None;
         let selection = self.editor.selection();
         let index = match direction {
             Direction::Next => search::next_match(&find.matches, selection.end()),
@@ -190,6 +260,7 @@ impl EditorView {
         // match, not even by a step asked for before.
         find.select_first = false;
         find.pending_step = None;
+        find.replaced = None;
         let buffer = self.editor.buffer();
         match buffer.changes_since(find.version).filter(|_| !new_document) {
             Some(changes) => {
