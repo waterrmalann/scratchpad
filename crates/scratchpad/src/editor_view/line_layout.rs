@@ -13,7 +13,7 @@ use gpui::{
     Bounds, Font, FontStyle, FontWeight, Hsla, PathBuilder, Pixels, Point, SharedString, TextRun,
     Window, WindowTextSystem, fill, font, point, px, quad, size, transparent_black,
 };
-use scratchpad_editor::markdown::{MarkdownState, MarkerKind, SpanStyle, StyledLine};
+use scratchpad_editor::markdown::{MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan};
 use scratchpad_editor::{Bias, Buffer, Selection};
 
 use super::geometry::{Glyph, Indents, LineGeometry, expand_tabs, set_span_width, unwrapped_x};
@@ -104,6 +104,27 @@ impl LineKey {
             })
         });
         Self { styled, widgets }
+    }
+
+    /// How `line` looks in a plain text file: one unstyled span, with no markers.
+    pub fn plain(buffer: &Buffer, line: usize) -> Self {
+        let len = buffer.line_end(line).0 - buffer.line_start(line).0;
+        let spans = (len > 0)
+            .then(|| StyledSpan {
+                columns: 0..len,
+                style: SpanStyle::default(),
+                marker: None,
+                hidden: false,
+            })
+            .into_iter()
+            .collect();
+        Self {
+            styled: StyledLine {
+                style: SpanStyle::default(),
+                spans,
+            },
+            widgets: false,
+        }
     }
 }
 

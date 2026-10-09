@@ -676,3 +676,38 @@ fn a_read_only_note_ignores_task_clicks_and_markdown_commands(cx: &mut TestAppCo
     common::wait(AUTOSAVE_DELAY, cx);
     assert_eq!(std::fs::read(&note.path).unwrap(), contents);
 }
+
+#[gpui::test]
+fn plain_text_shows_markdown_as_typed_and_edits_it_as_plain_text(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "x **bold** y\n# Title\n- [ ] task");
+    editor.update(cx, |editor, cx| editor.set_markdown(false, cx));
+    cx.simulate_keystrokes("ctrl-end");
+    assert_eq!(x_of(&editor, 4, 0, cx), 4. * ADVANCE, "`**` are shown");
+    assert_eq!(
+        bounds(&editor, 15..16, cx).size.width,
+        px(ADVANCE),
+        "no heading size"
+    );
+
+    // The task box is text: a click places the cursor in it.
+    click(task_box(&editor, 21, cx), Modifiers::none(), cx);
+    assert_eq!(text(&editor, cx), "x **bold** y\n# Title\n- [ ] task");
+    assert!(cursor(&editor, cx) > 21);
+
+    cx.simulate_keystrokes("ctrl-end enter");
+    cx.simulate_input("(");
+    assert_eq!(
+        text(&editor, cx),
+        "x **bold** y\n# Title\n- [ ] task\n(",
+        "no list item, no pair"
+    );
+    cx.simulate_keystrokes("shift-home ctrl-b ctrl-i ctrl-e ctrl-k end tab");
+    assert_eq!(
+        text(&editor, cx),
+        "x **bold** y\n# Title\n- [ ] task\n(    "
+    );
+
+    // Back to Markdown, the same lines are styled again.
+    editor.update(cx, |editor, cx| editor.set_markdown(true, cx));
+    assert_eq!(x_of(&editor, 4, 0, cx), 2. * ADVANCE);
+}

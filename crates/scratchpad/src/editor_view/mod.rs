@@ -79,6 +79,8 @@ pub struct EditorView {
     zoom_wheel: f32,
     /// Long lines wrap at the text column's edge; without it they scroll horizontally.
     soft_wrap: bool,
+    /// A plain text file: no Markdown styling and no Markdown editing commands.
+    plain: bool,
     focus_handle: FocusHandle,
     layouts: LayoutCache,
     /// Buffer version the layouts and scroll anchor were last updated to.
@@ -181,6 +183,7 @@ impl EditorView {
             zoom: 100,
             zoom_wheel: 0.,
             soft_wrap: true,
+            plain: false,
             focus_handle,
             layouts: LayoutCache::new(base_style),
             synced_version: 0,
@@ -377,6 +380,22 @@ impl EditorView {
         (left - self.scroll_x, width)
     }
 
+    /// Edits Markdown (live preview, Markdown commands) or plain text, which is shown as typed:
+    /// Enter, Tab, typed brackets and Backspace edit it as plain text, and formatting shortcuts,
+    /// task boxes and Ctrl+click on links do nothing.
+    pub fn set_markdown(&mut self, markdown: bool, cx: &mut Context<Self>) {
+        if self.plain == markdown {
+            self.plain = !markdown;
+            // Every line's key is checked again on the next layout.
+            self.styled_for = None;
+            cx.notify();
+        }
+    }
+
+    pub fn is_markdown(&self) -> bool {
+        !self.plain
+    }
+
     // --- Engine plumbing ---
 
     /// Runs an edit, notifying observers if the text changed and scrolling to the cursor.
@@ -401,6 +420,17 @@ impl EditorView {
         }
         self.autoscroll = Some(Autoscroll::Cursor);
         self.selection_changed(cx);
+    }
+
+    /// A command that writes Markdown, such as Ctrl+B: plain text ignores it.
+    fn markdown_command(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut Editor, &mut MarkdownState),
+    ) {
+        if !self.plain {
+            self.edit_markdown(cx, edit);
+        }
     }
 
     fn selection_changed(&mut self, cx: &mut Context<Self>) {
@@ -503,7 +533,7 @@ impl EditorView {
     fn lines<'a>(&'a mut self, window: &'a Window) -> (Lines<'a>, &'a mut ScrollAnchor) {
         self.sync_layouts();
         // Live preview shows markers depending on the selection; source mode shows them all.
-        let selection = (!self.source_mode).then(|| self.editor.selection());
+        let selection = (!self.source_mode && !self.plain).then(|| self.editor.selection());
         let styled_for = Some((self.editor.buffer().version(), selection));
         if self.styled_for != styled_for {
             self.styled_for = styled_for;
@@ -511,7 +541,7 @@ impl EditorView {
         }
         let lines = Lines {
             buffer: self.editor.buffer(),
-            markdown: &mut self.markdown,
+            markdown: (!self.plain).then_some(&mut self.markdown),
             selection,
             cache: &mut self.layouts,
             text_system: window.text_system(),
@@ -556,6 +586,9 @@ impl EditorView {
 
     /// The destination of the link drawn at a window position.
     fn link_at(&mut self, position: Point<Pixels>, window: &Window) -> Option<String> {
+        if self.plain {
+            return None;
+        }
         let hit = self.line_at(position, window)?;
         let layout = &hit.layout;
         if hit.position.y < px(0.) || hit.position.y >= layout.height() {
@@ -662,6 +695,7 @@ impl EditorView {
         if event.click_count <= 1 && !event.modifiers.shift {
             // A read-only note's task boxes are text like any other: the click places the cursor.
             if !self.read_only
+                && !self.plain
                 && let Some(task_box) = self.task_box_at(event.position, window)
             {
                 self.toggle_task(task_box, cx);
@@ -1048,9 +1082,10 @@ impl Render for EditorView {
                 this.move_in_row(true, true, window, cx)
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
-            .on_action(
-                cx.listener(|this, _: &Backspace, _, cx| this.edit(cx, Editor::backspace_typed)),
-            )
+            .on_action(cx.listener(|this, _: &Backspace, _, cx| match this.plain {
+                true => this.edit(cx, Editor::backspace),
+                false => this.edit(cx, Editor::backspace_typed),
+            }))
             .on_action(cx.listener(|this, _: &Delete, _, cx| this.edit(cx, Editor::delete_forward)))
             .on_action(cx.listener(|this, _: &DeleteWordLeft, _, cx| {
                 this.edit(cx, Editor::delete_word_backward)
@@ -1058,21 +1093,23 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &DeleteWordRight, _, cx| {
                 this.edit(cx, Editor::delete_word_forward)
             }))
-            .on_action(cx.listener(|this, _: &Newline, _, cx| {
-                this.edit_markdown(cx, Editor::insert_markdown_newline)
+            .on_action(cx.listener(|this, _: &Newline, _, cx| match this.plain {
+                true => this.edit(cx, Editor::insert_newline),
+                false => this.edit_markdown(cx, Editor::insert_markdown_newline),
             }))
             .on_action(
                 cx.listener(|this, _: &PlainNewline, _, cx| this.edit(cx, Editor::insert_newline)),
             )
-            .on_action(cx.listener(|this, _: &Tab, _, cx| {
-                this.edit_markdown(cx, |editor, markdown| {
+            .on_action(cx.listener(|this, _: &Tab, _, cx| match this.plain {
+                true => this.edit(cx, |editor| editor.insert_text(TAB)),
+                false => this.edit_markdown(cx, |editor, markdown| {
                     if !editor.indent_list_items(markdown) {
                         editor.insert_text(TAB);
                     }
-                })
+                }),
             }))
             .on_action(cx.listener(|this, _: &Outdent, _, cx| {
-                this.edit_markdown(cx, |editor, markdown| {
+                this.markdown_command(cx, |editor, markdown| {
                     editor.outdent_list_items(markdown);
                 })
             }))
@@ -1095,20 +1132,20 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.cut(cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
             .on_action(cx.listener(|this, _: &ToggleBold, _, cx| {
-                this.edit_markdown(cx, Editor::toggle_bold)
+                this.markdown_command(cx, Editor::toggle_bold)
             }))
             .on_action(cx.listener(|this, _: &ToggleItalic, _, cx| {
-                this.edit_markdown(cx, Editor::toggle_italic)
+                this.markdown_command(cx, Editor::toggle_italic)
             }))
             .on_action(cx.listener(|this, _: &ToggleStrikethrough, _, cx| {
-                this.edit_markdown(cx, Editor::toggle_strikethrough)
+                this.markdown_command(cx, Editor::toggle_strikethrough)
             }))
             .on_action(cx.listener(|this, _: &ToggleInlineCode, _, cx| {
-                this.edit_markdown(cx, Editor::toggle_inline_code)
+                this.markdown_command(cx, Editor::toggle_inline_code)
             }))
-            .on_action(
-                cx.listener(|this, _: &InsertLink, _, cx| this.edit(cx, Editor::insert_link)),
-            )
+            .on_action(cx.listener(|this, _: &InsertLink, _, cx| {
+                this.markdown_command(cx, |editor, _| editor.insert_link())
+            }))
             .on_action(cx.listener(|this, _: &ToggleSourceMode, _, cx| this.toggle_source_mode(cx)))
             .child(EditorElement::new(cx.entity()))
     }
@@ -1165,11 +1202,13 @@ impl EntityInputHandler for EditorView {
             return;
         }
         let range = range_utf16.map(|range| self.range_from_utf16(&range));
+        let plain = self.plain;
         self.edit(cx, |editor| match range {
             Some(range) if marked.as_ref() != Some(&range) => {
                 editor.unmark();
                 editor.replace_range(range, text);
             }
+            _ if plain => editor.insert_text(text),
             // Keystrokes pair brackets; IME commits (with marked text) are inserted as they are.
             _ => editor.insert_typed(text),
         });
@@ -1243,8 +1282,9 @@ impl EntityInputHandler for EditorView {
 /// The document as laid-out lines: what scroll math, hit testing and vertical motion walk over.
 struct Lines<'a> {
     buffer: &'a Buffer,
-    markdown: &'a mut MarkdownState,
-    /// The selection markers are revealed around; `None` in source mode.
+    /// `None` in plain text.
+    markdown: Option<&'a mut MarkdownState>,
+    /// The selection markers are revealed around; `None` in source mode and plain text.
     selection: Option<Selection>,
     cache: &'a mut LayoutCache,
     text_system: &'a WindowTextSystem,
@@ -1252,19 +1292,22 @@ struct Lines<'a> {
 
 impl Lines<'_> {
     fn layout(&mut self, line: usize) -> Arc<LineLayout> {
-        let (buffer, markdown, selection) = (self.buffer, &mut *self.markdown, self.selection);
-        self.cache.line(line, buffer, self.text_system, || {
-            LineKey::new(markdown, buffer, line, selection)
-        })
+        let (buffer, markdown, selection) =
+            (self.buffer, self.markdown.as_deref_mut(), self.selection);
+        self.cache
+            .line(line, buffer, self.text_system, || match markdown {
+                Some(markdown) => LineKey::new(markdown, buffer, line, selection),
+                None => LineKey::plain(buffer, line),
+            })
     }
 
     /// The layout `line` would have with `selection` instead of the current selection: moving the
     /// cursor can reveal or hide markers and so move the line's text.
     fn layout_with(&mut self, line: usize, selection: Selection) -> Arc<LineLayout> {
-        if self.selection.is_none() {
+        let (Some(markdown), Some(_)) = (self.markdown.as_deref_mut(), self.selection) else {
             return self.layout(line);
-        }
-        let key = LineKey::new(self.markdown, self.buffer, line, Some(selection));
+        };
+        let key = LineKey::new(markdown, self.buffer, line, Some(selection));
         self.cache
             .line_with_key(line, self.buffer, self.text_system, key)
     }
