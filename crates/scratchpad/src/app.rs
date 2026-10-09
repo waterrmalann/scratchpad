@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -11,7 +12,7 @@ use scratchpad_core::{Config, RecoveryStore, default_config_path};
 use crate::app_window::AppWindow;
 use crate::notes::NotesLocation;
 use crate::theme::{self, ThemeMode};
-use crate::{actions, logging, settings};
+use crate::{actions, logging, settings, toast};
 
 pub(crate) const WINDOW_TITLE: &str = "Scratchpad";
 const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1100.), px(720.));
@@ -53,10 +54,7 @@ pub fn run() {
         None => default_config_path(),
     };
     let mut config = config_path.as_deref().map(Config::load).unwrap_or_default();
-    // `scratchpad.exe <file>`, as "Open with" runs it: opened like File > Open (ADR 0145).
-    if let Some(file) = file_argument() {
-        config.last_opened_file = Some(file);
-    }
+    let file = file_argument();
     let notes_dir_env = env_var(NOTES_DIR_ENV);
     let storage = Storage {
         notes_dir_overridden: notes_dir_env.is_some(),
@@ -74,6 +72,9 @@ pub fn run() {
         // GPUI's platform (Direct3D device, DirectWrite) is ready; none of our views exist yet.
         tracing::info!(elapsed = ?started.elapsed(), "platform initialised");
         init(cx);
+        if let Some(file) = file {
+            open_file_argument(file, &mut config, cx);
+        }
         let window = match open_main_window(storage, config, cx) {
             Ok(window) => window,
             Err(err) => {
@@ -117,6 +118,25 @@ pub(crate) fn config_dir_override() -> Option<PathBuf> {
 fn file_argument() -> Option<PathBuf> {
     let argument = std::env::args_os().nth(1).filter(|arg| !arg.is_empty())?;
     std::path::absolute(argument).ok()
+}
+
+/// `scratchpad.exe <file>`, as "Open with" runs it: the file opens like File > Open (ADR 0145),
+/// in front of the remembered documents. One that cannot be opened is reported, and the
+/// remembered documents open as if no file had been named.
+pub fn open_file_argument(file: PathBuf, config: &mut Config, cx: &mut App) {
+    let problem = match fs::metadata(&file) {
+        Ok(metadata) if metadata.is_file() => {
+            config.last_opened_file = Some(file);
+            return;
+        }
+        Ok(_) => "It is a folder.".to_owned(),
+        Err(error) => toast::describe(&error),
+    };
+    let name = file
+        .file_name()
+        .unwrap_or(file.as_os_str())
+        .to_string_lossy();
+    toast::show_error(format!("Could not open \"{name}\". {problem}"), cx);
 }
 
 /// The environment variable `name`, unless it is unset or empty.

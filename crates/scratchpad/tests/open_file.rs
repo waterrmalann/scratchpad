@@ -14,7 +14,7 @@ use scratchpad::file_dialogs::PickFileForTests;
 use scratchpad::notes::{NotesEvent, Selection};
 use scratchpad::session::{AUTOSAVE_DELAY, Notice, SNAPSHOT_INTERVAL};
 use scratchpad::{Storage, toast};
-use scratchpad_core::{NoteEvent, RecoveryStore};
+use scratchpad_core::{Config, NoteEvent, RecoveryStore};
 use tempfile::TempDir;
 
 /// A notes folder with one note, a folder elsewhere for other files and one for the config and
@@ -285,6 +285,37 @@ fn a_file_that_is_not_utf8_opens_read_only(cx: &mut TestAppContext) {
     cx.simulate_input("x");
     wait(AUTOSAVE_DELAY, cx);
     assert_eq!(fs::read(&legacy).unwrap(), b"name=Caf\xE9");
+}
+
+#[gpui::test]
+fn a_file_named_on_the_command_line_opens_or_is_reported(cx: &mut TestAppContext) {
+    let folders = Folders::new();
+    let open_argument = |file: PathBuf, cx: &mut TestAppContext| {
+        let mut config = Config {
+            last_opened_file: Some(folders.ideas()),
+            ..Config::default()
+        };
+        cx.update(|cx| scratchpad::open_file_argument(file, &mut config, cx));
+        let message = cx.update(|cx| toast::current(cx).map(String::from));
+        (config.last_opened_file, message)
+    };
+
+    let log = folders.file("log.txt", b"named");
+    assert_eq!(open_argument(log.clone(), cx), (Some(log), None));
+
+    // The remembered note opens instead.
+    let gone = folders.elsewhere.path().join("gone.txt");
+    let (reopened, message) = open_argument(gone, cx);
+    assert_eq!(reopened, Some(folders.ideas()));
+    assert!(
+        message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Could not open \"gone.txt\". ")),
+        "{message:?}"
+    );
+    let (reopened, message) = open_argument(folders.elsewhere.path().to_owned(), cx);
+    assert_eq!(reopened, Some(folders.ideas()));
+    assert!(message.is_some_and(|m| m.ends_with(". It is a folder.")));
 }
 
 #[gpui::test]

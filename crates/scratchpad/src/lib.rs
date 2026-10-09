@@ -25,5 +25,5 @@ pub mod toast;
 #[cfg(windows)]
 mod warm_up;
 
-pub use app::{Storage, init, open_main_window, run};
+pub use app::{Storage, init, open_file_argument, open_main_window, run};
 pub use app_window::AppWindow;
