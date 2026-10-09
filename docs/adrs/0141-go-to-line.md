@@ -8,9 +8,9 @@ line number is beyond the total number of lines"). Scratchpad has no dialogs bes
 panel, and soft wrapping (ADR 0031) makes "line" ambiguous.
 
 ## Decision
-- Ctrl+G shows a small box over the top centre of the editor, in the find bar's style: "Go to line
-  [12] of 340  [Go to] [Cancel]". It reuses `TextInput` (ADR 0052) and accepts only digits;
-  anything else typed or pasted is dropped.
+- Ctrl+G shows a small box over the top centre of the editor (under the find bar if that is
+  open), in the find bar's style: "Go to line [12] of 340  [Go to] [Cancel]". It reuses
+  `TextInput` (ADR 0052) and accepts only digits; anything else typed or pasted is dropped.
 - Lines are logical lines (the text between line breaks), counted from 1, as in Notepad with word
   wrap off and as the "of 340" says. Wrapped rows are not counted.
 - The field starts with the cursor's line, selected. Enter or Go to puts the cursor at the start

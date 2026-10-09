@@ -174,6 +174,19 @@ fn the_box_fits_in_a_narrow_editor(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_box_goes_under_an_open_find_bar(cx: &mut TestAppContext) {
+    let mut go = open(cx, &numbered_lines(10));
+    go.cx.simulate_resize(size(px(560.), px(400.)));
+    go.keys("ctrl-h ctrl-g");
+    let find_bar = go.cx.debug_bounds("find-bar").unwrap();
+    let go_to = go.cx.debug_bounds("go-to-line").unwrap();
+    assert!(
+        find_bar.bottom() < go_to.top(),
+        "{go_to:?} overlaps {find_bar:?}"
+    );
+}
+
+#[gpui::test]
 fn escape_closes_the_box_before_the_find_bar(cx: &mut TestAppContext) {
     let mut go = open(cx, &numbered_lines(10));
     let find_open = |go: &mut GoTo| {

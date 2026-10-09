@@ -18,8 +18,8 @@ pub const MIN_NOTE_WIDTH: Pixels = px(460.);
 /// Hosts the editor for the open note (PLAN §42), with a bar above it for decisions about the
 /// note: a conflict with another program, a deleted file, unreadable characters, or text
 /// recovered after a crash. The find bar floats over the editor's top right corner, Go to line
-/// over its top centre and, while the sidebar is hidden, the button that shows it over the top
-/// left one. The status bar runs along the bottom unless the user hid it.
+/// over its top centre (under the find bar) and, while the sidebar is hidden, the button that
+/// shows it over the top left one. The status bar runs along the bottom unless the user hid it.
 pub struct EditorPane {
     editor: Entity<EditorView>,
     session: Entity<Session>,
@@ -246,28 +246,24 @@ impl Render for EditorPane {
                                 .block_mouse_except_scroll(),
                         )
                     })
-                    // Clear of the scrollbar on the right edge, and no wider than the editor.
-                    .children(find_bar.map(|bar| {
+                    // Clear of the scrollbar on the right edge, and no wider than the editor. Go to
+                    // line goes under the find bar while both are open.
+                    .child(
                         div()
                             .absolute()
                             .top(px(8.))
                             .left(px(8.))
                             .right(px(20.))
                             .flex()
-                            .justify_end()
-                            .child(bar)
-                    }))
-                    .children(go_to_line.map(|go_to_line| {
-                        div()
-                            .absolute()
-                            .top(px(8.))
-                            .left_0()
-                            .right_0()
-                            .flex()
-                            .justify_center()
-                            .px_2()
-                            .child(go_to_line)
-                    })),
+                            .flex_col()
+                            .gap_2()
+                            .children(find_bar.map(|bar| div().flex().justify_end().child(bar)))
+                            .children(
+                                go_to_line.map(|go_to_line| {
+                                    div().flex().justify_center().child(go_to_line)
+                                }),
+                            ),
+                    ),
             )
             .when(!settings::get(cx).status_bar_hidden, |pane| {
                 pane.child(self.status_bar.clone())
