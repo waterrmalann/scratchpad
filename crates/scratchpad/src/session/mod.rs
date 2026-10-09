@@ -1,7 +1,8 @@
 //! The open note's lifecycle: loading it into the editor, autosave, giving new notes a file,
 //! keeping file names in step with titles, changes made by other programs and crash recovery
 //! (PLAN §7, §9, §30, §40, §44, §56). See ADRs 0060-0064 and 0066. Files opened from outside
-//! the notes folder get the same guarantees (ADR 0145).
+//! the notes folder get the same guarantees (ADR 0145), and Save As writes a copy elsewhere
+//! (ADR 0146).
 //!
 //! [`Session`] follows the notes model's [`NotesEvent`]s and the editor's
 //! [`EditorEvent::Changed`]. Every file operation goes through one ordered queue (see
@@ -19,13 +20,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext, Context, Entity, Focusable, Subscription, Task, Window};
 use scratchpad_core::{
-    Note, NoteEvent, NoteText, RecoveryStore, UNTITLED, is_note_path, title_from_content,
+    Note, NoteEvent, NoteText, RecoveryStore, UNTITLED, is_note_path, sanitize_file_stem,
+    title_from_content,
 };
 use scratchpad_editor::{Buffer, TextSnapshot};
 
 use crate::app::Storage;
 use crate::editor_view::{EditorEvent, EditorView};
-use crate::notes::{DraftId, Notes, NotesEvent, title_of};
+use crate::notes::{DraftId, Notes, NotesEvent, same_file, title_of};
 use crate::toast;
 pub use watch::POLL_INTERVAL;
 use writer::{Job, Moved, Outcome, Running, SaveText, Writer};
@@ -148,6 +150,15 @@ struct Offer {
     key: PathBuf,
 }
 
+/// How far Save As has got (ADR 0146).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SaveAs {
+    /// The dialog is open.
+    Picking,
+    /// The text is being written to this file; the editor is read-only meanwhile.
+    Writing(PathBuf),
+}
+
 /// Recovered text waiting for its note (or a new note) to open.
 struct Restore {
     offer: Offer,
@@ -179,6 +190,7 @@ pub struct Session {
     watcher: Option<Task<()>>,
     /// Watches the open file from outside the notes folder.
     file_watcher: Option<Task<()>>,
+    save_as: Option<SaveAs>,
     _find_recovered: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -229,6 +241,7 @@ impl Session {
             first_load: None,
             watcher,
             file_watcher: None,
+            save_as: None,
             _find_recovered: find_recovered,
             _subscriptions: subscriptions,
         }
@@ -331,6 +344,7 @@ impl Session {
             external,
             ..Document::new(Target::Loading(path.clone()))
         };
+        self.save_as = None;
         self.watch_file(external.then_some(&path), cx);
         self.editor
             .update(cx, |editor, _| editor.set_read_only(true));
@@ -396,6 +410,7 @@ impl Session {
     fn start_draft(&mut self, id: DraftId, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.new_draft_key();
         self.doc = Document::new(Target::Draft { id, key });
+        self.save_as = None;
         self.watch_file(None, cx);
         self.editor.update(cx, |editor, cx| {
             editor.set_markdown(true, cx);
@@ -415,6 +430,7 @@ impl Session {
     /// Shows nothing: the open note was deleted or could not be read.
     fn close_document(&mut self, cx: &mut Context<Self>) {
         self.doc = Document::new(Target::None);
+        self.save_as = None;
         self.watch_file(None, cx);
         self.autosave = None;
         self.editor.update(cx, |editor, cx| {
@@ -567,7 +583,8 @@ impl Session {
             }
             return;
         }
-        if !(flush || title_finished) {
+        // During Save As it gets the file the user picks instead of one of its own.
+        if !(flush || title_finished) || self.save_as.is_some() {
             self.keep_in_snapshot(key, cx);
             return;
         }
@@ -1060,6 +1077,12 @@ impl Session {
                     }
                 }
                 Job::Load(_) | Job::Check(_) => {}
+                Job::SaveAs { path, text } => {
+                    let outcome = writer::run(&jobs[ix], store.as_ref(), self.recovery.as_ref());
+                    if let Outcome::SavedAs(result) = outcome {
+                        self.saved_as(path, text, result, cx);
+                    }
+                }
                 job => {
                     let outcome = writer::run(&job, store.as_ref(), self.recovery.as_ref());
                     // The text is in a recovery snapshot, so it is offered on the next start;
@@ -1093,6 +1116,11 @@ impl Session {
             let undecided = self.doc.dirty && self.doc.notice.is_some();
             self.flush_sync(cx);
             self.doc.dirty = undecided;
+            if matches!(self.save_as, Some(SaveAs::Writing(_))) {
+                // The flush took over the copy's write; whether it was written is not known.
+                self.save_as = None;
+                self.end_writing(cx);
+            }
             // The flush took over its load or check, if one was queued.
             match self.doc.target.clone() {
                 Target::Loading(path) => self.enqueue(Job::Load(path), cx),
@@ -1115,6 +1143,148 @@ impl Session {
         }
         self.notes_dir = dir;
         cx.notify();
+    }
+
+    // --- Save As ---
+
+    /// Starts Save As: returns the folder the dialog starts in and the name it suggests, or
+    /// `None` with nothing open, a Save As under way or a document that is not valid UTF-8 and
+    /// not edited anyway. The open note is saved first, so it keeps what it holds now; a new
+    /// note is kept in a recovery snapshot instead, so it never gets a file of its own.
+    pub fn begin_save_as(&mut self, cx: &mut Context<Self>) -> Option<(PathBuf, String)> {
+        if self.save_as.is_some() {
+            return None;
+        }
+        if let (Some(DocumentNotice::NotUtf8), Target::Note(path)) =
+            (&self.doc.notice, &self.doc.target)
+        {
+            // The copy would hold replacement characters: the same decision as editing it.
+            toast::show_error(
+                format!(
+                    "Saving \"{}\" as another file replaces the characters that are not valid \
+                     UTF-8. Choose Edit Anyway first.",
+                    name_of(path)
+                ),
+                cx,
+            );
+            return None;
+        }
+        let title = self
+            .current_title(cx)
+            .as_deref()
+            .and_then(sanitize_file_stem);
+        let (dir, name) = match &self.doc.target {
+            Target::Draft { .. } => (
+                self.notes_dir.clone(),
+                format!("{}.md", title.as_deref().unwrap_or(UNTITLED)),
+            ),
+            Target::Note(path) if self.doc.external => (
+                path.parent()?.to_owned(),
+                path.file_name()?.to_string_lossy().into_owned(),
+            ),
+            Target::Note(path) => {
+                let extension = path.extension().unwrap_or_default().to_string_lossy();
+                let title = title.unwrap_or_else(|| title_of(path));
+                (self.notes_dir.clone(), format!("{title}.{extension}"))
+            }
+            Target::Loading(_) | Target::None => return None,
+        };
+        self.save_as = Some(SaveAs::Picking);
+        self.flush(cx);
+        Some((dir, name))
+    }
+
+    /// Ends Save As with the file picked in the dialog (`None`: cancelled): writes the text
+    /// there and, once it is written, edits that file instead. A note of the notes folder is
+    /// edited as a note, any other file in place (ADR 0146).
+    pub fn finish_save_as(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.save_as != Some(SaveAs::Picking) {
+            // Another note was opened while the dialog was open.
+            return;
+        }
+        let Some(path) = path else {
+            self.save_as = None;
+            // A new note goes on getting saved as usual.
+            if self.doc.dirty {
+                self.schedule_autosave(cx);
+            }
+            return;
+        };
+        let path = self.notes.read(cx).note_path(&path).unwrap_or(path);
+        if matches!(&self.doc.target, Target::Note(open) if same_file(open, &path)) {
+            self.save_as = None;
+            self.flush(cx);
+            return;
+        }
+        self.save_as = Some(SaveAs::Writing(path.clone()));
+        // Text typed now would belong to neither file.
+        self.editor
+            .update(cx, |editor, _| editor.set_read_only(true));
+        let text = SaveText::snapshot(self.text_snapshot(cx));
+        self.enqueue(Job::SaveAs { path, text }, cx);
+        cx.notify();
+    }
+
+    fn saved_as(
+        &mut self,
+        path: PathBuf,
+        text: SaveText,
+        result: scratchpad_core::Result<Note>,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.save_as == Some(SaveAs::Writing(path.clone()));
+        if current {
+            self.save_as = None;
+        }
+        let note = match result {
+            Ok(note) => note,
+            Err(error) => {
+                toast::show_file_error(&name_of(&path), &error, cx);
+                if current {
+                    self.end_writing(cx);
+                }
+                return;
+            }
+        };
+        if !current {
+            // The user has moved on to another note; the copy is written all the same.
+            self.notes
+                .update(cx, |notes, cx| notes.note_saved(note, cx));
+            return;
+        }
+        // Unsaved text of the document left behind is in the new file now.
+        if self.doc.snapshot {
+            match self.doc.target.clone() {
+                Target::Note(key) | Target::Draft { key, .. } => {
+                    self.enqueue(Job::RemoveSnapshot(key), cx)
+                }
+                Target::Loading(_) | Target::None => {}
+            }
+        }
+        let external = self.notes.read(cx).note_path(&path).is_none();
+        self.doc = Document {
+            title: self.current_title(cx),
+            disk_text: text.get().clone(),
+            external,
+            ..Document::new(Target::Note(path.clone()))
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_markdown(!external || is_markdown_file(&path), cx);
+            editor.set_read_only(false);
+        });
+        self.watch_file(external.then_some(&path), cx);
+        self.notes.update(cx, |notes, cx| notes.saved_as(note, cx));
+        cx.notify();
+    }
+
+    /// Goes on editing the document Save As started from.
+    fn end_writing(&mut self, cx: &mut Context<Self>) {
+        let not_utf8 = self.doc.notice == Some(DocumentNotice::NotUtf8);
+        self.editor
+            .update(cx, |editor, _| editor.set_read_only(not_utf8));
+        if self.doc.dirty {
+            self.schedule_autosave(cx);
+        }
     }
 
     // --- Writer ---
@@ -1225,6 +1395,9 @@ impl Session {
             ) => self.saved(path, text, expected, result, cx),
             (Job::Save { path, text, .. }, Outcome::ChangedOnDisk(disk), None) => {
                 self.changed_before_save(path, &text, disk, cx)
+            }
+            (Job::SaveAs { path, text }, Outcome::SavedAs(result), _) => {
+                self.saved_as(path, text, result, cx)
             }
             _ => {}
         }

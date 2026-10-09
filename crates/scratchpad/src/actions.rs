@@ -78,7 +78,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     bindings
 }
 
-// --- Files from outside the notes folder (ADR 0145) ---
+// --- Files from outside the notes folder (ADRs 0145-0146) ---
 
 actions!(
     scratchpad,
@@ -86,11 +86,17 @@ actions!(
         /// Open a file from anywhere: a note of the notes folder opens as a note, any other
         /// file is edited in place (File > Open).
         OpenFile,
+        /// Write the open note or file to another file and go on editing that one
+        /// (File > Save As).
+        SaveAs,
     ]
 );
 
-fn file_key_bindings() -> [KeyBinding; 1] {
-    [KeyBinding::new("secondary-o", OpenFile, None)]
+fn file_key_bindings() -> [KeyBinding; 2] {
+    [
+        KeyBinding::new("secondary-o", OpenFile, None),
+        KeyBinding::new("secondary-shift-s", SaveAs, None),
+    ]
 }
 
 /// Handlers for actions that act on the whole application rather than one window.

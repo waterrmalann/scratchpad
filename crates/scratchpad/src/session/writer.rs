@@ -44,6 +44,11 @@ pub(super) enum Job {
         path: PathBuf,
         text: Arc<str>,
     },
+    /// Write `text` to the file the user picked in the Save As dialog, whatever it holds.
+    SaveAs {
+        path: PathBuf,
+        text: SaveText,
+    },
 }
 
 /// The text of a save or a recovery snapshot, or what a save expects the file to hold.
@@ -86,6 +91,7 @@ impl Job {
             | Job::Save { path, .. }
             | Job::Rename { path, .. }
             | Job::RemoveIfUnchanged { path, .. }
+            | Job::SaveAs { path, .. }
             | Job::Snapshot { key: path, .. }
             | Job::RemoveSnapshot(path) => path,
         }
@@ -98,6 +104,7 @@ impl Job {
             | Job::Save { path, .. }
             | Job::Rename { path, .. }
             | Job::RemoveIfUnchanged { path, .. }
+            | Job::SaveAs { path, .. }
             | Job::Snapshot { key: path, .. }
             | Job::RemoveSnapshot(path) => path,
         }
@@ -109,9 +116,11 @@ impl Job {
             Job::Save { path, .. }
             | Job::Snapshot { key: path, .. }
             | Job::RemoveSnapshot(path) => Some(path),
-            Job::Load(_) | Job::Check(_) | Job::Rename { .. } | Job::RemoveIfUnchanged { .. } => {
-                None
-            }
+            Job::Load(_)
+            | Job::Check(_)
+            | Job::Rename { .. }
+            | Job::RemoveIfUnchanged { .. }
+            | Job::SaveAs { .. } => None,
         }
     }
 
@@ -134,6 +143,7 @@ pub(super) enum Outcome {
     /// The note's content, or `None` if it no longer exists.
     Checked(io::Result<Option<NoteText>>),
     Saved(scratchpad_core::Result<Note>),
+    SavedAs(scratchpad_core::Result<Note>),
     /// Another program changed (`Some`) or deleted (`None`) the note since we last read or
     /// wrote it, so the save was not done. The text is in a recovery snapshot.
     ChangedOnDisk(Option<NoteText>),
@@ -287,9 +297,11 @@ impl Writer {
     }
 }
 
+/// Points the jobs for the note `from` at `to`. A file picked for Save As keeps its name.
 pub(super) fn retarget<'a>(jobs: impl Iterator<Item = &'a mut Job>, from: &Path, to: &Path) {
     for job in jobs {
-        if job.path() == from && !matches!(job, Job::RemoveIfUnchanged { .. }) {
+        if job.path() == from && !matches!(job, Job::RemoveIfUnchanged { .. } | Job::SaveAs { .. })
+        {
             *job.path_mut() = to.to_owned();
         }
     }
@@ -351,6 +363,10 @@ pub(super) fn run(
             }
             Outcome::Saved(saved)
         }
+        Job::SaveAs { path, text } => Outcome::SavedAs(
+            store_or_error(store, path)
+                .and_then(|store| store.save(path, text.get()).and(store.note(path))),
+        ),
         Job::Snapshot { key, text } => {
             if let Some(recovery) = recovery {
                 log_recovery_error(recovery.write(key, text.get()));

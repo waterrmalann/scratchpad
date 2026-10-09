@@ -8,7 +8,7 @@ use scratchpad_core::NoteStore;
 
 use crate::actions::view::{ResetZoom, ToggleWordWrap, ZoomIn, ZoomOut};
 use crate::actions::{
-    CloseWindow, NewNote, OpenFile, OpenSettings, SaveNote, SearchNotes, ToggleSidebar,
+    CloseWindow, NewNote, OpenFile, OpenSettings, SaveAs, SaveNote, SearchNotes, ToggleSidebar,
     ToggleStatusBar,
 };
 use crate::app::{Storage, WINDOW_TITLE};
@@ -258,6 +258,22 @@ impl AppWindow {
                     .update(cx, |notes, cx| notes.open_file(&path, cx))
                     .ok();
             }
+        })
+        .detach();
+    }
+
+    /// Ctrl+Shift+S: writes the open note or file to a file the user picks and edits that.
+    fn save_as(&mut self, _: &SaveAs, _: &mut Window, cx: &mut Context<Self>) {
+        let session = self.session.clone();
+        let Some((dir, name)) = session.update(cx, |session, cx| session.begin_save_as(cx)) else {
+            return;
+        };
+        let picked = file_dialogs::pick_new_path(&dir, &name, cx);
+        cx.spawn(async move |_, cx| {
+            let path = picked.await;
+            session
+                .update(cx, |session, cx| session.finish_save_as(path, cx))
+                .ok();
         })
         .detach();
     }
@@ -572,6 +588,7 @@ impl Render for AppWindow {
                 })
             }))
             .on_action(cx.listener(Self::open_file))
+            .on_action(cx.listener(Self::save_as))
             .relative()
             .size_full()
             .flex()

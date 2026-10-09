@@ -462,6 +462,22 @@ impl Notes {
         Some(listed.map_or(path, |note| note.path.clone()))
     }
 
+    /// Makes the file just written by Save As the open one, without an event: the editor
+    /// already shows its text. A note of this folder is listed and selected; any other file
+    /// is selected as with [`open_file`](Self::open_file).
+    pub fn saved_as(&mut self, note: Note, cx: &mut Context<Self>) {
+        self.open_title = None;
+        self.open_after_listing = false;
+        self.selection = if self.note_path(&note.path).is_some() {
+            let path = note.path.clone();
+            self.note_saved(note, cx);
+            Selection::Note(path)
+        } else {
+            Selection::File(note.path)
+        };
+        cx.notify();
+    }
+
     /// Starts a new note in memory and asks for it to be opened. Nothing is written until
     /// [`save_draft`](Self::save_draft), so pressing Ctrl+N and leaving leaves no empty file.
     pub fn new_note(&mut self, cx: &mut Context<Self>) {
