@@ -51,6 +51,9 @@ pub struct Config {
     /// Overrides [`default_notes_dir`].
     #[serde(deserialize_with = "or_default")]
     pub notes_dir: Option<PathBuf>,
+    /// The user hid the sidebar. Narrow windows hide it whatever this says.
+    #[serde(deserialize_with = "or_default")]
+    pub sidebar_collapsed: bool,
 }
 
 impl Config {

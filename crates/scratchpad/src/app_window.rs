@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
 use gpui::{
-    Context, Entity, FocusHandle, Focusable, Subscription, Task, Window, div, prelude::*, px,
+    App, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseDownEvent, Pixels,
+    Subscription, Task, Window, div, prelude::*, px,
 };
 use scratchpad_core::NoteStore;
 
-use crate::actions::{CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes};
+use crate::actions::{CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes, ToggleSidebar};
 use crate::app::Storage;
 use crate::editor_pane::EditorPane;
 use crate::editor_view::EditorView;
@@ -17,11 +18,33 @@ use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::theme::{self, ActiveTheme, typography};
 use crate::{settings, toast};
 
+/// Narrower windows do not dock the sidebar, so the note keeps a comfortable width: at this
+/// width a sidebar of the default 260 px leaves 460 px for it (ADR 0135).
+pub const AUTO_COLLAPSE_WIDTH: Pixels = px(720.);
+
+/// How the sidebar is shown (ADR 0135).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarMode {
+    /// Beside the note.
+    Docked,
+    /// Not shown: the user collapsed it, or the window is too narrow to dock it.
+    Hidden,
+    /// Floating over the note until the user is done with it.
+    Overlay,
+}
+
 /// Root view of the main window: sidebar on the left, editor pane filling the rest (PLAN §42).
 pub struct AppWindow {
     focus_handle: FocusHandle,
     notes: Entity<Notes>,
     sidebar: Entity<Sidebar>,
+    /// Tracked by the sidebar's container while it is shown over the note, to notice focus
+    /// leaving it.
+    sidebar_overlay_focus: FocusHandle,
+    /// The sidebar was asked for while it is not docked.
+    sidebar_overlay: bool,
+    /// The window is narrower than [`AUTO_COLLAPSE_WIDTH`].
+    narrow: bool,
     editor_pane: Entity<EditorPane>,
     session: Entity<Session>,
     notes_dir_overridden: bool,
@@ -43,6 +66,7 @@ impl AppWindow {
         let config = settings::get(cx);
         let reopen = config.last_opened_note.clone();
         let sidebar_width = config.sidebar_width;
+        let sidebar_collapsed = config.sidebar_collapsed;
         let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
         let editor = cx.new(|cx| EditorView::new("", window, cx));
         let session =
@@ -56,6 +80,10 @@ impl AppWindow {
             }
             sidebar
         });
+        let sidebar_overlay_focus = cx.focus_handle();
+        let narrow = is_narrow(window);
+        let sidebar_hidden = narrow || sidebar_collapsed;
+        editor_pane.update(cx, |pane, cx| pane.set_sidebar_button(sidebar_hidden, cx));
 
         let subscriptions = vec![
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -63,6 +91,18 @@ impl AppWindow {
             }),
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
                 SidebarEvent::FocusEditor => window.focus(&this.editor_pane.focus_handle(cx)),
+                SidebarEvent::NoteChosen => {
+                    if this.sidebar_mode(cx) == SidebarMode::Overlay {
+                        this.hide_sidebar_overlay(window, cx);
+                    }
+                }
+            }),
+            // Clicking the note, Escape in the search field, Ctrl+N...: the user is done with
+            // the sidebar. Another window becoming active (e.g. the delete confirmation) is not.
+            cx.on_focus_out(&sidebar_overlay_focus, window, |this, _, window, cx| {
+                if window.is_window_active() {
+                    this.hide_sidebar_overlay(window, cx);
+                }
             }),
             cx.observe(&notes, |_, notes, cx| {
                 if let Selection::Note(path) = notes.read(cx).selection() {
@@ -74,9 +114,14 @@ impl AppWindow {
                 let width = f32::from(sidebar.read(cx).width());
                 settings::update(cx, |config| config.sidebar_width = Some(width));
             }),
-            cx.observe_window_bounds(window, |_, window, cx| {
+            cx.observe_window_bounds(window, |this, window, cx| {
                 let bounds = window_bounds(window);
                 settings::update(cx, |config| config.window = Some(bounds));
+                let narrow = is_narrow(window);
+                if narrow != this.narrow {
+                    this.narrow = narrow;
+                    this.sidebar_changed(window, cx);
+                }
             }),
             // Quitting (Ctrl+Q, or the last window closing) runs this before the app exits.
             cx.on_app_quit(|this, cx| {
@@ -93,6 +138,9 @@ impl AppWindow {
         Self {
             focus_handle,
             sidebar,
+            sidebar_overlay_focus,
+            sidebar_overlay: false,
+            narrow,
             notes,
             editor_pane,
             session,
@@ -150,6 +198,10 @@ impl AppWindow {
     }
 
     fn search_notes(&mut self, _: &SearchNotes, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sidebar_mode(cx) == SidebarMode::Hidden {
+            self.sidebar_overlay = true;
+            self.sidebar_changed(window, cx);
+        }
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.focus_search(window, cx));
     }
@@ -162,6 +214,89 @@ impl AppWindow {
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
         self.save_all(cx);
         window.remove_window();
+    }
+
+    // --- Sidebar (ADR 0135) ---
+
+    /// How the sidebar is shown right now.
+    pub fn sidebar_mode(&self, cx: &App) -> SidebarMode {
+        if !self.narrow && !settings::get(cx).sidebar_collapsed {
+            SidebarMode::Docked
+        } else if self.sidebar_overlay {
+            SidebarMode::Overlay
+        } else {
+            SidebarMode::Hidden
+        }
+    }
+
+    /// Ctrl+\ and the sidebar buttons. Collapsing or expanding the docked sidebar is remembered;
+    /// in a narrow window the sidebar is only shown over the note for a while.
+    fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        match self.sidebar_mode(cx) {
+            SidebarMode::Docked => settings::update(cx, |config| config.sidebar_collapsed = true),
+            SidebarMode::Overlay => self.sidebar_overlay = false,
+            SidebarMode::Hidden if self.narrow => {
+                self.sidebar_overlay = true;
+                self.sidebar.read(cx).focus_list(window);
+            }
+            SidebarMode::Hidden => settings::update(cx, |config| config.sidebar_collapsed = false),
+        }
+        self.sidebar_changed(window, cx);
+    }
+
+    fn hide_sidebar_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sidebar_overlay {
+            self.sidebar_overlay = false;
+            self.sidebar_changed(window, cx);
+        }
+    }
+
+    /// Brings the rest of the window in line with a change of [`sidebar_mode`](Self::sidebar_mode).
+    fn sidebar_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mode = self.sidebar_mode(cx);
+        if mode == SidebarMode::Docked {
+            // E.g. the window was widened while the sidebar was shown over the note.
+            self.sidebar_overlay = false;
+        }
+        let hidden = mode == SidebarMode::Hidden;
+        if hidden && self.sidebar.read(cx).contains_focus(window, cx) {
+            window.focus(&self.editor_pane.focus_handle(cx));
+        }
+        self.editor_pane
+            .update(cx, |pane, cx| pane.set_sidebar_button(hidden, cx));
+        cx.notify();
+    }
+
+    fn render_sidebar_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .size_full()
+            // Clicking anywhere else only closes it, as with any flyout.
+            .child(
+                div()
+                    .id("sidebar-overlay-backdrop")
+                    .debug_selector(|| "sidebar-overlay-backdrop".into())
+                    .absolute()
+                    .size_full()
+                    .occlude()
+                    .on_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        this.hide_sidebar_overlay(window, cx)
+                    })),
+            )
+            .child(
+                div()
+                    .track_focus(&self.sidebar_overlay_focus)
+                    .absolute()
+                    .h_full()
+                    .occlude()
+                    .shadow_lg()
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.hide_sidebar_overlay(window, cx);
+                        }
+                    }))
+                    .child(self.sidebar.clone()),
+            )
     }
 
     // --- Settings ---
@@ -254,6 +389,10 @@ impl AppWindow {
     }
 }
 
+fn is_narrow(window: &Window) -> bool {
+    window.viewport_size().width < AUTO_COLLAPSE_WIDTH
+}
+
 /// The window's restorable bounds (the normal size and position even while maximized).
 fn window_bounds(window: &Window) -> scratchpad_core::WindowBounds {
     let (bounds, maximized) = match window.window_bounds() {
@@ -279,6 +418,7 @@ impl Focusable for AppWindow {
 
 impl Render for AppWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mode = self.sidebar_mode(cx);
         let theme = cx.theme();
         div()
             .key_context("AppWindow")
@@ -289,6 +429,7 @@ impl Render for AppWindow {
             .on_action(cx.listener(Self::search_notes))
             .on_action(cx.listener(Self::find_in_note))
             .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::toggle_sidebar))
             .relative()
             .size_full()
             .flex()
@@ -297,8 +438,13 @@ impl Render for AppWindow {
             .text_color(theme.foreground)
             .font_family(typography::UI_FONT_FAMILY)
             .text_size(typography::UI_FONT_SIZE)
-            .child(self.sidebar.clone())
+            .when(mode == SidebarMode::Docked, |root| {
+                root.child(self.sidebar.clone())
+            })
             .child(self.editor_pane.clone())
+            .when(mode == SidebarMode::Overlay, |root| {
+                root.child(self.render_sidebar_overlay(cx))
+            })
             .children(self.settings_panel().cloned())
             .children(toast::render(cx))
     }

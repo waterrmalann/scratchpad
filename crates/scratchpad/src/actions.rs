@@ -40,6 +40,15 @@ actions!(
     ]
 );
 
+// Window layout (ADR 0135).
+actions!(
+    scratchpad,
+    [
+        /// Show or hide the note list. In a narrow window it floats over the note.
+        ToggleSidebar,
+    ]
+);
+
 pub fn key_bindings() -> Vec<KeyBinding> {
     let mut bindings = vec![
         KeyBinding::new("secondary-q", Quit, None),
@@ -55,6 +64,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("delete", DeleteNote, Some("NoteList")),
         KeyBinding::new("secondary-,", OpenSettings, None),
     ];
+    // Window layout (ADR 0135).
+    bindings.push(KeyBinding::new("secondary-\\", ToggleSidebar, None));
     // Components that own their actions, scoped to their key context.
     bindings.extend(text_input::key_bindings());
     bindings.extend(settings_panel::key_bindings());

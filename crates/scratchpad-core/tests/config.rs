@@ -38,6 +38,7 @@ fn save_and_load_round_trip_every_field() {
         last_opened_note: Some(dir.path().join("Meeting Notes.md")),
         theme: ThemePreference::Dark,
         notes_dir: Some(dir.path().join("my notes")),
+        sidebar_collapsed: true,
     };
 
     config.save(&path).unwrap();
@@ -70,6 +71,7 @@ fn loads_the_documented_file_format() {
             "last_opened_note": "C:/Notes/Todo.md",
             "theme": "light",
             "notes_dir": "C:/Notes",
+            "sidebar_collapsed": true,
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -87,6 +89,7 @@ fn loads_the_documented_file_format() {
             last_opened_note: Some("C:/Notes/Todo.md".into()),
             theme: ThemePreference::Light,
             notes_dir: Some("C:/Notes".into()),
+            sidebar_collapsed: true,
         }
     );
 }

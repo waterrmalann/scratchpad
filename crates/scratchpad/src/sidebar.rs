@@ -4,7 +4,7 @@
 //! Click opens a note, double-click renames it in place, right-click shows Rename / Delete /
 //! Show in Folder. With the list focused, Up/Down open the previous/next note, Enter moves
 //! into the note, F2 renames and Delete deletes it after asking. Dragging the right edge
-//! resizes it.
+//! resizes it; the button left of the search field hides it (ADR 0135).
 
 use std::io;
 use std::ops::Range;
@@ -23,7 +23,9 @@ use gpui::{
 };
 use scratchpad_core::{DateGroup, Note, local_date};
 
-use crate::actions::{DeleteNote, FocusOpenNote, RenameNote, SelectNextNote, SelectPreviousNote};
+use crate::actions::{
+    DeleteNote, FocusOpenNote, RenameNote, SelectNextNote, SelectPreviousNote, ToggleSidebar,
+};
 use crate::notes::{Notes, NotesEvent, Selection, title_of};
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::{ActiveTheme, Theme, typography};
@@ -42,6 +44,8 @@ const ROW_HEIGHT: Pixels = px(46.);
 /// Segoe MDL2 Assets glyphs; plain text elsewhere.
 const ADD_ICON: &str = if cfg!(windows) { "\u{E710}" } else { "+" };
 const SEARCH_ICON: &str = if cfg!(windows) { "\u{E721}" } else { "" };
+/// The button Windows apps show and hide their navigation pane with (GlobalNavigationButton).
+const SIDEBAR_ICON: &str = if cfg!(windows) { "\u{E700}" } else { "=" };
 
 /// One line of the note list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +109,9 @@ impl Render for DraggedEdge {
 pub enum SidebarEvent {
     /// Enter was pressed in the note list: put the caret in the open note.
     FocusEditor,
+    /// A note was opened by clicking it or with Enter in the search field (not by browsing
+    /// with the arrow keys).
+    NoteChosen,
 }
 
 pub struct Sidebar {
@@ -187,6 +194,21 @@ impl Sidebar {
         self.search.read(cx).text().to_owned()
     }
 
+    /// Whether keyboard focus is anywhere in the sidebar.
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.list_focus.contains_focused(window, cx)
+            || self.search.focus_handle(cx).is_focused(window)
+            || self
+                .menu
+                .as_ref()
+                .is_some_and(|menu| menu.focus.is_focused(window))
+    }
+
+    /// Moves focus to the note list, e.g. when the sidebar is shown from the keyboard.
+    pub fn focus_list(&self, window: &mut Window) {
+        window.focus(&self.list_focus);
+    }
+
     /// Moves focus to the search field and selects its text (Ctrl+P, Ctrl+Shift+F).
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let search = self.search.focus_handle(cx);
@@ -219,6 +241,7 @@ impl Sidebar {
                     .and_then(|hits| hits.first().map(|hit| hit.path.clone()));
                 if let Some(path) = first_hit {
                     self.open(path, window, cx);
+                    cx.emit(SidebarEvent::NoteChosen);
                 }
             }
             TextInputEvent::Cancelled => {
@@ -602,6 +625,7 @@ impl Sidebar {
                     this.start_rename(click_path.clone(), window, cx);
                 } else {
                     this.open(click_path.clone(), window, cx);
+                    cx.emit(SidebarEvent::NoteChosen);
                 }
             }))
             .on_mouse_down(
@@ -621,6 +645,39 @@ impl Sidebar {
         } else {
             theme.foreground.opacity(0.08)
         }
+    }
+
+    fn render_search_field(
+        &self,
+        focused: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id("search-field")
+            .debug_selector(|| "search-field".into())
+            .flex_1()
+            .min_w_0()
+            .h(px(28.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded_md()
+            .bg(theme.background)
+            .border_1()
+            .border_color(if focused { theme.accent } else { theme.border })
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                window.focus(&this.search.focus_handle(cx))
+            }))
+            .child(
+                div()
+                    .font_family(typography::ICON_FONT_FAMILY)
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(SEARCH_ICON),
+            )
+            .child(div().flex_1().min_w_0().child(self.search.clone()))
     }
 
     fn render_menu(&self, menu: &ContextMenu, cx: &mut Context<Self>) -> impl IntoElement {
@@ -658,6 +715,8 @@ impl Sidebar {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     this.close_menu(window, cx);
+                    // Not also hiding the sidebar shown over the note.
+                    cx.stop_propagation();
                 }
             }))
             .child(item(MenuItem::Rename, cx))
@@ -695,6 +754,31 @@ fn show_in_folder(path: &Path) -> io::Result<()> {
         .arg(path.parent().unwrap_or(path))
         .spawn()?;
     Ok(())
+}
+
+/// The button that shows and hides the sidebar ([`ToggleSidebar`]): in the sidebar's header,
+/// and at the top left of the note while the sidebar is hidden.
+pub fn sidebar_toggle_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex_none()
+        .size(px(28.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .cursor_pointer()
+        .font_family(typography::ICON_FONT_FAMILY)
+        .text_sm()
+        .text_color(theme.muted)
+        .hover(|style| {
+            style
+                .bg(theme.foreground.opacity(0.05))
+                .text_color(theme.foreground)
+        })
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx))
+        .child(SIDEBAR_ICON)
 }
 
 /// A two-line list row: the title and a muted second line. `highlight` is the background of
@@ -822,34 +906,14 @@ impl Render for Sidebar {
             .border_color(theme.border)
             .child(
                 div()
-                    .id("search-field")
-                    .debug_selector(|| "search-field".into())
-                    .mx_3()
+                    .ml_2()
+                    .mr_3()
                     .mt_3()
-                    .h(px(28.))
-                    .px_2()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .rounded_md()
-                    .bg(theme.background)
-                    .border_1()
-                    .border_color(if search_focused {
-                        theme.accent
-                    } else {
-                        theme.border
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        window.focus(&this.search.focus_handle(cx))
-                    }))
-                    .child(
-                        div()
-                            .font_family(typography::ICON_FONT_FAMILY)
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child(SEARCH_ICON),
-                    )
-                    .child(div().flex_1().min_w_0().child(self.search.clone())),
+                    .gap_1()
+                    .child(sidebar_toggle_button("sidebar-toggle", &theme))
+                    .child(self.render_search_field(search_focused, &theme, cx)),
             )
             .child(
                 div()

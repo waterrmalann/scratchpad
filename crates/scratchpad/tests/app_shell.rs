@@ -18,7 +18,8 @@ fn close_window_shortcut_closes_the_main_window(cx: &mut TestAppContext) {
 fn sidebar_keeps_its_width_and_editor_pane_fills_the_rest(cx: &mut TestAppContext) {
     let (_root, cx) = common::open_main_window(cx);
 
-    for window_size in [size(px(1100.), px(720.)), size(px(600.), px(400.))] {
+    // Narrower windows hide it (tests/sidebar_layout.rs).
+    for window_size in [size(px(1100.), px(720.)), size(px(720.), px(400.))] {
         cx.simulate_resize(window_size);
         cx.run_until_parked();
 

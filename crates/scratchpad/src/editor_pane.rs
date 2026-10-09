@@ -6,15 +6,18 @@ use gpui::{
 use crate::editor_view::{Direction, EditorView};
 use crate::find_bar::{CloseFind, FindBar, FindNext, FindPrevious};
 use crate::session::{Choice, Notice, Session};
+use crate::sidebar::sidebar_toggle_button;
 use crate::theme::ActiveTheme;
 
 /// Hosts the editor for the open note (PLAN §42), with a bar above it for decisions about the
 /// note: a conflict with another program, a deleted file, unreadable characters, or text
-/// recovered after a crash. The find bar floats over the editor's top right corner.
+/// recovered after a crash. The find bar floats over the editor's top right corner and, while
+/// the sidebar is hidden, the button that shows it over the top left one.
 pub struct EditorPane {
     editor: Entity<EditorView>,
     session: Entity<Session>,
     find_bar: Entity<FindBar>,
+    sidebar_button: bool,
     _session_changed: Subscription,
 }
 
@@ -30,6 +33,15 @@ impl EditorPane {
             find_bar: cx.new(|cx| FindBar::new(editor.clone(), window, cx)),
             editor,
             session,
+            sidebar_button: false,
+        }
+    }
+
+    /// Shows the button that brings back the hidden sidebar.
+    pub fn set_sidebar_button(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.sidebar_button != visible {
+            self.sidebar_button = visible;
+            cx.notify();
         }
     }
 
@@ -172,6 +184,15 @@ impl Render for EditorPane {
                     .flex_1()
                     .min_h_0()
                     .child(self.editor.clone())
+                    // In the editor's top padding, clear of the text.
+                    .when(self.sidebar_button, |editor| {
+                        editor.child(
+                            sidebar_toggle_button("show-sidebar", cx.theme())
+                                .absolute()
+                                .top(px(4.))
+                                .left(px(4.)),
+                        )
+                    })
                     // Clear of the scrollbar on the right edge, and no wider than the editor.
                     .children(find_bar.map(|bar| {
                         div()
