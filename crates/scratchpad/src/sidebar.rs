@@ -77,6 +77,8 @@ struct ContextMenu {
     path: PathBuf,
     position: Point<Pixels>,
     focus: FocusHandle,
+    /// Closes it when focus moves elsewhere (Ctrl+P, the sidebar being hidden...).
+    _blur: Subscription,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -464,6 +466,9 @@ impl Sidebar {
         self.menu = Some(ContextMenu {
             path,
             position,
+            _blur: cx.on_blur(&focus, window, |this, window, cx| {
+                this.close_menu(window, cx)
+            }),
             focus,
         });
         cx.notify();
@@ -631,7 +636,9 @@ impl Sidebar {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    this.open_menu(menu_path.clone(), event.position, window, cx)
+                    this.open_menu(menu_path.clone(), event.position, window, cx);
+                    // Or the list (and an overlay around it) would take focus from the menu.
+                    window.prevent_default();
                 }),
             )
     }

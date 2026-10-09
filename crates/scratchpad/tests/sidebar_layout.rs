@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{click, days_ago, wait, write_note};
+use common::{answer_prompt, click, days_ago, right_click, wait, write_note};
 use gpui::{Entity, Focusable, Pixels, TestAppContext, VisualTestContext, point, px, size};
 use scratchpad::AppWindow;
 use scratchpad::app_window::{AUTO_COLLAPSE_WIDTH, SidebarMode};
@@ -179,4 +179,45 @@ fn search_shortcuts_show_a_hidden_sidebar_and_focus_the_search(cx: &mut TestAppC
     assert_eq!(note_left(cx), px(0.));
     cx.simulate_keystrokes("ctrl-n");
     assert_eq!(mode(&root, cx), SidebarMode::Hidden);
+}
+
+#[gpui::test]
+fn the_sidebar_over_the_note_stays_for_its_menu_renames_and_questions(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_note(dir.path(), "Ideas", "", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    resize(px(600.), cx);
+    cx.simulate_keystrokes("ctrl-\\");
+
+    // Escape closes the innermost thing first: the menu, then the title being edited.
+    right_click("note:Ideas", cx);
+    cx.simulate_keystrokes("escape");
+    assert_eq!(mode(&root, cx), SidebarMode::Overlay);
+    right_click("note:Ideas", cx);
+    click("menu:Rename", cx);
+    cx.simulate_keystrokes("escape");
+    assert_eq!(mode(&root, cx), SidebarMode::Overlay);
+
+    // The delete confirmation is another window: answering it leaves the sidebar up.
+    right_click("note:Ideas", cx);
+    click("menu:Delete", cx);
+    answer_prompt("Cancel", cx);
+    assert_eq!(mode(&root, cx), SidebarMode::Overlay);
+
+    cx.simulate_keystrokes("escape");
+    assert_eq!(mode(&root, cx), SidebarMode::Hidden);
+    assert!(editor_focused(&root, cx));
+}
+
+#[gpui::test]
+fn a_context_menu_closes_with_the_sidebar(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_note(dir.path(), "Ideas", "", days_ago(0, 10));
+    let (_root, cx) = common::open_main_window_in(dir.path(), cx);
+
+    right_click("note:Ideas", cx);
+    cx.simulate_keystrokes("ctrl-\\ ctrl-\\");
+    // The menu did not come back with the sidebar: the click lands on the row underneath.
+    click("menu:Delete", cx);
+    assert_eq!(cx.pending_prompt(), None);
 }

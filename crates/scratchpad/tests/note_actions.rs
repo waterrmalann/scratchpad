@@ -194,8 +194,10 @@ fn escape_closes_the_context_menu_without_acting(cx: &mut TestAppContext) {
 
     right_click("note:Ideas", cx);
     cx.simulate_keystrokes("escape");
-    // The menu is gone, so the click lands on the row underneath (which only opens the note).
+    // The menu is gone, so clicks land on the rows underneath (which only open the note).
+    click("menu:Delete", cx);
     click("note:Ideas", cx);
+    assert_eq!(cx.pending_prompt(), None);
 
     assert_eq!(titles_on_disk(dir.path()), ["Ideas", "Meeting"]);
     assert_eq!(
