@@ -241,7 +241,9 @@ impl Render for EditorPane {
                             sidebar_toggle_button("show-sidebar", cx.theme())
                                 .absolute()
                                 .top(px(4.))
-                                .left(px(4.)),
+                                .left(px(4.))
+                                // Its clicks would also place the caret in the note under it.
+                                .block_mouse_except_scroll(),
                         )
                     })
                     // Clear of the scrollbar on the right edge, and no wider than the editor.

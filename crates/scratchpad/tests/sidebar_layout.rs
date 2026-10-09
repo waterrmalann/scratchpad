@@ -53,10 +53,15 @@ fn ctrl_backslash_collapses_and_expands_the_sidebar_and_it_is_remembered(cx: &mu
     wait(SAVE_DELAY, cx);
     assert!(Config::load(&config_path).sidebar_collapsed);
 
-    // The button at the note's top left brings it back, as wide as it was.
+    // The button at the note's top left brings it back, as wide as it was. The click is the
+    // button's alone: the caret stays where it was.
+    cx.simulate_input("one\ntwo");
     click("show-sidebar", cx);
     assert_eq!(mode(&root, cx), SidebarMode::Docked);
     assert_eq!(note_left(cx), width);
+    let editor = common::editor(&root, cx);
+    let caret = editor.read_with(cx, |editor, _| editor.editor().selection().head.0);
+    assert_eq!(caret, "one\ntwo".len());
     cx.simulate_keystrokes("ctrl-\\");
     common::close(cx);
 
