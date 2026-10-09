@@ -36,7 +36,7 @@
       </div>
       <figure class="screenshot">
         <picture>
-          <source srcset="screenshots/hero-dark.png" media="(prefers-color-scheme: dark)">
+          <source media="(prefers-color-scheme: dark)" srcset="screenshots/hero-dark.png">
           <img src="screenshots/hero-light.png" width="1602" height="1039" alt="The Scratchpad window: the note list grouped by date on the left, and a note on the right whose headings, bold and italic text, task boxes, bullets, quote and code block are styled as it is typed.">
         </picture>
         <figcaption>Light or dark, following your Windows setting.</figcaption>
@@ -80,16 +80,25 @@
         </div>
       </div>
       <figure class="screenshot">
-        <img src="screenshots/live-preview-light.png" width="1200" height="370" loading="lazy" alt="Close-up of a note with the caret inside a bold word: only that word's ** markers are shown, while the italic text beside it stays styled without its markers.">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="screenshots/live-preview-dark.png">
+          <img src="screenshots/live-preview-light.png" width="1200" height="370" loading="lazy" alt="Close-up of a note with the caret inside a bold word: only that word's ** markers are shown, while the italic text beside it stays styled without its markers.">
+        </picture>
         <figcaption>Markers appear only where the caret is.</figcaption>
       </figure>
       <div class="shots">
         <figure class="screenshot">
-          <img src="screenshots/find-replace-dark.png" width="1602" height="1039" loading="lazy" alt="Find and replace in the dark theme: the find bar at the top right with &quot;the&quot; found 1 of 5 times and every match highlighted in the note.">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="screenshots/find-replace-dark.png">
+            <img src="screenshots/find-replace-light.png" width="1602" height="1039" loading="lazy" alt="Find and replace: the find bar at the top right with &quot;the&quot; found 1 of 5 times and every match highlighted in the note.">
+          </picture>
           <figcaption>Find and replace, Notepad keys included.</figcaption>
         </figure>
         <figure class="screenshot">
-          <img src="screenshots/narrow-light.png" width="802" height="1039" loading="lazy" alt="Scratchpad in a narrow window in the light theme, with the note list collapsed so the note fills the window.">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="screenshots/narrow-dark.png">
+            <img src="screenshots/narrow-light.png" width="802" height="1039" loading="lazy" alt="Scratchpad in a narrow window, with the note list collapsed so the note fills the window.">
+          </picture>
           <figcaption>In a narrow window the note list folds away.</figcaption>
         </figure>
       </div>

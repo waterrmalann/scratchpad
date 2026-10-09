@@ -19,7 +19,10 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 - **Markdown-aware editing** — Enter continues a list or quote, Tab nests a list item, `Ctrl+B`/`I`/`E`/`K` format the selection, and clicking a task box ticks it. `Ctrl`+click opens a link.
 - **Plain text for other files** — Files that are not named `.md` or `.markdown` are edited as plain text, untouched by Markdown rules.
 
-<img width="800" alt="Close-up of a note with the caret inside a bold word: only that word's ** markers are shown, while the italic text beside it stays styled without its markers" src="docs/landing/screenshots/live-preview-light.png">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/landing/screenshots/live-preview-dark.png">
+  <img width="800" alt="Close-up of a note with the caret inside a bold word: only that word's ** markers are shown, while the italic text beside it stays styled without its markers" src="docs/landing/screenshots/live-preview-light.png">
+</picture>
 
 **Notes and files**
 
@@ -41,8 +44,14 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 - **Themes and narrow windows** — System, Light or Dark. The note list collapses (`Ctrl+\`) and floats over the note in a narrow window.
 
 <p>
-  <img width="532" alt="Find and replace in the dark theme: the find bar at the top right with &quot;the&quot; found 1 of 5 times and every match highlighted in the note" src="docs/landing/screenshots/find-replace-dark.png">
-  <img width="266" alt="Scratchpad in a narrow window in the light theme, with the note list collapsed so the note fills the window" src="docs/landing/screenshots/narrow-light.png">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/landing/screenshots/find-replace-dark.png">
+    <img width="532" alt="Find and replace: the find bar at the top right with &quot;the&quot; found 1 of 5 times and every match highlighted in the note" src="docs/landing/screenshots/find-replace-light.png">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/landing/screenshots/narrow-dark.png">
+    <img width="266" alt="Scratchpad in a narrow window, with the note list collapsed so the note fills the window" src="docs/landing/screenshots/narrow-light.png">
+  </picture>
 </p>
 
 <details>
