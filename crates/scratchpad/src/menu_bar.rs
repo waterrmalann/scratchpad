@@ -395,6 +395,15 @@ impl MenuBar {
         cx.notify();
     }
 
+    /// Makes the open menu put focus in the note when it closes, rather than back where it was:
+    /// that is going away. Its commands then run from the note too; from something no longer
+    /// shown, they would reach none of the window's handlers.
+    pub fn return_focus_to_note(&mut self) {
+        if let Some(open) = &mut self.open {
+            open.restore_focus = None;
+        }
+    }
+
     /// Closes the menu, putting focus back where it was if `restore_focus`.
     fn close(&mut self, restore_focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(open) = self.open.take() {

@@ -302,7 +302,9 @@ fn edit_commands_act_on_the_note_wherever_focus_was(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn closing_a_menu_opened_over_the_narrow_sidebar_gives_the_note_the_keys(cx: &mut TestAppContext) {
+fn a_menu_opened_over_the_narrow_sidebar_gives_the_note_the_keys_and_commands(
+    cx: &mut TestAppContext,
+) {
     let (root, cx) = common::open_main_window(cx);
     cx.simulate_resize(size(AUTO_COLLAPSE_WIDTH - px(1.), px(700.)));
     cx.run_until_parked();
@@ -315,6 +317,17 @@ fn closing_a_menu_opened_over_the_narrow_sidebar_gives_the_note_the_keys(cx: &mu
     cx.simulate_keystrokes("escape");
     cx.simulate_input("typed");
     assert_eq!(editor_text(&root, cx), "typed");
+
+    // Nor do the commands chosen there: they run as from the note.
+    let editor = common::editor(&root, cx);
+    cx.simulate_keystrokes("ctrl-\\ alt-v down down enter");
+    assert!(!editor.read_with(cx, |editor, _| editor.soft_wrap()));
+    cx.simulate_keystrokes("ctrl-\\");
+    click("menu:View", cx);
+    hover("menu-item:Zoom", cx);
+    click("menu-item:Zoom in", cx);
+    assert_eq!(editor.read_with(cx, |editor, _| editor.zoom_percent()), 110);
+    assert!(editor_focused(&root, cx));
 }
 
 #[gpui::test]

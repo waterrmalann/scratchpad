@@ -128,11 +128,14 @@ impl AppWindow {
             // the sidebar. Another window becoming active (e.g. the delete confirmation) is not.
             cx.on_focus_out(&sidebar_overlay_focus, window, |this, _, window, cx| {
                 if window.is_window_active() {
+                    // A menu that took focus from it cannot give focus back to it.
+                    this.menu_bar
+                        .update(cx, |bar, _| bar.return_focus_to_note());
                     this.hide_sidebar_overlay(window, cx);
                 }
             }),
-            // Focus was put back on something no longer shown, e.g. by a menu on the sidebar
-            // shown over the note, which closed when the menu opened: the keys go to the note.
+            // Focus was put back on something no longer shown, e.g. by a menu opened from the
+            // sidebar, which the window then became too narrow for: the keys go to the note.
             // Deferred: this runs while the window is drawn, when focusing would not redraw it.
             cx.on_focus_lost(window, |_, window, cx| {
                 cx.defer_in(window, |this, window, cx| {
