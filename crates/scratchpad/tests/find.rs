@@ -224,6 +224,18 @@ fn escape_closes_the_bar_keeps_the_match_selected_and_f3_finds_again(cx: &mut Te
 }
 
 #[gpui::test]
+fn f3_steps_through_the_matches_from_the_sidebar_too(cx: &mut TestAppContext) {
+    let mut find = open(cx, "beta alpha beta");
+    find.keys("ctrl-f");
+    find.cx.simulate_input("beta");
+    find.wait();
+    find.keys("ctrl-p f3");
+    assert_eq!(find.selection(), 11..15);
+    find.keys("shift-f3");
+    assert_eq!(find.selection(), 0..4);
+}
+
+#[gpui::test]
 fn editing_the_note_while_the_bar_is_open_updates_the_matches(cx: &mut TestAppContext) {
     let mut find = open(cx, "beta alpha beta");
     find.keys("ctrl-f");

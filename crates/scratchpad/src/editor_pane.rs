@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use crate::editor_view::{Direction, EditorView};
-use crate::find_bar::{CloseFind, FindBar, FindNext, FindPrevious};
+use crate::find_bar::{CloseFind, FindBar};
 use crate::go_to_line::{Dismissed, GoToLineBox};
 use crate::session::{Choice, Notice, Session};
 use crate::settings;
@@ -93,7 +93,13 @@ impl EditorPane {
         cx.notify();
     }
 
-    fn select_match(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+    /// F3 / Shift+F3: selects the next or previous match, reopening the find bar if needed.
+    pub fn select_match(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.find_bar
             .update(cx, |bar, cx| bar.select_match(direction, window, cx));
     }
@@ -201,12 +207,6 @@ impl Render for EditorPane {
         let go_to_line = self.go_to_line_box().cloned();
         div()
             .debug_selector(|| "editor-pane".into())
-            .on_action(cx.listener(|this, _: &FindNext, window, cx| {
-                this.select_match(Direction::Next, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &FindPrevious, window, cx| {
-                this.select_match(Direction::Previous, window, cx)
-            }))
             .on_action(cx.listener(Self::close_find))
             .flex_1()
             .h_full()

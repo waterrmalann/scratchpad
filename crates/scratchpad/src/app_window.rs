@@ -12,8 +12,8 @@ use crate::actions::{
 };
 use crate::app::Storage;
 use crate::editor_pane::EditorPane;
-use crate::editor_view::EditorView;
-use crate::find_bar::{FindInNote, ReplaceInNote};
+use crate::editor_view::{Direction, EditorView};
+use crate::find_bar::{FindInNote, FindNext, FindPrevious, ReplaceInNote};
 use crate::go_to_line::GoToLine;
 use crate::notes::{Notes, NotesLocation, Selection, folder_name};
 use crate::session::Session;
@@ -244,6 +244,19 @@ impl AppWindow {
     ) {
         let editor = self.editor_pane.read(cx).editor().clone();
         editor.update(cx, update);
+    }
+
+    // On the root, not the editor pane, so that F3 (or a menu) also works from the sidebar.
+    fn find_next(&mut self, _: &FindNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_pane.update(cx, |pane, cx| {
+            pane.select_match(Direction::Next, window, cx)
+        });
+    }
+
+    fn find_previous(&mut self, _: &FindPrevious, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_pane.update(cx, |pane, cx| {
+            pane.select_match(Direction::Previous, window, cx)
+        });
     }
 
     fn replace_in_note(&mut self, _: &ReplaceInNote, window: &mut Window, cx: &mut Context<Self>) {
@@ -481,6 +494,8 @@ impl Render for AppWindow {
             .on_action(cx.listener(Self::save_note))
             .on_action(cx.listener(Self::search_notes))
             .on_action(cx.listener(Self::find_in_note))
+            .on_action(cx.listener(Self::find_next))
+            .on_action(cx.listener(Self::find_previous))
             .on_action(cx.listener(Self::replace_in_note))
             .on_action(cx.listener(Self::go_to_line))
             .on_action(cx.listener(Self::open_settings))
