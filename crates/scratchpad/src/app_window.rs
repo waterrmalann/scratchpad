@@ -8,9 +8,10 @@ use scratchpad_core::NoteStore;
 
 use crate::actions::view::{ResetZoom, ToggleWordWrap, ZoomIn, ZoomOut};
 use crate::actions::{
-    CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes, ToggleSidebar, ToggleStatusBar,
+    CloseWindow, NewNote, OpenFile, OpenSettings, SaveNote, SearchNotes, ToggleSidebar,
+    ToggleStatusBar,
 };
-use crate::app::Storage;
+use crate::app::{Storage, WINDOW_TITLE};
 use crate::editor_pane::EditorPane;
 use crate::editor_view::{Direction, EditorView};
 use crate::find_bar::{FindInNote, FindNext, FindPrevious, ReplaceInNote};
@@ -20,7 +21,7 @@ use crate::session::Session;
 use crate::settings_panel::{SettingsPanel, SettingsPanelEvent};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::theme::{self, ActiveTheme, typography};
-use crate::{settings, toast};
+use crate::{file_dialogs, settings, toast};
 
 /// Narrower windows do not dock the sidebar, so the note keeps a comfortable width: at this
 /// width a sidebar of the default 260 px leaves 460 px for it (ADR 0135).
@@ -55,6 +56,8 @@ pub struct AppWindow {
     settings: Option<OpenSettingsPanel>,
     /// Opening a newly picked notes folder; a newer pick replaces (cancels) it.
     folder_change: Option<Task<()>>,
+    /// What the title bar says: the name of a file opened from outside the notes folder.
+    window_title: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -68,7 +71,18 @@ impl AppWindow {
     pub fn new(storage: Storage, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let config = settings::get(cx);
-        let reopen = config.last_opened_note.clone();
+        // A remembered note of another folder is not opened (ADR 0081); a file from outside
+        // the notes folder is (ADR 0145).
+        let last_note = config
+            .last_opened_note
+            .clone()
+            .filter(|note| note.parent() == Some(storage.notes.dir.as_path()));
+        let reopen = config
+            .last_opened_file
+            .iter()
+            .cloned()
+            .chain(last_note)
+            .collect();
         let sidebar_width = config.sidebar_width;
         let sidebar_collapsed = config.sidebar_collapsed;
         let (zoom, word_wrap) = (config.zoom_percent, config.word_wrap);
@@ -114,10 +128,21 @@ impl AppWindow {
                     this.hide_sidebar_overlay(window, cx);
                 }
             }),
-            cx.observe(&notes, |_, notes, cx| {
-                if let Selection::Note(path) = notes.read(cx).selection() {
-                    let path = path.clone();
-                    settings::update(cx, |config| config.last_opened_note = Some(path));
+            cx.observe_in(&notes, window, |this, notes, window, cx| {
+                let selection = notes.read(cx).selection().clone();
+                this.show_file_name(&selection, window);
+                match selection {
+                    Selection::Note(path) => settings::update(cx, |config| {
+                        config.last_opened_note = Some(path);
+                        config.last_opened_file = None;
+                    }),
+                    Selection::File(path) => {
+                        settings::update(cx, |config| config.last_opened_file = Some(path))
+                    }
+                    Selection::Draft(_) => {
+                        settings::update(cx, |config| config.last_opened_file = None)
+                    }
+                    Selection::None => {}
                 }
             }),
             cx.observe(&sidebar, |_, sidebar, cx| {
@@ -172,6 +197,7 @@ impl AppWindow {
             notes_dir_overridden: storage.notes_dir_overridden,
             settings: None,
             folder_change: None,
+            window_title: WINDOW_TITLE.to_owned(),
             _subscriptions: subscriptions,
         }
     }
@@ -220,6 +246,36 @@ impl AppWindow {
 
     fn save_note(&mut self, _: &SaveNote, _: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |session, cx| session.flush(cx));
+    }
+
+    /// Ctrl+O: a note of the notes folder opens as a note, any other file in place.
+    fn open_file(&mut self, _: &OpenFile, _: &mut Window, cx: &mut Context<Self>) {
+        let picked = file_dialogs::pick_file(cx);
+        let notes = self.notes.clone();
+        cx.spawn(async move |_, cx| {
+            if let Some(path) = picked.await {
+                notes
+                    .update(cx, |notes, cx| notes.open_file(&path, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Names a file from outside the notes folder in the title bar, where the sidebar's list
+    /// does not show it.
+    fn show_file_name(&mut self, selection: &Selection, window: &mut Window) {
+        let title = match selection {
+            Selection::File(path) => match path.file_name() {
+                Some(name) => format!("{} - {WINDOW_TITLE}", name.to_string_lossy()),
+                None => WINDOW_TITLE.to_owned(),
+            },
+            Selection::Note(_) | Selection::Draft(_) | Selection::None => WINDOW_TITLE.to_owned(),
+        };
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
     }
 
     fn search_notes(&mut self, _: &SearchNotes, window: &mut Window, cx: &mut Context<Self>) {
@@ -515,6 +571,7 @@ impl Render for AppWindow {
                     editor.set_soft_wrap(!editor.soft_wrap(), cx)
                 })
             }))
+            .on_action(cx.listener(Self::open_file))
             .relative()
             .size_full()
             .flex()

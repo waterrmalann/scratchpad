@@ -136,6 +136,34 @@ fn replacing_a_note_by_rename_is_not_reported_as_a_removal() {
 }
 
 #[test]
+fn a_watched_file_reports_only_itself_whatever_its_name() {
+    let (dir, store) = temp_store();
+    let file = path_in(&dir, "todo.txt");
+    fs::write(&file, "before").unwrap();
+    // Named in another case, as a dialog may return it; Windows matches names ignoring case.
+    let watched = if cfg!(windows) {
+        path_in(&dir, "TODO.txt")
+    } else {
+        file.clone()
+    };
+    let watcher = NoteWatcher::start_file(&watched).unwrap();
+
+    let other = store.create(Some("Note")).unwrap();
+    store.save(&other.path, "saved").unwrap();
+    fs::write(path_in(&dir, "todo.txt.bak"), "x").unwrap();
+    store.save(&file, "after").unwrap();
+
+    let events = collect_until(&watcher, |seen| {
+        seen.iter().any(|e| matches!(e, NoteEvent::Changed(_)))
+    });
+    assert!(events.iter().all(|e| e.path() == watched), "{events:?}");
+    fs::remove_file(&file).unwrap();
+    collect_until(&watcher, |seen| {
+        seen.iter().any(|e| matches!(e, NoteEvent::Removed(_)))
+    });
+}
+
+#[test]
 fn starting_on_a_missing_folder_fails_with_the_folder_in_the_message() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("nope");

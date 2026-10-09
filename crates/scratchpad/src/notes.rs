@@ -1,5 +1,6 @@
-//! The notes shown in the sidebar: the folder, the note list, which note is open, the new note
-//! that has not been saved yet and the note search. See ADR 0050.
+//! The notes shown in the sidebar: the folder, the note list, which note (or file from outside
+//! the folder) is open, the new note that has not been saved yet and the note search. See ADRs
+//! 0050 and 0145.
 //!
 //! Views and the editor integration react to [`NotesEvent`]s; they never touch the folder
 //! directly, so the list always matches what is on disk.
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use gpui::{AppContext, Context, EventEmitter, Task};
-use scratchpad_core::{Note, NoteSearch, NoteStore, SearchHit};
+use scratchpad_core::{Note, NoteSearch, NoteStore, SearchHit, is_note_path};
 
 use crate::toast;
 
@@ -66,6 +67,9 @@ pub enum Selection {
     /// A new note that exists only in memory until it has content (PLAN §9).
     Draft(DraftId),
     Note(PathBuf),
+    /// A file that is not a note of the folder, opened with File > Open: it is edited in place
+    /// but not listed, and its name never follows its first line.
+    File(PathBuf),
 }
 
 /// Identifies a new, unsaved note. Each Ctrl+N starts a new draft, so when the editor saves one
@@ -87,6 +91,8 @@ pub struct DraftId(u64);
 pub enum NotesEvent {
     /// Load this note into the editor.
     OpenNote(PathBuf),
+    /// Load this file, which is not a note of the folder, into the editor.
+    OpenFile(PathBuf),
     /// Show an empty editor for a new note.
     OpenDraft(DraftId),
     /// A note's file was renamed.
@@ -131,10 +137,11 @@ impl Notes {
     /// Opens the folder and lists it in the background: the window renders first and the
     /// sidebar fills in when the listing arrives (PLAN §39).
     ///
-    /// `reopen` (the note open when the app last closed) is opened as soon as the folder is,
-    /// before the listing. Without it, or if it is gone, the newest note is opened once the
-    /// list arrives, or a new note if there are none.
-    pub fn new(location: NotesLocation, reopen: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    /// The first of `reopen` (what was open when the app last closed) that still exists is
+    /// opened as soon as the folder is, before the listing: a note of this folder, or any other
+    /// file as with [`open_file`](Self::open_file). If none does, the newest note is opened once
+    /// the list arrives, or a new note if there are none.
+    pub fn new(location: NotesLocation, reopen: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
         let mut notes = Self {
             location,
             store: None,
@@ -155,13 +162,11 @@ impl Notes {
         notes
     }
 
-    fn open_folder(&mut self, reopen: Option<PathBuf>, cx: &mut Context<Self>) {
+    fn open_folder(&mut self, reopen: Vec<PathBuf>, cx: &mut Context<Self>) {
         let location = self.location.clone();
         let opening = cx.background_spawn(async move {
             let store = location.open()?;
-            // Only a note of this folder; the folder may have changed since.
-            let reopen = reopen
-                .filter(|path| path.parent() == Some(location.dir.as_path()) && path.is_file());
+            let reopen = reopen.into_iter().find(|path| path.is_file());
             scratchpad_core::Result::Ok((store, reopen))
         });
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
@@ -170,7 +175,7 @@ impl Notes {
                 Ok((store, reopen)) => {
                     this.store = Some(store);
                     if let Some(path) = reopen {
-                        this.select(&path, cx);
+                        this.open_file(&path, cx);
                     }
                     this.refresh(cx);
                 }
@@ -214,10 +219,7 @@ impl Notes {
                         if mem::take(&mut this.open_after_listing)
                             && this.selection == Selection::None
                         {
-                            match this.notes.first() {
-                                Some(newest) => this.select(&newest.path.clone(), cx),
-                                None => this.new_note(cx),
-                            }
+                            this.open_newest(cx);
                         }
                     }
                     Err(error) => toast::show_file_error(&this.folder_name(), &error, cx),
@@ -229,10 +231,20 @@ impl Notes {
         }));
     }
 
+    /// Opens the newest note, or a new note if there are none.
+    fn open_newest(&mut self, cx: &mut Context<Self>) {
+        match self.notes.first() {
+            Some(newest) => self.select(&newest.path.clone(), cx),
+            None => self.new_note(cx),
+        }
+    }
+
     /// Shows the notes of another folder, whose `store` the caller has opened (see
     /// [`NotesLocation::open_writable`]). The caller must have saved the open note first: the
     /// selection is cleared without an event. Once the folder is listed its newest note opens,
-    /// or a new note if it has none.
+    /// or a new note if it has none. A file from outside the folder stays open, unless it is a
+    /// note of the new folder: then it is left like a note, as the list's rename and delete
+    /// would not follow it.
     pub fn change_folder(
         &mut self,
         location: NotesLocation,
@@ -244,9 +256,11 @@ impl Notes {
         self.notes = Arc::default();
         self.loaded = false;
         self.changes += 1;
-        self.selection = Selection::None;
+        if !matches!(&self.selection, Selection::File(path) if self.note_path(path).is_none()) {
+            self.selection = Selection::None;
+        }
         self.open_title = None;
-        self.open_after_listing = true;
+        self.open_after_listing = self.selection == Selection::None;
         self.query.clear();
         self.hits = None;
         // Its cache holds the texts of the other folder's notes.
@@ -298,8 +312,9 @@ impl Notes {
     /// Records that the note was just saved: updates its metadata and moves it to the top,
     /// adding it back if it was missing (e.g. deleted by another program and saved again).
     pub fn note_saved(&mut self, note: Note, cx: &mut Context<Self>) {
-        if note.path.parent() != Some(self.location.dir.as_path()) {
-            // A save of the previous folder that finished after the switch.
+        // A save of the previous folder that finished after the switch, or of a file that is
+        // not a note.
+        if note.path.parent() != Some(self.location.dir.as_path()) || !is_note_path(&note.path) {
             return;
         }
         self.changes += 1;
@@ -310,8 +325,19 @@ impl Notes {
     }
 
     /// Drops a note that no longer exists from the list. If it was open, the next note is
-    /// opened instead, as after a delete.
+    /// opened instead, as after a delete. A file from outside the folder that is gone or cannot
+    /// be read is closed, and the newest note opens.
     pub fn forget(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if self.selection == Selection::File(path.to_owned()) {
+            self.selection = Selection::None;
+            // Before the first listing, it opens the newest note.
+            self.open_after_listing = !self.loaded;
+            if self.loaded {
+                self.open_newest(cx);
+            }
+            cx.notify();
+            return;
+        }
         let neighbour = self.neighbour_of(path);
         self.changes += 1;
         Arc::make_mut(&mut self.notes).retain(|note| note.path != path);
@@ -402,6 +428,38 @@ impl Notes {
         self.open_title = None;
         cx.emit(NotesEvent::OpenNote(path.to_owned()));
         cx.notify();
+    }
+
+    /// Opens the file at `path`: a note of this folder is selected like a click in the list;
+    /// any other file is opened in place without being listed.
+    pub fn open_file(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Some(note) = self.note_path(path) {
+            self.select(&note, cx);
+            return;
+        }
+        if matches!(&self.selection, Selection::File(open) if open == path) {
+            return;
+        }
+        self.selection = Selection::File(path.to_owned());
+        self.open_after_listing = false;
+        self.open_title = None;
+        cx.emit(NotesEvent::OpenFile(path.to_owned()));
+        cx.notify();
+    }
+
+    /// The path of the note `path` names if it is one of this folder: as listed, which may
+    /// differ in case from how a file dialog spells it.
+    pub fn note_path(&self, path: &Path) -> Option<PathBuf> {
+        let name = path.file_name()?;
+        let in_folder = path
+            .parent()
+            .is_some_and(|dir| same_file(dir, &self.location.dir));
+        if !(in_folder && is_note_path(path)) {
+            return None;
+        }
+        let path = self.location.dir.join(name);
+        let listed = self.notes.iter().find(|note| same_file(&note.path, &path));
+        Some(listed.map_or(path, |note| note.path.clone()))
     }
 
     /// Starts a new note in memory and asks for it to be opened. Nothing is written until
@@ -537,6 +595,12 @@ impl Notes {
     fn folder_name(&self) -> String {
         folder_name(&self.location.dir)
     }
+}
+
+/// Whether two paths name the same file, as far as their spelling tells: Windows ignores case.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    let lower = |path: &Path| PathBuf::from(path.to_string_lossy().to_lowercase());
+    a == b || (cfg!(windows) && lower(a) == lower(b))
 }
 
 /// The name a folder is shown by in messages: its last component.

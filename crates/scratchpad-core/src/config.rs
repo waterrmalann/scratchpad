@@ -63,6 +63,10 @@ pub struct Config {
     /// Whether long lines wrap at the window's edge (View > Word wrap); `None` is on.
     #[serde(deserialize_with = "or_default")]
     pub word_wrap: Option<bool>,
+    /// A file from outside the notes folder that was open when the app closed; it is opened
+    /// again instead of `last_opened_note` while it exists.
+    #[serde(deserialize_with = "or_default")]
+    pub last_opened_file: Option<PathBuf>,
 }
 
 impl Config {

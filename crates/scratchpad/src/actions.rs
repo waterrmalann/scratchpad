@@ -68,6 +68,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     ];
     // Window layout (ADR 0135).
     bindings.push(KeyBinding::new("secondary-\\", ToggleSidebar, None));
+    bindings.extend(file_key_bindings());
     // Components that own their actions, scoped to their key context.
     bindings.extend(text_input::key_bindings());
     bindings.extend(settings_panel::key_bindings());
@@ -75,6 +76,21 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     bindings.extend(view::key_bindings());
     bindings.extend(go_to_line::key_bindings());
     bindings
+}
+
+// --- Files from outside the notes folder (ADR 0145) ---
+
+actions!(
+    scratchpad,
+    [
+        /// Open a file from anywhere: a note of the notes folder opens as a note, any other
+        /// file is edited in place (File > Open).
+        OpenFile,
+    ]
+);
+
+fn file_key_bindings() -> [KeyBinding; 1] {
+    [KeyBinding::new("secondary-o", OpenFile, None)]
 }
 
 /// Handlers for actions that act on the whole application rather than one window.

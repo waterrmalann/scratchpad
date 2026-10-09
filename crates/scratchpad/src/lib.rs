@@ -8,6 +8,7 @@ mod app;
 pub mod app_window;
 pub mod editor_pane;
 pub mod editor_view;
+pub mod file_dialogs;
 pub mod find_bar;
 pub mod go_to_line;
 mod logging;

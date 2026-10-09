@@ -13,7 +13,7 @@ use crate::notes::NotesLocation;
 use crate::theme::{self, ThemeMode};
 use crate::{actions, logging, settings};
 
-const WINDOW_TITLE: &str = "Scratchpad";
+pub(crate) const WINDOW_TITLE: &str = "Scratchpad";
 const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1100.), px(720.));
 const MIN_WINDOW_SIZE: Size<Pixels> = size(px(560.), px(360.));
 /// Overrides the notes folder, e.g. to try the app against a scratch folder.

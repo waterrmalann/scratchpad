@@ -15,7 +15,7 @@ pub use config::{Config, ThemePreference, WindowBounds, default_config_path, def
 pub use error::{Error, Result};
 pub use grouping::{DateGroup, NaiveDate, local_date};
 pub use naming::{UNTITLED, sanitize_file_stem, title_from_content};
-pub use note::Note;
+pub use note::{Note, is_note_path};
 pub use recovery::{RecoveryStore, Snapshot};
 pub use search::{NoteSearch, SearchHit};
 pub use store::{NoteStore, NoteText};

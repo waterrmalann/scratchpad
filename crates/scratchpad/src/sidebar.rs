@@ -282,7 +282,7 @@ impl Sidebar {
         let visible = notes.visible_paths();
         let open = match notes.selection() {
             Selection::Note(open) => visible.iter().position(|path| path == open),
-            Selection::Draft(_) | Selection::None => None,
+            Selection::Draft(_) | Selection::File(_) | Selection::None => None,
         };
         // Without an open note (or from the new note, which sits above them all) Down
         // starts at the top.
@@ -314,10 +314,11 @@ impl Sidebar {
         }
     }
 
+    /// The open note, which F2 renames and Delete deletes. Not a file from outside the folder.
     fn open_path(&self, cx: &App) -> Option<PathBuf> {
         match self.notes.read(cx).selection() {
             Selection::Note(path) => Some(path.clone()),
-            Selection::Draft(_) | Selection::None => None,
+            Selection::Draft(_) | Selection::File(_) | Selection::None => None,
         }
     }
 
@@ -687,6 +688,45 @@ impl Sidebar {
             .child(div().flex_1().min_w_0().child(self.search.clone()))
     }
 
+    /// The file from outside the notes folder while it is open, above the list that does not
+    /// hold it, with its folder for a second line (ADR 0145).
+    fn render_open_file(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let Selection::File(path) = self.notes.read(cx).selection() else {
+            return None;
+        };
+        let name = path.file_name().unwrap_or(path.as_os_str());
+        let folder = path.parent().unwrap_or(path);
+        let theme = cx.theme().clone();
+        let row = list_row(
+            "open-file",
+            name.to_string_lossy().into_owned(),
+            folder.to_string_lossy().into_owned(),
+            Some(self.selection_color(window, cx)),
+            false,
+            &theme,
+        )
+        .debug_selector(|| "open-file".into())
+        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SidebarEvent::FocusEditor)));
+        Some(
+            div()
+                .child(
+                    div()
+                        .px_5()
+                        .pt_2()
+                        .pb_1()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.muted)
+                        .child("Opened File"),
+                )
+                .child(row),
+        )
+    }
+
     fn render_menu(&self, menu: &ContextMenu, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let item = |item: MenuItem, cx: &mut Context<Self>| {
@@ -949,6 +989,7 @@ impl Render for Sidebar {
                     )
                     .child("New Note"),
             )
+            .children(self.render_open_file(window, cx))
             .child(
                 div()
                     .id("note-list")

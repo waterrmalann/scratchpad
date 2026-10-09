@@ -42,6 +42,7 @@ fn save_and_load_round_trip_every_field() {
         status_bar_hidden: true,
         zoom_percent: Some(150),
         word_wrap: Some(false),
+        last_opened_file: Some(dir.path().join("todo.txt")),
     };
 
     config.save(&path).unwrap();
@@ -78,6 +79,7 @@ fn loads_the_documented_file_format() {
             "status_bar_hidden": true,
             "zoom_percent": 120,
             "word_wrap": false,
+            "last_opened_file": "D:/logs/today.txt",
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -99,6 +101,7 @@ fn loads_the_documented_file_format() {
             status_bar_hidden: true,
             zoom_percent: Some(120),
             word_wrap: Some(false),
+            last_opened_file: Some("D:/logs/today.txt".into()),
         }
     );
 }

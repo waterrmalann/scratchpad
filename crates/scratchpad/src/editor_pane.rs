@@ -114,17 +114,21 @@ impl EditorPane {
     }
 
     fn render_notice(&self, notice: &Notice, cx: &App) -> AnyElement {
+        // A file from outside the notes folder is not called a note (ADR 0145).
+        let file = self.session.read(cx).is_external();
+        let noun = if file { "file" } else { "note" };
         let (selector, message, choices): (_, String, &[(Choice, &str)]) = match notice {
             Notice::NotUtf8 => (
                 "notice:not-utf8",
-                "This note contains characters that are not valid UTF-8 (shown as \u{FFFD}). \
-                 Editing it replaces them when it is saved."
-                    .into(),
+                format!(
+                    "This {noun} contains characters that are not valid UTF-8 (shown as \
+                     \u{FFFD}). Editing it replaces them when it is saved."
+                ),
                 &[(Choice::EditAnyway, "Edit Anyway")],
             ),
             Notice::ChangedOnDisk => (
                 "notice:changed",
-                "This note was changed by another program while you were editing it.".into(),
+                format!("This {noun} was changed by another program while you were editing it."),
                 &[
                     (Choice::KeepMine, "Keep My Version"),
                     (Choice::LoadDisk, "Load Their Version"),
@@ -132,11 +136,18 @@ impl EditorPane {
             ),
             Notice::DeletedOnDisk => (
                 "notice:deleted",
-                "This note was deleted by another program.".into(),
-                &[
-                    (Choice::KeepDeleted, "Keep Note"),
-                    (Choice::CloseDeleted, "Close Note"),
-                ],
+                format!("This {noun} was deleted by another program."),
+                if file {
+                    &[
+                        (Choice::KeepDeleted, "Keep File"),
+                        (Choice::CloseDeleted, "Close File"),
+                    ]
+                } else {
+                    &[
+                        (Choice::KeepDeleted, "Keep Note"),
+                        (Choice::CloseDeleted, "Close Note"),
+                    ]
+                },
             ),
             Notice::Recovered { title, new_note } => (
                 "notice:recovered",

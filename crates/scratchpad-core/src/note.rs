@@ -37,7 +37,7 @@ impl Note {
 
 /// Whether `path` is named like a note: a `.md` file (any case) that is not hidden. Hidden files
 /// include our own temporary files, which start with a dot.
-pub(crate) fn is_note_path(path: &Path) -> bool {
+pub fn is_note_path(path: &Path) -> bool {
     let has_md_extension = path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));

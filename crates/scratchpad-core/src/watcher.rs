@@ -1,5 +1,6 @@
-//! Filesystem watching of the notes folder (PLAN §30).
+//! Filesystem watching of the notes folder, and of a file opened from elsewhere (PLAN §30).
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -50,12 +51,36 @@ pub struct NoteWatcher {
 
 impl NoteWatcher {
     pub fn start(dir: &Path) -> Result<Self> {
+        Self::watch(dir, is_note_path, |path| path)
+    }
+
+    /// Watches the file at `path`, whatever its name, through its folder. Only changes to it are
+    /// reported, always as `path` (the OS may spell its folder differently).
+    pub fn start_file(path: &Path) -> Result<Self> {
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let name = path.file_name().map(file_name_key);
+        let target = path.to_owned();
+        Self::watch(
+            dir,
+            move |changed| changed.file_name().map(file_name_key) == name,
+            move |_| target.clone(),
+        )
+    }
+
+    /// Watches `dir`, reporting changes to the files `wanted` accepts under the path `report`
+    /// gives them.
+    fn watch(
+        dir: &Path,
+        wanted: impl Fn(&Path) -> bool + Send + 'static,
+        report: impl Fn(PathBuf) -> PathBuf + Send + 'static,
+    ) -> Result<Self> {
         let (sender, events) = mpsc::channel();
         let mut watcher =
             notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
                 match result {
                     Ok(event) => {
-                        for note_event in translate(event) {
+                        for note_event in translate(event, &wanted) {
+                            let note_event = note_event.map_path(&report);
                             tracing::debug!(?note_event, "filesystem event");
                             // The receiver is gone when the NoteWatcher was dropped.
                             let _ = sender.send(note_event);
@@ -70,7 +95,7 @@ impl NoteWatcher {
             .watch(dir, RecursiveMode::NonRecursive)
             .map_err(into_io_error)
             .map_err(io_context("watch", dir))?;
-        tracing::debug!(dir = %dir.display(), "watching notes folder");
+        tracing::debug!(dir = %dir.display(), "watching folder");
         Ok(NoteWatcher {
             _watcher: watcher,
             events,
@@ -95,16 +120,35 @@ fn into_io_error(error: notify::Error) -> io::Error {
     }
 }
 
-fn translate(event: notify::Event) -> Vec<NoteEvent> {
-    let notes = |paths: Vec<PathBuf>| paths.into_iter().filter(|path| is_note_path(path));
+impl NoteEvent {
+    fn map_path(self, map: impl Fn(PathBuf) -> PathBuf) -> Self {
+        match self {
+            NoteEvent::Created(path) => NoteEvent::Created(map(path)),
+            NoteEvent::Changed(path) => NoteEvent::Changed(map(path)),
+            NoteEvent::Removed(path) => NoteEvent::Removed(map(path)),
+        }
+    }
+}
+
+/// File names compare like the filesystem does: ignoring case on Windows.
+fn file_name_key(name: &std::ffi::OsStr) -> OsString {
+    if cfg!(windows) {
+        name.to_string_lossy().to_lowercase().into()
+    } else {
+        name.to_owned()
+    }
+}
+
+fn translate(event: notify::Event, wanted: &impl Fn(&Path) -> bool) -> Vec<NoteEvent> {
+    let notes = |paths: Vec<PathBuf>| paths.into_iter().filter(|path| wanted(path));
     match event.kind {
         EventKind::Create(_) => notes(event.paths).map(NoteEvent::Created).collect(),
         EventKind::Remove(_) => notes(event.paths).map(removal).collect(),
         EventKind::Modify(ModifyKind::Name(mode)) => match (mode, event.paths.as_slice()) {
             // Both paths come in one event; keep their roles before filtering.
             (RenameMode::Both, [from, to]) => {
-                let removed = is_note_path(from).then(|| removal(from.clone()));
-                let created = is_note_path(to).then(|| NoteEvent::Created(to.clone()));
+                let removed = wanted(from).then(|| removal(from.clone()));
+                let created = wanted(to).then(|| NoteEvent::Created(to.clone()));
                 removed.into_iter().chain(created).collect()
             }
             (RenameMode::From, _) => notes(event.paths).map(removal).collect(),
@@ -146,6 +190,10 @@ mod tests {
         paths.iter().fold(Event::new(kind), |event, path| {
             event.add_path(PathBuf::from(path))
         })
+    }
+
+    fn translate(event: Event) -> Vec<NoteEvent> {
+        super::translate(event, &is_note_path)
     }
 
     #[test]

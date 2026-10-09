@@ -1,6 +1,7 @@
 //! The open note's lifecycle: loading it into the editor, autosave, giving new notes a file,
 //! keeping file names in step with titles, changes made by other programs and crash recovery
-//! (PLAN §7, §9, §30, §40, §44, §56). See ADRs 0060-0064 and 0066.
+//! (PLAN §7, §9, §30, §40, §44, §56). See ADRs 0060-0064 and 0066. Files opened from outside
+//! the notes folder get the same guarantees (ADR 0145).
 //!
 //! [`Session`] follows the notes model's [`NotesEvent`]s and the editor's
 //! [`EditorEvent::Changed`]. Every file operation goes through one ordered queue (see
@@ -17,7 +18,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext, Context, Entity, Focusable, Subscription, Task, Window};
-use scratchpad_core::{Note, NoteEvent, NoteText, RecoveryStore, UNTITLED, title_from_content};
+use scratchpad_core::{
+    Note, NoteEvent, NoteText, RecoveryStore, UNTITLED, is_note_path, title_from_content,
+};
 use scratchpad_editor::{Buffer, TextSnapshot};
 
 use crate::app::Storage;
@@ -73,6 +76,9 @@ struct Document {
     /// The next save writes even if the file changed since we last read or wrote it: the user
     /// chose their version.
     overwrite: bool,
+    /// A file from outside the notes folder, or one in it that is not a note: it is never
+    /// renamed after its title and is not in the note list (ADR 0145).
+    external: bool,
 }
 
 impl Document {
@@ -85,6 +91,7 @@ impl Document {
             notice: None,
             snapshot: false,
             overwrite: false,
+            external: false,
         }
     }
 
@@ -170,6 +177,8 @@ pub struct Session {
     first_load: Option<Box<dyn FnOnce()>>,
     /// Watches the notes folder; `None` when [`Storage::watch`] is off.
     watcher: Option<Task<()>>,
+    /// Watches the open file from outside the notes folder.
+    file_watcher: Option<Task<()>>,
     _find_recovered: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -202,7 +211,7 @@ impl Session {
             .map(|recovery| Self::find_recovered(recovery, cx));
         let watcher = storage
             .watch
-            .then(|| watch::start(storage.notes.dir.clone(), cx));
+            .then(|| watch::start_folder(storage.notes.dir.clone(), cx));
         Self {
             notes,
             editor,
@@ -219,6 +228,7 @@ impl Session {
             draft_keys: 0,
             first_load: None,
             watcher,
+            file_watcher: None,
             _find_recovered: find_recovered,
             _subscriptions: subscriptions,
         }
@@ -227,6 +237,11 @@ impl Session {
     /// Whether the open note has edits that are not on disk yet (or not handed to the writer).
     pub fn is_dirty(&self) -> bool {
         self.doc.dirty
+    }
+
+    /// Whether the open document is a file from outside the notes folder (ADR 0145).
+    pub fn is_external(&self) -> bool {
+        self.doc.external
     }
 
     /// Whether a file operation is running on a background thread, for tests that interleave
@@ -253,7 +268,7 @@ impl Session {
             let title = if new_note {
                 title_from_content(&offer.text).unwrap_or_else(|| UNTITLED.to_owned())
             } else {
-                title_of(&offer.note_path)
+                name_of(&offer.note_path)
             };
             Notice::Recovered { title, new_note }
         });
@@ -270,7 +285,11 @@ impl Session {
         match event {
             NotesEvent::OpenNote(path) => {
                 self.leave(cx);
-                self.open(path.clone(), cx);
+                self.open(path.clone(), false, cx);
+            }
+            NotesEvent::OpenFile(path) => {
+                self.leave(cx);
+                self.open(path.clone(), true, cx);
             }
             NotesEvent::OpenDraft(id) => {
                 self.leave(cx);
@@ -305,13 +324,26 @@ impl Session {
         self.offer_unsaved(key, text, cx);
     }
 
-    fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    /// Opens a note, or with `external` a file from outside the notes folder.
+    fn open(&mut self, path: PathBuf, external: bool, cx: &mut Context<Self>) {
         // The previous note stays visible, read-only, until this one is read.
-        self.doc = Document::new(Target::Loading(path.clone()));
+        self.doc = Document {
+            external,
+            ..Document::new(Target::Loading(path.clone()))
+        };
+        self.watch_file(external.then_some(&path), cx);
         self.editor
             .update(cx, |editor, _| editor.set_read_only(true));
         self.enqueue(Job::Load(path), cx);
         cx.notify();
+    }
+
+    /// Watches `file` for changes by other programs, and no other file, if the notes folder is
+    /// watched ([`Storage::watch`]).
+    fn watch_file(&mut self, file: Option<&Path>, cx: &mut Context<Self>) {
+        self.file_watcher = file
+            .filter(|_| self.watcher.is_some())
+            .map(|file| watch::start_file(file.to_owned(), cx));
     }
 
     fn loaded(
@@ -324,9 +356,11 @@ impl Session {
             // Another note was opened meanwhile.
             return;
         }
+        let external = self.doc.external;
         match result {
             Ok(note) => {
                 self.editor.update(cx, |editor, cx| {
+                    editor.set_markdown(!external || is_markdown_file(&path), cx);
                     editor.set_text(&note.text, cx);
                     editor.set_read_only(note.lossy);
                 });
@@ -334,6 +368,7 @@ impl Session {
                     title: self.current_title(cx),
                     disk_text: note.text.into(),
                     notice: note.lossy.then_some(DocumentNotice::NotUtf8),
+                    external,
                     ..Document::new(Target::Note(path.clone()))
                 };
                 if let Some(restore) = self
@@ -347,9 +382,12 @@ impl Session {
                 }
             }
             Err(error) => {
-                toast::show_file_error(&title_of(&path), &error, cx);
+                toast::show_file_error(&name_of(&path), &error, cx);
                 self.close_document(cx);
-                self.notes.update(cx, |notes, cx| notes.refresh(cx));
+                self.notes.update(cx, |notes, cx| match external {
+                    true => notes.forget(&path, cx),
+                    false => notes.refresh(cx),
+                });
             }
         }
         cx.notify();
@@ -358,7 +396,9 @@ impl Session {
     fn start_draft(&mut self, id: DraftId, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.new_draft_key();
         self.doc = Document::new(Target::Draft { id, key });
+        self.watch_file(None, cx);
         self.editor.update(cx, |editor, cx| {
+            editor.set_markdown(true, cx);
             editor.set_text("", cx);
             editor.set_read_only(false);
         });
@@ -375,6 +415,7 @@ impl Session {
     /// Shows nothing: the open note was deleted or could not be read.
     fn close_document(&mut self, cx: &mut Context<Self>) {
         self.doc = Document::new(Target::None);
+        self.watch_file(None, cx);
         self.autosave = None;
         self.editor.update(cx, |editor, cx| {
             editor.set_text("", cx);
@@ -492,7 +533,7 @@ impl Session {
                 cx,
             );
         }
-        if flush && !blocked {
+        if flush && !blocked && !self.doc.external {
             let title = self.current_title(cx);
             if title.is_some() && title != self.doc.title {
                 self.doc.title = title.clone();
@@ -580,7 +621,7 @@ impl Session {
                     .update(cx, |notes, cx| notes.note_saved(note, cx));
             }
             Err(error) => {
-                toast::show_file_error(&title_of(&path), &error, cx);
+                toast::show_file_error(&name_of(&path), &error, cx);
                 self.writer.set_expected(&path, expected);
                 if self.doc.is_note(&path) {
                     // Saved again after the next edit or flush; the text is in a snapshot.
@@ -910,9 +951,19 @@ impl Session {
         let path = offer.note_path.clone();
         // A note of a folder used before the notes folder was changed is not opened from
         // there: renaming it would move it into this folder. Its text becomes a new note here.
+        // Files that are not notes (and the open one) are never renamed, so they open in place.
+        let open = matches!(&self.doc.target, Target::Note(p) | Target::Loading(p) if *p == path);
         let into_note = !is_draft_key(&path)
-            && path.parent() == Some(self.notes_dir.as_path())
-            && path.is_file();
+            && path.is_file()
+            && (open || !is_note_path(&path) || self.notes.read(cx).note_path(&path).is_some());
+        if !into_note && !is_draft_key(&path) {
+            // The notice named the file; say where its text went instead.
+            let name = name_of(&path);
+            toast::show_error(
+                format!("Restored \"{name}\" as a new note; its file was not changed."),
+                cx,
+            );
+        }
         let restore = Restore { offer, into_note };
         if into_note && self.doc.is_note(&path) {
             self.apply_restore(restore, cx);
@@ -922,7 +973,7 @@ impl Session {
         self.restore = Some(restore);
         self.notes.update(cx, |notes, cx| {
             if into_note {
-                notes.select(&path, cx);
+                notes.open_file(&path, cx);
             } else {
                 notes.new_note(cx);
             }
@@ -1017,7 +1068,7 @@ impl Session {
                         match outcome {
                             Outcome::Saved(Err(error)) => {
                                 tracing::error!(%error, "could not save while flushing");
-                                toast::show_file_error(&title_of(&path), &error, cx);
+                                toast::show_file_error(&name_of(&path), &error, cx);
                             }
                             Outcome::ChangedOnDisk(_) => {}
                             _ => continue,
@@ -1037,9 +1088,22 @@ impl Session {
     /// folder they belong to. Edits waiting for a decision about a change by another program
     /// are offered like recovered text, as when switching notes. See ADR 0081.
     pub fn change_folder(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
-        self.leave(cx);
-        self.flush_sync(cx);
-        self.close_document(cx);
+        if self.doc.external {
+            // Not a note of either folder: it stays open, edits waiting for a decision too.
+            let undecided = self.doc.dirty && self.doc.notice.is_some();
+            self.flush_sync(cx);
+            self.doc.dirty = undecided;
+            // The flush took over its load or check, if one was queued.
+            match self.doc.target.clone() {
+                Target::Loading(path) => self.enqueue(Job::Load(path), cx),
+                Target::Note(path) => self.enqueue(Job::Check(path), cx),
+                Target::Draft { .. } | Target::None => {}
+            }
+        } else {
+            self.leave(cx);
+            self.flush_sync(cx);
+            self.close_document(cx);
+        }
         if let Some(restore) = self.restore.take() {
             // Its note never opened; it is offered again in the new folder.
             self.recovered.push_front(restore.offer);
@@ -1047,7 +1111,7 @@ impl Session {
         self.refresh = None;
         if self.watcher.is_some() {
             // Replacing the task stops the old watcher.
-            self.watcher = Some(watch::start(dir.clone(), cx));
+            self.watcher = Some(watch::start_folder(dir.clone(), cx));
         }
         self.notes_dir = dir;
         cx.notify();
@@ -1177,7 +1241,9 @@ impl Session {
         let title = self.current_title(cx);
         let shown = match &self.doc.target {
             Target::Draft { .. } => title,
-            Target::Note(_) if title.is_some() && title != self.doc.title => title,
+            Target::Note(_) if !self.doc.external && title.is_some() && title != self.doc.title => {
+                title
+            }
             _ => None,
         };
         self.notes
@@ -1201,6 +1267,22 @@ fn title_line_finished(buffer: &Buffer) -> bool {
 fn title_line(buffer: &Buffer) -> Option<(usize, String)> {
     (0..buffer.line_count().min(TITLE_SEARCH_LINES))
         .find_map(|line| title_from_content(&buffer.line_text(line)).map(|title| (line, title)))
+}
+
+/// How messages name a file: a note by its title, any other file by its name.
+fn name_of(path: &Path) -> String {
+    match path.file_name() {
+        Some(name) if !is_note_path(path) => name.to_string_lossy().into_owned(),
+        _ => title_of(path),
+    }
+}
+
+/// Files that are not notes are edited with Markdown styling only if they are named like
+/// Markdown (ADR 0147).
+fn is_markdown_file(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+    })
 }
 
 fn is_draft_key(path: &Path) -> bool {
