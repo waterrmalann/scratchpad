@@ -1,0 +1,339 @@
+/* Scratchpad landing page. Colours follow the app's theme (crates/scratchpad/src/theme.rs). */
+
+:root {
+  --bg: #ffffff;
+  --surface: #f5f5f4;
+  --border: #e2e2e0;
+  --text: #1d1d1f;
+  --text-dim: #6e6e73;
+  --accent: #d99a00;
+  /* The app's amber is too light for text on white; links and markers use a darker shade. */
+  --accent-text: #8a6100;
+  --on-accent: #1d1d1f;
+  --shadow: 0 6px 28px rgba(0, 0, 0, 0.08);
+  --sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system,
+    Roboto, "Helvetica Neue", sans-serif;
+  --mono: "Cascadia Mono", Consolas, ui-monospace, "SF Mono", monospace;
+  --max-w: 760px;
+  --measure: 36rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --surface: #252527;
+    --border: #3a3a3c;
+    --text: #e8e8ea;
+    --text-dim: #98989f;
+    --accent: #f2b32a;
+    --accent-text: #f2b32a;
+    --shadow: 0 6px 28px rgba(0, 0, 0, 0.45);
+  }
+}
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+a { color: var(--accent-text); }
+
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ── Nav ── */
+
+header { border-bottom: 1px solid var(--border); }
+
+nav,
+main,
+footer {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+nav {
+  padding-block: 0.75rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 650;
+  font-size: 1.05rem;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.nav-links {
+  display: flex;
+  gap: 1.25rem;
+}
+
+.nav-links a {
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+
+.nav-links a, footer a { color: var(--text-dim); }
+.nav-links a:hover, footer a:hover { color: var(--accent-text); }
+
+/* ── Layout and type ── */
+
+section { padding: 4rem 0; }
+section + section { border-top: 1px solid var(--border); }
+
+h1, h2, h3 {
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+h1 { font-size: clamp(2rem, 6vw, 2.75rem); }
+
+h2 {
+  font-size: 1.4rem;
+  font-weight: 650;
+  margin-bottom: 1.75rem;
+}
+
+h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+p, li {
+  color: var(--text-dim);
+  max-width: var(--measure);
+}
+
+code, kbd {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* ── Hero ── */
+
+.hero { padding: 4.5rem 0 4rem; }
+
+.tagline {
+  font-size: 1.1rem;
+  margin-top: 1rem;
+  line-height: 1.7;
+}
+
+.actions {
+  margin-top: 2rem;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 0.55rem 1.15rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn.primary:hover { filter: brightness(1.08); }
+
+.btn.secondary {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.btn.secondary:hover { background: var(--border); }
+
+/* ── Screenshots ── */
+
+.screenshot { margin-top: 2.5rem; }
+
+.screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.screenshot figcaption {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* ── Features ── */
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 1rem 1.5rem;
+}
+
+/* The wide and the narrow window are equally tall, so 2fr / 1fr lines them up. */
+.shots {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.feature {
+  padding: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.feature h3 { color: var(--accent-text); }
+.feature kbd { background: var(--bg); }
+
+/* ── How it works and under the hood ── */
+
+.how ol,
+.tech ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.how ol { counter-reset: steps; }
+
+.how li, .tech li { position: relative; }
+
+.how li {
+  counter-increment: steps;
+  padding-left: 2.5rem;
+}
+
+.how li::before {
+  content: counter(steps);
+  position: absolute;
+  left: 0;
+  top: 0.1rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.tech li { padding-left: 1.25rem; }
+
+.tech li::before {
+  content: "→";
+  position: absolute;
+  left: 0;
+  color: var(--accent-text);
+}
+
+.how strong, .tech strong { color: var(--text); }
+
+/* ── Install ── */
+
+.install-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.install-card pre {
+  padding: 1.1rem 1.25rem;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.install-card pre code {
+  font-size: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  white-space: pre;
+}
+
+.cmd-comment { color: var(--text-dim); }
+
+.cmd-prompt {
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.install-note {
+  max-width: none;
+  padding: 0.85rem 1.25rem 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.875rem;
+}
+
+/* ── Footer ── */
+
+footer {
+  padding-block: 2rem 3rem;
+  border-top: 1px solid var(--border);
+}
+
+footer p { font-size: 0.85rem; }
+footer a { margin-left: 0.5rem; }
+
+.logo-sm {
+  font-weight: 650;
+  color: var(--text);
+}
+
+/* ── Small screens ── */
+
+@media (max-width: 480px) {
+  nav, main, footer { padding-inline: 1rem; }
+  .nav-links { gap: 0.9rem; }
+  .hero { padding: 2.75rem 0 2.5rem; }
+  section { padding: 2.75rem 0; }
+  .shots { grid-template-columns: 1fr; }
+  .shots .screenshot:last-child { max-width: 18rem; margin-inline: auto; }
+}

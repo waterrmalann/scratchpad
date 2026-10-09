@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scratchpad — A Fast, Native Markdown Notepad for Windows</title>
+  <meta name="description" content="Scratchpad is a fast, lightweight Notepad replacement for Windows. Notes are plain Markdown files with live preview, autosave and crash recovery. Built in Rust with GPUI.">
+  <meta property="og:title" content="Scratchpad — A fast, native Markdown notepad for Windows">
+  <meta property="og:description" content="A Notepad replacement that speaks Markdown. Plain .md files, live preview, autosave and crash recovery. Built in Rust with GPUI.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header>
+    <nav aria-label="Main">
+      <a href="#top" class="logo"><img src="favicon.svg" alt="" width="22" height="22">Scratchpad</a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/waterrmalann/scratchpad">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <h1>Notepad, with Markdown.</h1>
+      <p class="tagline">
+        A fast, native Markdown scratchpad for Windows. Your notes are plain <code>.md</code> files in
+        a folder you own; headings, lists and links take shape as you type, and every note saves itself.
+      </p>
+      <div class="actions">
+        <a href="#install" class="btn primary">Get started</a>
+        <a href="https://github.com/waterrmalann/scratchpad" class="btn secondary">View on GitHub</a>
+      </div>
+      <figure class="screenshot">
+        <picture>
+          <source srcset="screenshots/hero-dark.png" media="(prefers-color-scheme: dark)">
+          <img src="screenshots/hero-light.png" width="1602" height="1039" alt="The Scratchpad window: the note list grouped by date on the left, and a note on the right whose headings, bold and italic text, task boxes, bullets, quote and code block are styled as it is typed.">
+        </picture>
+        <figcaption>Light or dark, following your Windows setting.</figcaption>
+      </figure>
+    </section>
+
+    <section id="features">
+      <h2>Everything you reach for in Notepad, and then some</h2>
+      <div class="feature-grid">
+        <div class="feature">
+          <h3>Live preview</h3>
+          <p>Headings, emphasis, lists, task boxes, links and code are styled as you write. Markdown markers show only where the caret is; <kbd>Ctrl</kbd>+<kbd>/</kbd> shows them all.</p>
+        </div>
+        <div class="feature">
+          <h3>Saves itself</h3>
+          <p>Every note is saved a moment after you pause, at least every two seconds while you type, and whenever you switch notes or apps. <kbd>Ctrl</kbd>+<kbd>S</kbd> still works.</p>
+        </div>
+        <div class="feature">
+          <h3>Crash recovery</h3>
+          <p>Unsaved text is snapshotted while you type and offered back after a crash. If another program changes a note you are editing, you choose which version to keep.</p>
+        </div>
+        <div class="feature">
+          <h3>Search every note</h3>
+          <p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> searches the text of all your notes. A thousand notes take a few milliseconds once warm.</p>
+        </div>
+        <div class="feature">
+          <h3>Find, replace, go to line</h3>
+          <p><kbd>Ctrl</kbd>+<kbd>F</kbd> and <kbd>Ctrl</kbd>+<kbd>H</kbd> in the note, with match case and replace all. <kbd>Ctrl</kbd>+<kbd>G</kbd> jumps to a line.</p>
+        </div>
+        <div class="feature">
+          <h3>Notepad habits</h3>
+          <p>File, Edit and View menus, a status bar, word wrap, zoom from 50% to 400%, a source mode, and the Windows editing keys you already know.</p>
+        </div>
+        <div class="feature">
+          <h3>Opens any text file</h3>
+          <p><kbd>Ctrl</kbd>+<kbd>O</kbd> edits a file where it lives. <code>.txt</code> and other non-Markdown files open as plain text; Save As writes a copy and carries on there.</p>
+        </div>
+        <div class="feature">
+          <h3>Markdown shortcuts</h3>
+          <p>Bold, italic and links on <kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>I</kbd> / <kbd>K</kbd>. Lists and quotes continue on <kbd>Enter</kbd>; <kbd>Tab</kbd> nests a list item.</p>
+        </div>
+      </div>
+      <figure class="screenshot">
+        <img src="screenshots/live-preview-light.png" width="1200" height="370" loading="lazy" alt="Close-up of a note with the caret inside a bold word: only that word's ** markers are shown, while the italic text beside it stays styled without its markers.">
+        <figcaption>Markers appear only where the caret is.</figcaption>
+      </figure>
+      <div class="shots">
+        <figure class="screenshot">
+          <img src="screenshots/find-replace-dark.png" width="1602" height="1039" loading="lazy" alt="Find and replace in the dark theme: the find bar at the top right with &quot;the&quot; found 1 of 5 times and every match highlighted in the note.">
+          <figcaption>Find and replace, Notepad keys included.</figcaption>
+        </figure>
+        <figure class="screenshot">
+          <img src="screenshots/narrow-light.png" width="802" height="1039" loading="lazy" alt="Scratchpad in a narrow window in the light theme, with the note list collapsed so the note fills the window.">
+          <figcaption>In a narrow window the note list folds away.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="how">
+      <h2>Your notes are just files</h2>
+      <ol>
+        <li><strong>Press <kbd>Ctrl</kbd>+<kbd>N</kbd> and type.</strong> The first line is the title and becomes the file name.</li>
+        <li><strong>Keep them anywhere.</strong> Notes live in <code>Documents\Scratchpad</code> unless you pick another folder in Settings.</li>
+        <li><strong>Edit them with anything.</strong> Git, a sync client or another editor can change them; Scratchpad reloads a note, and never silently overwrites changes it did not make.</li>
+        <li><strong>Delete without fear.</strong> Scratchpad asks first, then moves the note to the Recycle Bin.</li>
+      </ol>
+    </section>
+
+    <section class="tech">
+      <h2>Under the hood</h2>
+      <ul>
+        <li><strong>Native, no browser.</strong> Rust and <a href="https://www.gpui.rs/">GPUI</a>, drawn on the GPU. A 7.8 MB executable and a 2.5 MB installer.</li>
+        <li><strong>Rope buffer.</strong> A keystroke in a 10 MB note takes microseconds, undo included.</li>
+        <li><strong>Incremental Markdown parsing.</strong> An edit re-parses only the blocks around it.</li>
+        <li><strong>Virtualised rendering.</strong> Only visible lines are laid out, so text appears about 4.5 ms after a keystroke (median), even in a 10 MB note.</li>
+        <li><strong>Atomic saves.</strong> Each save writes a temporary file, flushes it and renames it over the note, so a crash never leaves a half-written file.</li>
+        <li><strong>Tested and written down.</strong> Over 600 automated tests, including end-to-end tests that drive the real UI headlessly, and <a href="https://github.com/waterrmalann/scratchpad/tree/main/docs/adrs">66 decision records</a> explaining why it works the way it does.</li>
+      </ul>
+    </section>
+
+    <section id="install">
+      <h2>Get Scratchpad</h2>
+      <div class="install-card">
+        <pre><code><span class="cmd-comment"># Build and run from source</span>
+<span class="cmd-prompt">&gt;</span> git clone https://github.com/waterrmalann/scratchpad.git
+<span class="cmd-prompt">&gt;</span> cd scratchpad
+<span class="cmd-prompt">&gt;</span> cargo build --release -p scratchpad
+<span class="cmd-prompt">&gt;</span> .\target\release\scratchpad.exe
+
+<span class="cmd-comment"># Or build the installer (needs the .NET SDK)</span>
+<span class="cmd-prompt">&gt;</span> powershell -File packaging/build-installer.ps1</code></pre>
+        <p class="install-note">
+          Requires Windows 10 or 11, the Rust toolchain (MSVC) and the Windows SDK. The MSI installs for
+          your user only, without administrator rights, and uninstalling leaves your notes and settings alone.
+          There is no prebuilt download yet.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>
+      <span class="logo-sm">Scratchpad</span> — MIT license.
+      <a href="https://github.com/waterrmalann/scratchpad">GitHub</a>
+    </p>
+  </footer>
+</body>
+</html>
