@@ -4,7 +4,11 @@ use crate::buffer::{Buffer, normalize_line_endings};
 use crate::coords::{Bias, ByteOffset, to_usize_range};
 use crate::history::{Edit, EditKind, History};
 use crate::motion::{self, Motion};
+use crate::search::{self, CaseSensitivity};
 use crate::selection::{Goal, Selection};
+
+/// [`Editor::replace_all`] replaces matches fewer bytes apart than this as one edit.
+const MERGE_GAP_BYTES: usize = 1024;
 
 /// Editor state for one document: buffer, selection, goal column, undo history and IME composition. This is
 /// the source of truth the UI renders from; every mutation goes through its methods.
@@ -257,6 +261,45 @@ impl Editor {
         self.edit(range, text, EditKind::Other, None);
     }
 
+    /// Replaces every match of `query` (as [`search::find_all`] finds them in the text as it is now) with
+    /// `replacement`, taken literally, as one undo step. Returns how many were replaced.
+    ///
+    /// The cursor ends up where its text went: after the replacement if it was inside a match, else shifted
+    /// by the replacements before it. Undo brings back the selection from before.
+    pub fn replace_all(&mut self, query: &str, case: CaseSensitivity, replacement: &str) -> usize {
+        let text = self.buffer.normalized_text();
+        let matches = search::find_all(&text, query, case);
+        if matches.is_empty() {
+            return 0;
+        }
+        let replacement = normalize_line_endings(replacement);
+        let cursor = offset_after_replacing(self.selection.head, &matches, replacement.len());
+        // An edit costs about 10 µs, so 600,000 matches in a 10 MB note would take seconds one by one.
+        // Matches close together are replaced as one edit of the text from the first to the last, which
+        // bounds the edits by the length of the text and keeps the copied text between them short.
+        let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+        for found in &matches {
+            let (start, end) = (found.start.0, found.end.0);
+            match edits.last_mut() {
+                Some((range, new)) if start - range.end < MERGE_GAP_BYTES => {
+                    new.push_str(&text[range.end..start]);
+                    new.push_str(&replacement);
+                    range.end = end;
+                }
+                _ => edits.push((start..end, replacement.clone().into_owned())),
+            }
+        }
+        self.transact(|editor| {
+            // Back to front, so the ranges still to replace stay where the search found them.
+            for (range, new) in edits.iter().rev() {
+                let range = ByteOffset(range.start)..ByteOffset(range.end);
+                editor.edit(range, new, EditKind::Other, None);
+            }
+            editor.set_selection(Selection::cursor(cursor));
+        });
+        matches.len()
+    }
+
     /// The range of the in-progress IME composition, if any.
     pub fn marked_range(&self) -> Option<Range<ByteOffset>> {
         self.marked.clone()
@@ -375,6 +418,23 @@ impl Editor {
             inserted: text,
         };
         self.history.record(edit, kind, before, self.selection);
+    }
+}
+
+/// Where `offset` is once each of the sorted `matches` is replaced by `replacement_len` bytes. An offset inside
+/// a match goes after its replacement.
+fn offset_after_replacing(
+    offset: ByteOffset,
+    matches: &[Range<ByteOffset>],
+    replacement_len: usize,
+) -> ByteOffset {
+    let before = matches.partition_point(|m| m.end <= offset);
+    let removed: usize = matches[..before].iter().map(|m| m.end.0 - m.start.0).sum();
+    match matches.get(before) {
+        Some(m) if m.start < offset => {
+            ByteOffset(m.start.0 - removed + (before + 1) * replacement_len)
+        }
+        _ => ByteOffset(offset.0 - removed + before * replacement_len),
     }
 }
 

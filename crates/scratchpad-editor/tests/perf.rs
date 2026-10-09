@@ -140,6 +140,33 @@ fn keeping_a_million_find_matches_in_step_with_a_keystroke() {
 
 #[test]
 #[cfg_attr(debug_assertions, ignore = "timing limits are for release builds")]
+fn replace_all_in_a_10mb_note() {
+    // Measured 100-130 ms each, including loading the note and undoing; see `Editor::replace_all`. The
+    // last query is the slowest case for it: matches just too far apart to be replaced together.
+    let text = markdown(10 * MB);
+    let sparse = format!("needle {}\n", "filler ".repeat(150)).repeat(10 * MB / 1058);
+    for (text, query, replacement) in [
+        (&text, "e", "E"),
+        (&text, "prose", "text"),
+        (&text, "é", "e\u{301}"),
+        (&sparse, "needle", "pin"),
+    ] {
+        let mut replaced = 0;
+        let time = median(3, || {
+            let mut editor = Editor::from_text(text);
+            replaced = editor.replace_all(query, CaseSensitivity::Insensitive, replacement);
+            assert!(editor.undo());
+        });
+        assert_under(
+            &format!("replacing {replaced} matches of {query:?}"),
+            time,
+            Duration::from_secs(2),
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing limits are for release builds")]
 fn shift_tab_on_a_whole_long_list() {
     // Each item's parent used to be looked up through every line above it: 8 s for 4,000 items.
     let list: String = (0..5_000).map(|i| format!("  - item {i}\n")).collect();
