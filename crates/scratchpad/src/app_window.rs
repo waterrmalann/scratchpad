@@ -14,6 +14,7 @@ use crate::app::Storage;
 use crate::editor_pane::EditorPane;
 use crate::editor_view::EditorView;
 use crate::find_bar::{FindInNote, ReplaceInNote};
+use crate::go_to_line::GoToLine;
 use crate::notes::{Notes, NotesLocation, Selection, folder_name};
 use crate::session::Session;
 use crate::settings_panel::{SettingsPanel, SettingsPanelEvent};
@@ -250,6 +251,11 @@ impl AppWindow {
             .update(cx, |pane, cx| pane.replace(window, cx));
     }
 
+    fn go_to_line(&mut self, _: &GoToLine, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_pane
+            .update(cx, |pane, cx| pane.go_to_line(window, cx));
+    }
+
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
         self.save_all(cx);
         window.remove_window();
@@ -476,6 +482,7 @@ impl Render for AppWindow {
             .on_action(cx.listener(Self::search_notes))
             .on_action(cx.listener(Self::find_in_note))
             .on_action(cx.listener(Self::replace_in_note))
+            .on_action(cx.listener(Self::go_to_line))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_status_bar))

@@ -615,6 +615,15 @@ impl EditorView {
         self.selection_changed(cx);
     }
 
+    /// Go to line (ADR 0141): puts the cursor at the start of logical `line` (0-based, clamped to
+    /// the last line) and the line in the middle of the view, unless it is well in view already.
+    pub fn go_to_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        let start = self.editor.buffer().line_start(line);
+        self.editor.move_to(start, false);
+        self.autoscroll = Some(Autoscroll::Center);
+        self.selection_changed(cx);
+    }
+
     fn select_all(&mut self, cx: &mut Context<Self>) {
         self.editor.select_all();
         self.selection_changed(cx);

@@ -66,3 +66,4 @@ with every new ADR.
 | [0136](0136-confirm-before-deleting-a-note.md) | Confirm before deleting a note | Accepted |
 | [0137](0137-notepad-style-status-bar.md) | A Notepad-style status bar | Accepted |
 | [0140](0140-replace-in-the-find-bar.md) | Replace in the find bar | Accepted |
+| [0141](0141-go-to-line.md) | Go to line | Accepted |

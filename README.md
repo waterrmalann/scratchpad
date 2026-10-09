@@ -13,6 +13,7 @@ Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Sh
 | Ctrl+\ | Show or hide the note list (in a narrow window it floats over the note) |
 | Ctrl+F | Find in the note; Enter / F3 next, Shift+Enter / Shift+F3 previous, Alt+C match case, Esc close |
 | Ctrl+H | Replace in the note; Enter replace, Ctrl+Alt+Enter / Alt+A replace all, Tab next field |
+| Ctrl+G | Go to line |
 | Ctrl+Z / Ctrl+Y, Ctrl+Shift+Z | Undo / redo |
 | Ctrl+B, Ctrl+I, Ctrl+Shift+X, Ctrl+E | Bold, italic, strikethrough, inline code (again at the end of the text: carry on unformatted) |
 | Ctrl+K | Link |

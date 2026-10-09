@@ -5,6 +5,7 @@ use gpui::{
 
 use crate::editor_view::{Direction, EditorView};
 use crate::find_bar::{CloseFind, FindBar, FindNext, FindPrevious};
+use crate::go_to_line::{Dismissed, GoToLineBox};
 use crate::session::{Choice, Notice, Session};
 use crate::settings;
 use crate::sidebar::sidebar_toggle_button;
@@ -13,15 +14,17 @@ use crate::theme::ActiveTheme;
 
 /// Hosts the editor for the open note (PLAN §42), with a bar above it for decisions about the
 /// note: a conflict with another program, a deleted file, unreadable characters, or text
-/// recovered after a crash. The find bar floats over the editor's top right corner and, while
-/// the sidebar is hidden, the button that shows it over the top left one. The status bar runs
-/// along the bottom unless the user hid it.
+/// recovered after a crash. The find bar floats over the editor's top right corner, Go to line
+/// over its top centre and, while the sidebar is hidden, the button that shows it over the top
+/// left one. The status bar runs along the bottom unless the user hid it.
 pub struct EditorPane {
     editor: Entity<EditorView>,
     session: Entity<Session>,
     find_bar: Entity<FindBar>,
     status_bar: Entity<StatusBar>,
     sidebar_button: bool,
+    /// Go to line, while it asks for a line number.
+    go_to_line: Option<(Entity<GoToLineBox>, Subscription)>,
     _session_changed: Subscription,
 }
 
@@ -36,6 +39,7 @@ impl EditorPane {
             _session_changed: cx.observe(&session, |_, _, cx| cx.notify()),
             find_bar: cx.new(|cx| FindBar::new(editor.clone(), window, cx)),
             status_bar: cx.new(|cx| StatusBar::new(editor.clone(), session.clone(), cx)),
+            go_to_line: None,
             editor,
             session,
             sidebar_button: false,
@@ -71,6 +75,22 @@ impl EditorPane {
     pub fn replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find_bar
             .update(cx, |bar, cx| bar.open_replace(window, cx));
+    }
+
+    /// The Go to line box, while it is shown.
+    pub fn go_to_line_box(&self) -> Option<&Entity<GoToLineBox>> {
+        self.go_to_line.as_ref().map(|(go_to_line, _)| go_to_line)
+    }
+
+    /// Ctrl+G: asks for a line number, starting afresh from the cursor's line if already asking.
+    pub fn go_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let go_to_line = cx.new(|cx| GoToLineBox::new(self.editor.clone(), window, cx));
+        let dismissed = cx.subscribe(&go_to_line, |this, _, _: &Dismissed, cx| {
+            this.go_to_line = None;
+            cx.notify();
+        });
+        self.go_to_line = Some((go_to_line, dismissed));
+        cx.notify();
     }
 
     fn select_match(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
@@ -178,6 +198,7 @@ impl Render for EditorPane {
             .read(cx)
             .is_open()
             .then(|| self.find_bar.clone());
+        let go_to_line = self.go_to_line_box().cloned();
         div()
             .debug_selector(|| "editor-pane".into())
             .on_action(cx.listener(|this, _: &FindNext, window, cx| {
@@ -219,6 +240,17 @@ impl Render for EditorPane {
                             .flex()
                             .justify_end()
                             .child(bar)
+                    }))
+                    .children(go_to_line.map(|go_to_line| {
+                        div()
+                            .absolute()
+                            .top(px(8.))
+                            .left_0()
+                            .right_0()
+                            .flex()
+                            .justify_center()
+                            .px_2()
+                            .child(go_to_line)
                     })),
             )
             .when(!settings::get(cx).status_bar_hidden, |pane| {
