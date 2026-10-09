@@ -430,7 +430,14 @@ impl Element for EditorElement {
         self.register_mouse_listeners(state, window);
 
         let frame = &state.frame;
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        // Unwrapped lines stop at the scrollbar's track instead of running under its thumb.
+        let text = ContentMask {
+            bounds: Bounds::from_corners(
+                bounds.origin,
+                point(bounds.right() - SCROLLBAR_TRACK_WIDTH, bounds.bottom()),
+            ),
+        };
+        window.with_content_mask(Some(text), |window| {
             for block in &frame.code_blocks {
                 window.paint_quad(
                     fill(*block, frame.colors.code_block).corner_radii(CODE_BLOCK_RADIUS),
@@ -454,13 +461,13 @@ impl Element for EditorElement {
             if let Some(cursor) = frame.cursor.filter(|_| show_caret) {
                 window.paint_quad(fill(cursor, frame.colors.caret));
             }
-            if let Some(scrollbar) = &frame.scrollbar {
-                window.paint_quad(
-                    fill(scrollbar.thumb, frame.colors.scrollbar)
-                        .corner_radii(SCROLLBAR_THUMB_WIDTH / 2.),
-                );
-            }
         });
+        if let Some(scrollbar) = &frame.scrollbar {
+            window.paint_quad(
+                fill(scrollbar.thumb, frame.colors.scrollbar)
+                    .corner_radii(SCROLLBAR_THUMB_WIDTH / 2.),
+            );
+        }
 
         // Typing latency budget (PLAN §37): `latency` runs from the input event to here, including
         // the wait for the frame; `frame` is the editor's own layout and paint time.
