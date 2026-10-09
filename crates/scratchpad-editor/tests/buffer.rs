@@ -150,6 +150,19 @@ fn offsets_snap_to_grapheme_clusters() {
     );
 }
 
+#[test]
+fn chars_are_counted_as_scalar_values() {
+    // "e" + combining acute is one grapheme of two chars; the emoji is one char of four bytes;
+    // the CRLF is one line break.
+    let buffer = Buffer::from_text("e\u{301}😀\r\nx");
+    assert_eq!(buffer.char_count(), 5);
+    assert_eq!(buffer.char_count_in(ByteOffset(0)..ByteOffset(3)), 2);
+    assert_eq!(buffer.char_count_in(ByteOffset(3)..ByteOffset(7)), 1);
+    // Clamped to the buffer, rounded down to chars, and empty when inverted.
+    assert_eq!(buffer.char_count_in(ByteOffset(5)..ByteOffset(99)), 3);
+    assert_eq!(buffer.char_count_in(ByteOffset(7)..ByteOffset(3)), 0);
+}
+
 fn line_break() -> impl Strategy<Value = &'static str> {
     prop_oneof![Just("\n"), Just("\r\n"), Just("\r")]
 }
@@ -193,5 +206,26 @@ proptest! {
         let reloaded = Buffer::from_text(&saved);
         prop_assert_eq!(reloaded.normalized_text(), buffer.normalized_text());
         prop_assert_eq!(reloaded.to_text(), saved);
+    }
+
+    /// Counting chars through the rope's index agrees with counting them in the text.
+    #[test]
+    fn char_counts_match_the_text(
+        text in any::<String>(),
+        a in any::<prop::sample::Index>(),
+        b in any::<prop::sample::Index>(),
+    ) {
+        let buffer = Buffer::from_text(&text);
+        let normalized = buffer.normalized_text();
+        let boundaries: Vec<usize> =
+            normalized.char_indices().map(|(i, _)| i).chain([normalized.len()]).collect();
+        let (a, b) = (*a.get(&boundaries), *b.get(&boundaries));
+        let (start, end) = (a.min(b), a.max(b));
+
+        prop_assert_eq!(buffer.char_count(), normalized.chars().count());
+        prop_assert_eq!(
+            buffer.char_count_in(ByteOffset(start)..ByteOffset(end)),
+            normalized[start..end].chars().count()
+        );
     }
 }

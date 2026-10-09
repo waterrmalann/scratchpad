@@ -111,6 +111,19 @@ impl Buffer {
         ByteOffset(self.len())
     }
 
+    /// Number of chars (Unicode scalar values); a line break counts as one. Constant time.
+    pub fn char_count(&self) -> usize {
+        self.rope.len_chars()
+    }
+
+    /// Number of chars in `range`, which is clamped to the buffer and rounded to char boundaries.
+    /// Logarithmic in the buffer's length, whatever the range's.
+    pub fn char_count_in(&self, range: Range<ByteOffset>) -> usize {
+        // `byte_to_char` gives the char a byte is in: rounding down.
+        let char_at = |offset: ByteOffset| self.rope.byte_to_char(offset.0.min(self.len()));
+        char_at(range.end).saturating_sub(char_at(range.start))
+    }
+
     /// Number of lines. Always at least 1; text ending in `\n` has an empty last line.
     pub fn line_count(&self) -> usize {
         self.rope.len_lines()
