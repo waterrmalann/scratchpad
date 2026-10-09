@@ -107,6 +107,28 @@ fn line_endings_and_encoding_are_those_the_note_is_saved_with(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn the_zoom_level_comes_first_on_the_right_and_follows_the_zoom(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_note(dir.path(), "Note", "one\r\ntwo", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let right = |cx: &mut VisualTestContext| {
+        let status = status(&root, cx);
+        format!(
+            "{} | {} | {}",
+            status.zoom, status.line_ending, status.encoding
+        )
+    };
+    assert_eq!(right(cx), "100% | Windows (CRLF) | UTF-8");
+
+    cx.simulate_keystrokes("ctrl-= ctrl-=");
+    assert_eq!(right(cx), "120% | Windows (CRLF) | UTF-8");
+    cx.simulate_keystrokes("ctrl--");
+    assert_eq!(status(&root, cx).zoom, "110%");
+    cx.simulate_keystrokes("ctrl-0");
+    assert_eq!(status(&root, cx).zoom, "100%");
+}
+
+#[gpui::test]
 fn the_status_bar_can_be_hidden_and_it_is_remembered(cx: &mut TestAppContext) {
     let notes_dir = tempfile::tempdir().unwrap();
     let data_dir = tempfile::tempdir().unwrap();

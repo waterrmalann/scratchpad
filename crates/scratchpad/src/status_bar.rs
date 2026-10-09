@@ -1,8 +1,9 @@
 //! The status bar under the note, as in Notepad: where the caret is and how many characters
-//! the note has on the left, its line endings and encoding on the right. See ADR 0137.
+//! the note has on the left; the zoom level, line endings and encoding on the right. See
+//! ADR 0137.
 
 use gpui::{Context, Entity, IntoElement, Pixels, Subscription, Window, div, prelude::*, px};
-use scratchpad_editor::{Editor, LineEnding};
+use scratchpad_editor::LineEnding;
 
 use crate::editor_view::EditorView;
 use crate::session::{Notice, Session};
@@ -19,6 +20,8 @@ pub struct Status {
     /// `2,421 characters`, or `12 of 2,421 characters` while text is selected. A line break
     /// counts as one character.
     pub characters: String,
+    /// The note's text size, `100%` when not zoomed (ADR 0131).
+    pub zoom: String,
     /// The line breaks the note is saved with: `Windows (CRLF)` or `Unix (LF)`.
     pub line_ending: &'static str,
     /// `UTF-8`, what notes are saved in, or `Not UTF-8` while a note that is not valid UTF-8 is
@@ -28,7 +31,9 @@ pub struct Status {
 
 impl Status {
     /// Counts with the rope's indexes, so a keystroke costs the same in a note of any length.
-    fn of(editor: &Editor, not_utf8: bool) -> Self {
+    fn of(editor: &EditorView, not_utf8: bool) -> Self {
+        let zoom = editor.zoom_percent();
+        let editor = editor.editor();
         let buffer = editor.buffer();
         let head = editor.selection().head;
         let line = buffer.line_of(head);
@@ -55,6 +60,7 @@ impl Status {
                     with_separators(total)
                 )
             },
+            zoom: format!("{zoom}%"),
             line_ending: match buffer.line_ending() {
                 LineEnding::Crlf => "Windows (CRLF)",
                 LineEnding::Lf => "Unix (LF)",
@@ -104,7 +110,7 @@ impl StatusBar {
                 this.refresh(cx);
             }),
         ];
-        let status = Status::of(editor.read(cx).editor(), false);
+        let status = Status::of(editor.read(cx), false);
         Self {
             editor,
             not_utf8: false,
@@ -118,7 +124,7 @@ impl StatusBar {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        let status = Status::of(self.editor.read(cx).editor(), self.not_utf8);
+        let status = Status::of(self.editor.read(cx), self.not_utf8);
         if status != self.status {
             self.status = status;
             cx.notify();
@@ -153,7 +159,8 @@ impl Render for StatusBar {
             .child(divider(theme))
             .child(status.characters.clone())
             .child(div().flex_1())
-            // The zoom level (e.g. "100%") goes here, before the line endings, as in Notepad.
+            .child(status.zoom.clone())
+            .child(divider(theme))
             .child(status.line_ending)
             .child(divider(theme))
             .child(status.encoding)
