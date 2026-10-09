@@ -34,13 +34,12 @@ use scroll::{LineHeights, ScrollAnchor, Viewport};
 
 /// Caret on/off period (PLAN §24).
 const BLINK_INTERVAL: Duration = Duration::from_millis(530);
-/// The text column never gets wider than this; wider panes centre it. Around 85 characters of body
-/// text, a comfortable measure for prose.
-const MAX_TEXT_WIDTH: Pixels = px(680.);
-const MIN_SIDE_PADDING: Pixels = px(32.);
-/// The most a heading's `#`s hang left of the text column: enough for `###### ` at body size.
-/// Wider margins than this do not change the layout, so resizing a wide window re-shapes nothing.
-const MAX_HANG: Pixels = px(64.);
+/// Space left of the text, in multiples of the font size: room for a heading's `#`s to hang in
+/// (ADR 0070, 0130). `### ` at the H3 size is about 2.56 em of body text in Segoe UI semibold;
+/// deeper headings move their text by what does not fit.
+const LEFT_PADDING_EMS: f32 = 2.8;
+/// Space right of the text, clear of the scrollbar.
+const RIGHT_PADDING: Pixels = px(24.);
 const TOP_PADDING: Pixels = px(32.);
 /// Rows kept between the cursor and the viewport edge when the view scrolls to the cursor.
 const AUTOSCROLL_MARGIN_ROWS: f32 = 2.;
@@ -147,7 +146,8 @@ impl EditorView {
             this.editor.break_undo_group();
         })];
         let mono_family = SharedString::from(typography::mono_font_family(cx));
-        let base_style = base_style(cx, MAX_TEXT_WIDTH, MAX_HANG, &mono_family);
+        // Replaced by the first layout, which knows the width.
+        let base_style = base_style(cx, typography::BODY_FONT_SIZE, px(0.), &mono_family);
         let (editor, markdown) = open_document(text);
         Self {
             editor,
@@ -426,7 +426,7 @@ impl EditorView {
     /// Above or below the text, the first or last line.
     fn line_at(&mut self, position: Point<Pixels>, window: &Window) -> Option<LineHit> {
         let bounds = self.bounds?;
-        let (left, _) = text_column(bounds);
+        let (left, _) = text_column(bounds, typography::BODY_FONT_SIZE);
         let (mut lines, scroll) = self.lines(window);
         let (line, y) = scroll.line_at(position.y - bounds.top(), &mut lines);
         Some(LineHit {
@@ -1014,7 +1014,7 @@ impl EntityInputHandler for EditorView {
     ) -> Option<Bounds<Pixels>> {
         let range = self.range_from_utf16(&range_utf16);
         let bounds = self.bounds?;
-        let (left, _) = text_column(bounds);
+        let (left, _) = text_column(bounds, typography::BODY_FONT_SIZE);
         let vp = self.viewport();
         let (mut lines, scroll) = self.lines(window);
         let buffer = lines.buffer;
@@ -1226,22 +1226,16 @@ struct LineHit {
     position: Point<Pixels>,
 }
 
-/// `hang_room` is the margin left of the text column, up to [`MAX_HANG`].
-fn base_style(
-    cx: &App,
-    wrap_width: Pixels,
-    hang_room: Pixels,
-    mono_family: &SharedString,
-) -> BaseStyle {
-    let font_size = typography::BODY_FONT_SIZE;
+/// The style of body text at `font_size` in a text column `width` wide.
+fn base_style(cx: &App, font_size: Pixels, width: Pixels, mono_family: &SharedString) -> BaseStyle {
     BaseStyle {
         font: font(typography::BODY_FONT_FAMILY),
         mono_family: mono_family.clone(),
         font_size,
         line_height: font_size * typography::BODY_LINE_HEIGHT,
         theme: cx.theme().clone(),
-        wrap_width,
-        hang_room: hang_room.min(MAX_HANG),
+        wrap_width: width,
+        hang_room: left_padding(font_size),
     }
 }
 
@@ -1276,13 +1270,17 @@ fn viewport(bounds: Option<Bounds<Pixels>>) -> Viewport {
     }
 }
 
-/// Left edge and width of the centred text column inside the editor's bounds.
-fn text_column(bounds: Bounds<Pixels>) -> (Pixels, Pixels) {
-    let width = (bounds.size.width - MIN_SIDE_PADDING * 2.)
-        .min(MAX_TEXT_WIDTH)
-        .max(px(1.));
-    let left = bounds.left() + ((bounds.size.width - width) / 2.).floor();
-    (left, width)
+/// Left edge and width of the text column inside the editor's bounds, for body text at
+/// `font_size`. Like Notepad, the text uses the whole width of the window.
+fn text_column(bounds: Bounds<Pixels>, font_size: Pixels) -> (Pixels, Pixels) {
+    let left_padding = left_padding(font_size);
+    let width = (bounds.size.width - left_padding - RIGHT_PADDING).max(px(1.));
+    (bounds.left() + left_padding, width)
+}
+
+/// Space left of the text column, where heading markers hang.
+fn left_padding(font_size: Pixels) -> Pixels {
+    (font_size * LEFT_PADDING_EMS).round()
 }
 
 /// Windows apps expect CRLF line breaks on the clipboard; the engine uses LF (ADR 0003). Pasted

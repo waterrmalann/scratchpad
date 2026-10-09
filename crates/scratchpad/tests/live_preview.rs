@@ -127,7 +127,7 @@ fn a_typed_heading_is_set_large_and_its_marker_hangs_in_the_margin(cx: &mut Test
 
 #[gpui::test]
 fn heading_markers_wider_than_a_narrow_margin_are_not_cut_off(cx: &mut TestAppContext) {
-    // The narrowest window leaves the text column a 32 px margin; `###### ` is 63 px wide.
+    // The text column has a 42 px margin; `###### ` is 63 px wide.
     let (editor, cx) = open_editor(cx, "body\n###### Six");
     cx.simulate_resize(size(px(560.), px(400.)));
     cx.simulate_keystrokes("ctrl-end");
@@ -239,25 +239,25 @@ fn double_and_triple_clicks_select_around_the_first_click_although_it_revealed_m
 
 #[gpui::test]
 fn end_stays_on_its_row_when_the_row_ends_in_hidden_markers(cx: &mut TestAppContext) {
-    // 75 characters fit in a row. Displayed, the first row is 14 × "word " and "abc "; with the
+    // 86 characters fit in a row. Displayed, the first row is 16 × "word " and "abc "; with the
     // cursor touching it, "**abc**" no longer fits and moves to the second row.
-    let line = format!("{}**abc** tail tail tail", "word ".repeat(14));
+    let line = format!("{}**abc** tail tail tail", "word ".repeat(16));
     let (editor, cx) = open_editor(cx, &format!("{line}\nnext"));
     let first_row_top = bounds(&editor, 0..0, cx).top();
 
     cx.simulate_keystrokes("ctrl-home end");
     assert_eq!(
         cursor(&editor, cx),
-        69,
+        79,
         "after the last word left on the row"
     );
-    assert_eq!(bounds(&editor, 69..69, cx).top(), first_row_top);
+    assert_eq!(bounds(&editor, 79..79, cx).top(), first_row_top);
     cx.simulate_keystrokes("end");
-    assert_eq!(cursor(&editor, cx), 69, "End again stays");
+    assert_eq!(cursor(&editor, cx), 79, "End again stays");
 
     cx.simulate_keystrokes("ctrl-home shift-end");
     let selected = editor.read_with(cx, |editor, _| editor.editor().selection().range());
-    assert_eq!(selected.start.0..selected.end.0, 0..69);
+    assert_eq!(selected.start.0..selected.end.0, 0..79);
 }
 
 #[gpui::test]

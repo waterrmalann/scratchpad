@@ -1,7 +1,8 @@
 //! End-to-end tests of the editor view, driven through the real main window like a user would.
 //!
 //! The test platform shapes every BMP char 0.6 em wide: 9 px at the 15 px body size. The window is
-//! 1100 × 720, so the editor pane is 840 px wide and the text column 680 px (75 chars per row).
+//! 1100 × 720, so the editor pane is 840 px wide and the text column 774 px: rows of "word " break
+//! after 17 words (85 chars).
 
 mod common;
 
@@ -18,7 +19,7 @@ use gpui::{
 use scratchpad::editor_view::{EditorEvent, EditorView};
 
 const ADVANCE: f32 = 9.;
-const CHARS_PER_ROW: usize = 75;
+const CHARS_PER_ROW: usize = 85;
 
 fn open_editor<'a>(
     cx: &'a mut TestAppContext,
@@ -362,7 +363,7 @@ fn ime_queries_answer_in_utf16(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn ime_bounds_of_a_range_cover_its_first_row(cx: &mut TestAppContext) {
-    // Row 0 is "word " × 15 (75 chars); the line wraps after its last space.
+    // Row 0 is "word " × 17 (85 chars); the line wraps after its last space.
     let (editor, cx) = open_editor(cx, &format!("{}\nab\ncd", "word ".repeat(20)));
     let bounds = |range: Range<usize>, cx: &mut VisualTestContext| {
         editor.update_in(cx, |editor, window, cx| {
@@ -371,8 +372,8 @@ fn ime_bounds_of_a_range_cover_its_first_row(cx: &mut TestAppContext) {
     };
     let origin = char_bounds(&editor, 0, cx).origin;
 
-    let across_rows = bounds(70..80, cx).unwrap();
-    assert_eq!(across_rows.left() - origin.x, px(70. * ADVANCE));
+    let across_rows = bounds(80..90, cx).unwrap();
+    assert_eq!(across_rows.left() - origin.x, px(80. * ADVANCE));
     assert_eq!(
         across_rows.size.width,
         px(5. * ADVANCE),
@@ -441,7 +442,7 @@ fn ime_queries_never_panic_inside_graphemes_or_out_of_bounds(cx: &mut TestAppCon
                 let bounds = editor
                     .bounds_for_range(start..end, Bounds::default(), window, cx)
                     .expect("the whole document is visible");
-                assert!(bounds.left() >= origin.x && bounds.right() <= origin.x + px(680.));
+                assert!(bounds.left() >= origin.x && bounds.right() <= origin.x + px(774.));
                 let mut adjusted = None;
                 editor.text_for_range(start..end, &mut adjusted, window, cx);
             }
@@ -673,8 +674,8 @@ fn layouts_follow_edits_and_renumbered_lines(cx: &mut TestAppContext) {
 
     // A new first line moves the long line to line 2; its two-row layout must move with it.
     cx.simulate_keystrokes("ctrl-home enter");
-    let column_80 = 1 + "ab123\n".len() + 80;
-    let position = char_bounds(&editor, column_80, cx).origin;
+    let column_90 = 1 + "ab123\n".len() + 90;
+    let position = char_bounds(&editor, column_90, cx).origin;
     assert_eq!(position - origin, point(px(5. * ADVANCE), row * 3.));
 }
 

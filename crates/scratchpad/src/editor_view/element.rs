@@ -15,7 +15,7 @@ use scratchpad_editor::ByteOffset;
 use super::line_layout::LineLayout;
 use super::scroll::{LineHeights, ScrollAnchor};
 use super::{AUTOSCROLL_MARGIN_ROWS, Autoscroll, EditorView, base_style, text_column};
-use crate::theme::ActiveTheme;
+use crate::theme::{ActiveTheme, typography};
 
 /// Lines shaped beyond each edge of the viewport so that they are ready when scrolled in.
 const OVERSCAN_LINES: usize = 4;
@@ -95,10 +95,10 @@ impl EditorView {
     /// Scrolls as requested, shapes the visible lines and computes everything paint needs.
     fn layout_frame(&mut self, bounds: Bounds<Pixels>, window: &Window, cx: &App) -> Frame {
         self.bounds = Some(bounds);
-        let (left, width) = text_column(bounds);
-        let margin = left - bounds.left();
+        let font_size = typography::BODY_FONT_SIZE;
+        let (left, width) = text_column(bounds, font_size);
         self.layouts
-            .set_style(base_style(cx, width, margin, &self.mono_family));
+            .set_style(base_style(cx, font_size, width, &self.mono_family));
         let vp = self.viewport();
         let margin = self.layouts.style().line_height * AUTOSCROLL_MARGIN_ROWS;
         let selection = self.editor.selection();

@@ -1,6 +1,6 @@
 # 0070. Markdown typography in the editor view
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted; the margin headings hang in amended by ADR 0130
 
 ## Context
 "Markdown looks excellent" is a V1 criterion, with restraint: one coherent document, not a code editor

@@ -1,6 +1,6 @@
 # 0031. Soft wrapping and navigation by visual rows
 Date: 2026-10-08
-Status: Accepted; Tab on list items amended by ADR 0126
+Status: Accepted; Tab on list items amended by ADR 0126, the text column by ADR 0130
 
 ## Context
 Word wrap is on by default (PLAN §26) and Scratchpad is for prose, not code (PLAN §27). GPUI's own wrapper
