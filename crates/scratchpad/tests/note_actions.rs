@@ -3,8 +3,11 @@
 mod common;
 
 use std::fs;
+use std::path::Path;
 
-use common::{EventLog, click, days_ago, double_click, right_click, titles_on_disk, write_note};
+use common::{
+    EventLog, answer_prompt, click, days_ago, double_click, right_click, titles_on_disk, write_note,
+};
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use scratchpad::notes::{Notes, NotesEvent, Selection};
 use scratchpad::toast;
@@ -110,6 +113,7 @@ fn deleting_the_open_note_moves_it_to_the_trash_and_opens_its_neighbour(cx: &mut
     let events = EventLog::new(&notes, cx);
     right_click("note:Middle", cx);
     click("menu:Delete", cx);
+    answer_prompt("Delete", cx);
 
     assert_eq!(titles_on_disk(dir.path()), ["First", "Last"]);
     assert_eq!(titles_on_disk(&common::trash_dir(dir.path())), ["Middle"]);
@@ -125,6 +129,7 @@ fn deleting_the_open_note_moves_it_to_the_trash_and_opens_its_neighbour(cx: &mut
     // At the end of the list, the note above takes its place.
     right_click("note:Last", cx);
     click("menu:Delete", cx);
+    answer_prompt("Delete", cx);
     assert_eq!(
         events.take(),
         [
@@ -139,6 +144,7 @@ fn deleting_the_open_note_moves_it_to_the_trash_and_opens_its_neighbour(cx: &mut
     cx.run_until_parked();
     right_click("note:Other", cx);
     click("menu:Delete", cx);
+    answer_prompt("Delete", cx);
     assert_eq!(
         events.take(),
         [NotesEvent::Deleted(dir.path().join("Other.md"))]
@@ -225,6 +231,7 @@ fn failed_file_operations_show_a_toast_and_keep_the_app_running(cx: &mut TestApp
 
     right_click("note:Ideas", cx);
     click("menu:Delete", cx);
+    answer_prompt("Delete", cx);
     let message = toast_message(cx).expect("delete error shown");
     assert!(
         message.starts_with("Could not delete \"Ideas\". "),
@@ -244,8 +251,110 @@ fn right_clicking_the_note_being_renamed_acts_on_its_new_name(cx: &mut TestAppCo
     // Opening the menu takes focus from the title, which commits the rename.
     right_click("note:Ideas", cx);
     click("menu:Delete", cx);
+    answer_prompt("Delete", cx);
 
     assert_eq!(toast_message(cx), None);
     assert_eq!(titles_on_disk(dir.path()), ["Meeting"]);
     assert_eq!(titles_on_disk(&common::trash_dir(dir.path())), ["Plans"]);
+}
+
+#[gpui::test]
+fn delete_asks_first_and_cancel_keeps_the_note(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_note(dir.path(), "Ideas", "", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let events = EventLog::new(&common::notes(&root, cx), cx);
+
+    right_click("note:Ideas", cx);
+    click("menu:Delete", cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            "Delete \"Ideas\"?".to_owned(),
+            "The note will be moved to the Recycle Bin.".to_owned()
+        ))
+    );
+    // Nothing happens until the user answers.
+    assert_eq!(titles_on_disk(dir.path()), ["Ideas"]);
+
+    answer_prompt("Cancel", cx);
+    assert_eq!(titles_on_disk(dir.path()), ["Ideas"]);
+    assert_eq!(events.take(), []);
+
+    // Asking again works after a cancel.
+    right_click("note:Ideas", cx);
+    click("menu:Delete", cx);
+    answer_prompt("Delete", cx);
+    assert!(titles_on_disk(dir.path()).is_empty());
+    assert_eq!(titles_on_disk(&common::trash_dir(dir.path())), ["Ideas"]);
+}
+
+#[gpui::test]
+fn a_rename_while_asking_deletes_the_same_note_under_its_new_name(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "", days_ago(0, 10));
+    let meeting = write_note(dir.path(), "Meeting", "", days_ago(0, 9));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let notes = common::notes(&root, cx);
+    let rename = |path: &Path, title: &str, cx: &mut VisualTestContext| {
+        notes
+            .update(cx, |notes, cx| notes.rename(path, title, cx))
+            .unwrap();
+    };
+
+    right_click("note:Ideas", cx);
+    click("menu:Delete", cx);
+    // While the dialog is open the note is renamed (e.g. its title line was edited), and
+    // another note takes its old name.
+    rename(&ideas, "Plans", cx);
+    rename(&meeting, "Ideas", cx);
+    answer_prompt("Delete", cx);
+
+    assert_eq!(titles_on_disk(dir.path()), ["Ideas"]);
+    assert_eq!(titles_on_disk(&common::trash_dir(dir.path())), ["Plans"]);
+}
+
+#[gpui::test]
+fn a_note_deleted_while_asking_is_left_alone(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let notes = common::notes(&root, cx);
+
+    right_click("note:Ideas", cx);
+    click("menu:Delete", cx);
+    // Deleted another way while the dialog is open; then a new note gets the same name.
+    notes
+        .update(cx, |notes, cx| notes.delete(&ideas, cx))
+        .unwrap();
+    write_note(dir.path(), "Ideas", "new", days_ago(0, 11));
+    answer_prompt("Delete", cx);
+
+    assert_eq!(toast_message(cx), None);
+    assert_eq!(titles_on_disk(dir.path()), ["Ideas"]);
+}
+
+#[gpui::test]
+fn a_note_removed_by_another_program_while_asking_is_left_alone(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ideas = write_note(dir.path(), "Ideas", "", days_ago(0, 10));
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let notes = common::notes(&root, cx);
+    let refresh = |cx: &mut VisualTestContext| {
+        notes.update(cx, |notes, cx| notes.refresh(cx));
+        cx.run_until_parked();
+    };
+
+    right_click("note:Ideas", cx);
+    click("menu:Delete", cx);
+    // While the dialog is open another program removes the file, the list catches up, and
+    // later a different note is written under the same name.
+    fs::remove_file(&ideas).unwrap();
+    refresh(cx);
+    write_note(dir.path(), "Ideas", "someone else's", days_ago(0, 11));
+    refresh(cx);
+    answer_prompt("Delete", cx);
+
+    assert_eq!(fs::read_to_string(&ideas).unwrap(), "someone else's");
+    assert_eq!(toast_message(cx), None);
 }

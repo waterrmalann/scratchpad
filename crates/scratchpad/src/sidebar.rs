@@ -3,7 +3,8 @@
 //!
 //! Click opens a note, double-click renames it in place, right-click shows Rename / Delete /
 //! Show in Folder. With the list focused, Up/Down open the previous/next note, Enter moves
-//! into the note, F2 renames and Delete deletes it. Dragging the right edge resizes it.
+//! into the note, F2 renames and Delete deletes it after asking. Dragging the right edge
+//! resizes it.
 
 use std::io;
 use std::ops::Range;
@@ -16,13 +17,14 @@ use chrono::{DateTime, Datelike, Local, NaiveDate};
 use gpui::{
     AnyElement, App, ClickEvent, Context, CursorStyle, Div, DragMoveEvent, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle, Hsla, KeyDownEvent,
-    MouseButton, MouseDownEvent, Pixels, Point, ScrollStrategy, Stateful, StyledText, Subscription,
-    UniformListScrollHandle, Window, anchored, deferred, div, prelude::*, px, uniform_list,
+    MouseButton, MouseDownEvent, Pixels, Point, PromptLevel, ScrollStrategy, Stateful, StyledText,
+    Subscription, UniformListScrollHandle, Window, anchored, deferred, div, prelude::*, px,
+    uniform_list,
 };
 use scratchpad_core::{DateGroup, Note, local_date};
 
 use crate::actions::{DeleteNote, FocusOpenNote, RenameNote, SelectNextNote, SelectPreviousNote};
-use crate::notes::{Notes, Selection, title_of};
+use crate::notes::{Notes, NotesEvent, Selection, title_of};
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::{ActiveTheme, Theme, typography};
 use crate::toast;
@@ -57,6 +59,14 @@ struct Rename {
     path: PathBuf,
     input: Entity<TextInput>,
     _subscriptions: [Subscription; 2],
+}
+
+/// The delete confirmation while it is open.
+struct DeletePrompt {
+    /// The note it asks about, under its current name. Forgotten once the note leaves the list
+    /// (deleted here or by another program), so the answer can never delete another note that
+    /// takes its name.
+    note: Option<PathBuf>,
 }
 
 struct ContextMenu {
@@ -112,7 +122,8 @@ pub struct Sidebar {
     rows_date: NaiveDate,
     rename: Option<Rename>,
     menu: Option<ContextMenu>,
-    _subscriptions: [Subscription; 2],
+    delete_prompt: Option<DeletePrompt>,
+    _subscriptions: [Subscription; 3],
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -122,6 +133,11 @@ impl Sidebar {
         let search = cx.new(|cx| TextInput::new("Search", cx));
         let subscriptions = [
             cx.observe(&notes, |this, notes, cx| {
+                if let Some(prompt) = &mut this.delete_prompt {
+                    prompt
+                        .note
+                        .take_if(|path| notes.read(cx).note(path).is_none());
+                }
                 // The query can also be cleared by the model (e.g. by a new note).
                 let query = notes.read(cx).query().to_owned();
                 this.search
@@ -130,6 +146,7 @@ impl Sidebar {
                 cx.notify();
             }),
             cx.subscribe_in(&search, window, Self::on_search_event),
+            cx.subscribe(&notes, Self::on_notes_event),
         ];
         let mut sidebar = Self {
             notes,
@@ -142,6 +159,7 @@ impl Sidebar {
             rows_date: local_date(SystemTime::now()),
             rename: None,
             menu: None,
+            delete_prompt: None,
             _subscriptions: subscriptions,
         };
         sidebar.rebuild_rows(cx);
@@ -210,6 +228,15 @@ impl Sidebar {
                     None => window.focus(&self.list_focus),
                 }
             }
+        }
+    }
+
+    fn on_notes_event(&mut self, _: Entity<Notes>, event: &NotesEvent, _: &mut Context<Self>) {
+        if let NotesEvent::Renamed { from, to } = event
+            && let Some(prompt) = &mut self.delete_prompt
+            && prompt.note.as_ref() == Some(from)
+        {
+            prompt.note = Some(to.clone());
         }
     }
 
@@ -295,9 +322,9 @@ impl Sidebar {
         }
     }
 
-    fn delete_open_note(&mut self, _: &DeleteNote, _: &mut Window, cx: &mut Context<Self>) {
+    fn delete_open_note(&mut self, _: &DeleteNote, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = self.open_path(cx) {
-            self.delete(&path, cx);
+            self.confirm_delete(path, window, cx);
         }
     }
 
@@ -366,6 +393,35 @@ impl Sidebar {
             .is_some_and(|rename| rename.path == path)
     }
 
+    /// Asks before moving the note to the recycle bin, with the system's own dialog.
+    fn confirm_delete(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.delete_prompt.is_some() {
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Delete \"{}\"?", title_of(&path)),
+            Some("The note will be moved to the Recycle Bin."),
+            &["Delete", "Cancel"],
+            cx,
+        );
+        self.delete_prompt = Some(DeletePrompt { note: Some(path) });
+        cx.spawn(async move |this, cx| {
+            // Escape and the close button answer Cancel; a dialog gone with its window, too.
+            let confirmed = matches!(answer.await, Ok(0));
+            this.update(cx, |this, cx| {
+                let note = this.delete_prompt.take().and_then(|prompt| prompt.note);
+                if let Some(path) = note
+                    && confirmed
+                {
+                    this.delete(&path, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn delete(&mut self, path: &Path, cx: &mut Context<Self>) {
         let deleted = self.notes.update(cx, |notes, cx| notes.delete(path, cx));
         if let Err(error) = deleted {
@@ -406,7 +462,7 @@ impl Sidebar {
         self.close_menu(window, cx);
         match item {
             MenuItem::Rename => self.start_rename(path, window, cx),
-            MenuItem::Delete => self.delete(&path, cx),
+            MenuItem::Delete => self.confirm_delete(path, window, cx),
             MenuItem::ShowInFolder => {
                 if let Err(error) = show_in_folder(&path) {
                     let message = format!(

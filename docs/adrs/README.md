@@ -30,7 +30,7 @@ with every new ADR.
 | [0043](0043-markdown-editing-commands.md) | Markdown editing commands edit the text | Accepted; amended by 0126 |
 | [0044](0044-conservative-bracket-pairing.md) | Conservative, stateless bracket and quote pairing | Accepted |
 | [0050](0050-notes-model-and-new-note-lifecycle.md) | Notes model, background listing and the new-note lifecycle | Accepted |
-| [0051](0051-sidebar-note-list.md) | Sidebar note list: uniform virtual rows and iCloud-style interactions | Accepted |
+| [0051](0051-sidebar-note-list.md) | Sidebar note list: uniform virtual rows and iCloud-style interactions | Accepted; amended by 0136 |
 | [0052](0052-single-line-text-input.md) | A minimal single-line text input | Accepted |
 | [0053](0053-sidebar-search.md) | Sidebar search runs in the background and only the latest query wins | Accepted |
 | [0054](0054-error-toasts.md) | File errors are shown as a transient toast | Accepted |
@@ -59,3 +59,4 @@ with every new ADR.
 | [0120](0120-data-safety-review-and-accepted-risks.md) | Data safety before V1: what the session guarantees and the risks accepted | Accepted |
 | [0125](0125-cursor-targets-settle-on-revealed-markers.md) | Cursor targets settle on the markers they reveal | Accepted |
 | [0126](0126-keyboard-conventions-for-markdown-text.md) | Keyboard conventions for Markdown text | Accepted |
+| [0136](0136-confirm-before-deleting-a-note.md) | Confirm before deleting a note | Accepted |

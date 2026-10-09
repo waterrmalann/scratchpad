@@ -19,7 +19,7 @@ Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Sh
 | Ctrl+Shift+D, Alt+Up/Down | Duplicate lines, move lines |
 | Ctrl+/ | Show all Markdown markers (source mode) |
 | Ctrl+click | Open a link |
-| Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete |
+| Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete (asks first) |
 | Ctrl+, | Settings |
 | Ctrl+W, Ctrl+Q | Close the window, quit |
 

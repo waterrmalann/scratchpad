@@ -256,3 +256,10 @@ pub fn right_click(selector: &str, cx: &mut VisualTestContext) {
     cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::none());
     cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::none());
 }
+
+/// Answers the system dialog the app is showing (e.g. a delete confirmation) by pressing the
+/// button labelled `button`.
+pub fn answer_prompt(button: &str, cx: &mut VisualTestContext) {
+    cx.simulate_prompt_answer(button);
+    cx.run_until_parked();
+}

@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{EventLog, click, days_ago, titles_on_disk, write_note};
+use common::{EventLog, answer_prompt, click, days_ago, titles_on_disk, write_note};
 use gpui::{Focusable, TestAppContext, VisualTestContext};
 use scratchpad::notes::NotesEvent;
 
@@ -84,6 +84,15 @@ fn enter_moves_into_the_note_f2_renames_and_delete_deletes(cx: &mut TestAppConte
 
     let events = EventLog::new(&notes, cx);
     cx.simulate_keystrokes("delete");
+    // Like the context menu, it asks first.
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            "Delete \"Renamed\"?".to_owned(),
+            "The note will be moved to the Recycle Bin.".to_owned()
+        ))
+    );
+    answer_prompt("Delete", cx);
     assert_eq!(titles_on_disk(dir.path()), ["Second"]);
     assert_eq!(titles_on_disk(&common::trash_dir(dir.path())), ["Renamed"]);
     assert_eq!(
