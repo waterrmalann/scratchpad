@@ -16,6 +16,8 @@ The note has priority over the list.
   or Ctrl+Shift+F) shows it as an overlay: the same sidebar, floating over the left edge of the
   note with a shadow, while the note keeps its full width. Search shortcuts also show it this way
   when the user collapsed it in a wide window: a quick look should not undo their choice.
+- Docked, a sidebar the user made wider narrows so the note keeps `MIN_NOTE_WIDTH`, 460 px (just
+  above the threshold it is as wide as a default one); its width is kept for a wider window.
 - The overlay is a flyout. It goes away when focus leaves it (Escape in the search field, Ctrl+N,
   the settings), on Escape in the list, on a click outside it (which does nothing else), and when
   a note is chosen by clicking it or with Enter in the search. Browsing with Up/Down keeps it.

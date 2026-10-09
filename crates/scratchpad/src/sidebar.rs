@@ -943,7 +943,10 @@ impl Render for Sidebar {
         div()
             .debug_selector(|| "sidebar".into())
             .relative()
-            .flex_none()
+            // Docked in a window too narrow for this width, it gives way to the note
+            // (`MIN_NOTE_WIDTH`); the width is kept for a wider window.
+            .flex_shrink()
+            .min_w(MIN_SIDEBAR_WIDTH)
             .w(self.width)
             .h_full()
             .flex()

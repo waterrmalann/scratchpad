@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Focusable, FontWeight, Subscription, Window,
-    div, prelude::*, px,
+    AnyElement, App, Context, Entity, FocusHandle, Focusable, FontWeight, Pixels, Subscription,
+    Window, div, prelude::*, px,
 };
 
 use crate::editor_view::{Direction, EditorView};
@@ -11,6 +11,9 @@ use crate::settings;
 use crate::sidebar::sidebar_toggle_button;
 use crate::status_bar::StatusBar;
 use crate::theme::ActiveTheme;
+
+/// The narrowest the note gets beside the docked sidebar, which narrows instead (ADR 0135).
+pub const MIN_NOTE_WIDTH: Pixels = px(460.);
 
 /// Hosts the editor for the open note (PLAN §42), with a bar above it for decisions about the
 /// note: a conflict with another program, a deleted file, unreadable characters, or text
@@ -221,7 +224,7 @@ impl Render for EditorPane {
             .on_action(cx.listener(Self::close_find))
             .flex_1()
             .h_full()
-            .min_w_0()
+            .min_w(MIN_NOTE_WIDTH)
             .flex()
             .flex_col()
             .children(notices.iter().map(|notice| self.render_notice(notice, cx)))

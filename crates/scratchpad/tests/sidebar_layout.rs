@@ -8,6 +8,7 @@ use scratchpad::AppWindow;
 use scratchpad::app_window::{AUTO_COLLAPSE_WIDTH, SidebarMode};
 use scratchpad::notes::Selection;
 use scratchpad::settings::SAVE_DELAY;
+use scratchpad::sidebar::{DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH};
 use scratchpad_core::Config;
 
 fn mode(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> SidebarMode {
@@ -131,6 +132,30 @@ fn a_narrow_window_hides_the_sidebar_and_shows_it_over_the_note(cx: &mut TestApp
     // Narrowed again, it is hidden: the overlay was for that one look.
     resize(AUTO_COLLAPSE_WIDTH - px(1.), cx);
     assert_eq!(mode(&root, cx), SidebarMode::Hidden);
+}
+
+#[gpui::test]
+fn a_wide_sidebar_narrows_so_the_note_keeps_its_room(cx: &mut TestAppContext) {
+    let (root, cx) = common::open_main_window(cx);
+    let sidebar = root.read_with(cx, |root, _| root.sidebar().clone());
+    sidebar.update(cx, |sidebar, cx| sidebar.set_width(MAX_SIDEBAR_WIDTH, cx));
+
+    // Just wide enough to dock it: the note keeps what a default sidebar would leave it.
+    resize(AUTO_COLLAPSE_WIDTH, cx);
+    assert_eq!(mode(&root, cx), SidebarMode::Docked);
+    assert_eq!(note_width(cx), AUTO_COLLAPSE_WIDTH - DEFAULT_SIDEBAR_WIDTH);
+    assert_eq!(note_left(cx), DEFAULT_SIDEBAR_WIDTH);
+    // So the find bar's buttons stay in the window.
+    cx.simulate_keystrokes("ctrl-h");
+    let replace_all = cx.debug_bounds("replace-all").unwrap();
+    assert!(
+        replace_all.right() <= AUTO_COLLAPSE_WIDTH,
+        "{replace_all:?}"
+    );
+
+    // The width chosen is kept for a wider window.
+    resize(px(1100.), cx);
+    assert_eq!(note_left(cx), MAX_SIDEBAR_WIDTH);
 }
 
 #[gpui::test]

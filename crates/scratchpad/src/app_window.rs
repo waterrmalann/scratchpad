@@ -25,7 +25,9 @@ use crate::theme::{self, ActiveTheme, typography};
 use crate::{file_dialogs, settings, toast};
 
 /// Narrower windows do not dock the sidebar, so the note keeps a comfortable width: at this
-/// width a sidebar of the default 260 px leaves 460 px for it (ADR 0135).
+/// width a sidebar of the default 260 px leaves
+/// [`MIN_NOTE_WIDTH`](crate::editor_pane::MIN_NOTE_WIDTH) for it, and a wider one
+/// narrows to leave as much (ADR 0135).
 pub const AUTO_COLLAPSE_WIDTH: Pixels = px(720.);
 
 /// How the sidebar is shown (ADR 0135).
