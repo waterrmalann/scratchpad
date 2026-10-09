@@ -52,7 +52,11 @@ pub fn run() {
         Some(dir) => Some(dir.join("config.json")),
         None => default_config_path(),
     };
-    let config = config_path.as_deref().map(Config::load).unwrap_or_default();
+    let mut config = config_path.as_deref().map(Config::load).unwrap_or_default();
+    // `scratchpad.exe <file>`, as "Open with" runs it: opened like File > Open (ADR 0145).
+    if let Some(file) = file_argument() {
+        config.last_opened_file = Some(file);
+    }
     let notes_dir_env = env_var(NOTES_DIR_ENV);
     let storage = Storage {
         notes_dir_overridden: notes_dir_env.is_some(),
@@ -107,6 +111,12 @@ pub fn init(cx: &mut App) {
 /// snapshots and the release log instead of the platform folders.
 pub(crate) fn config_dir_override() -> Option<PathBuf> {
     env_var(CONFIG_DIR_ENV).map(PathBuf::from)
+}
+
+/// The file named on the command line, made absolute.
+fn file_argument() -> Option<PathBuf> {
+    let argument = std::env::args_os().nth(1).filter(|arg| !arg.is_empty())?;
+    std::path::absolute(argument).ok()
 }
 
 /// The environment variable `name`, unless it is unset or empty.
