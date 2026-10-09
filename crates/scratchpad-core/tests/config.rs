@@ -39,6 +39,7 @@ fn save_and_load_round_trip_every_field() {
         theme: ThemePreference::Dark,
         notes_dir: Some(dir.path().join("my notes")),
         sidebar_collapsed: true,
+        status_bar_hidden: true,
     };
 
     config.save(&path).unwrap();
@@ -72,6 +73,7 @@ fn loads_the_documented_file_format() {
             "theme": "light",
             "notes_dir": "C:/Notes",
             "sidebar_collapsed": true,
+            "status_bar_hidden": true,
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -90,6 +92,7 @@ fn loads_the_documented_file_format() {
             theme: ThemePreference::Light,
             notes_dir: Some("C:/Notes".into()),
             sidebar_collapsed: true,
+            status_bar_hidden: true,
         }
     );
 }

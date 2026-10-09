@@ -15,6 +15,7 @@ pub mod session;
 pub mod settings;
 pub mod settings_panel;
 pub mod sidebar;
+pub mod status_bar;
 pub mod text_input;
 pub mod theme;
 pub mod toast;

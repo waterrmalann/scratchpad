@@ -40,12 +40,14 @@ actions!(
     ]
 );
 
-// Window layout (ADR 0135).
+// Window layout (ADR 0135, 0137).
 actions!(
     scratchpad,
     [
         /// Show or hide the note list. In a narrow window it floats over the note.
         ToggleSidebar,
+        /// Show or hide the status bar under the note. No key; the View menu offers it.
+        ToggleStatusBar,
     ]
 );
 

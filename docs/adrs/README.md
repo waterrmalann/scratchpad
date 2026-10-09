@@ -61,3 +61,4 @@ with every new ADR.
 | [0126](0126-keyboard-conventions-for-markdown-text.md) | Keyboard conventions for Markdown text | Accepted |
 | [0135](0135-collapsible-sidebar-and-narrow-windows.md) | A collapsible sidebar that floats over the note in narrow windows | Accepted |
 | [0136](0136-confirm-before-deleting-a-note.md) | Confirm before deleting a note | Accepted |
+| [0137](0137-notepad-style-status-bar.md) | A Notepad-style status bar | Accepted |

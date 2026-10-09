@@ -6,17 +6,21 @@ use gpui::{
 use crate::editor_view::{Direction, EditorView};
 use crate::find_bar::{CloseFind, FindBar, FindNext, FindPrevious};
 use crate::session::{Choice, Notice, Session};
+use crate::settings;
 use crate::sidebar::sidebar_toggle_button;
+use crate::status_bar::StatusBar;
 use crate::theme::ActiveTheme;
 
 /// Hosts the editor for the open note (PLAN §42), with a bar above it for decisions about the
 /// note: a conflict with another program, a deleted file, unreadable characters, or text
 /// recovered after a crash. The find bar floats over the editor's top right corner and, while
-/// the sidebar is hidden, the button that shows it over the top left one.
+/// the sidebar is hidden, the button that shows it over the top left one. The status bar runs
+/// along the bottom unless the user hid it.
 pub struct EditorPane {
     editor: Entity<EditorView>,
     session: Entity<Session>,
     find_bar: Entity<FindBar>,
+    status_bar: Entity<StatusBar>,
     sidebar_button: bool,
     _session_changed: Subscription,
 }
@@ -31,6 +35,7 @@ impl EditorPane {
         Self {
             _session_changed: cx.observe(&session, |_, _, cx| cx.notify()),
             find_bar: cx.new(|cx| FindBar::new(editor.clone(), window, cx)),
+            status_bar: cx.new(|cx| StatusBar::new(editor.clone(), session.clone(), cx)),
             editor,
             session,
             sidebar_button: false,
@@ -51,6 +56,10 @@ impl EditorPane {
 
     pub fn find_bar(&self) -> &Entity<FindBar> {
         &self.find_bar
+    }
+
+    pub fn status_bar(&self) -> &Entity<StatusBar> {
+        &self.status_bar
     }
 
     /// Ctrl+F: opens the find bar, or moves focus back to it.
@@ -180,6 +189,7 @@ impl Render for EditorPane {
             .children(notices.iter().map(|notice| self.render_notice(notice, cx)))
             .child(
                 div()
+                    .debug_selector(|| "note-area".into())
                     .relative()
                     .flex_1()
                     .min_h_0()
@@ -205,5 +215,8 @@ impl Render for EditorPane {
                             .child(bar)
                     })),
             )
+            .when(!settings::get(cx).status_bar_hidden, |pane| {
+                pane.child(self.status_bar.clone())
+            })
     }
 }

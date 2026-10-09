@@ -54,6 +54,9 @@ pub struct Config {
     /// The user hid the sidebar. Narrow windows hide it whatever this says.
     #[serde(deserialize_with = "or_default")]
     pub sidebar_collapsed: bool,
+    /// The user hid the status bar; it is shown by default.
+    #[serde(deserialize_with = "or_default")]
+    pub status_bar_hidden: bool,
 }
 
 impl Config {

@@ -6,7 +6,9 @@ use gpui::{
 };
 use scratchpad_core::NoteStore;
 
-use crate::actions::{CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes, ToggleSidebar};
+use crate::actions::{
+    CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes, ToggleSidebar, ToggleStatusBar,
+};
 use crate::app::Storage;
 use crate::editor_pane::EditorPane;
 use crate::editor_view::EditorView;
@@ -299,6 +301,14 @@ impl AppWindow {
             )
     }
 
+    /// Shows or hides the status bar under the note (ADR 0137).
+    fn toggle_status_bar(&mut self, _: &ToggleStatusBar, _: &mut Window, cx: &mut Context<Self>) {
+        settings::update(cx, |config| {
+            config.status_bar_hidden = !config.status_bar_hidden;
+        });
+        cx.notify();
+    }
+
     // --- Settings ---
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
@@ -430,6 +440,7 @@ impl Render for AppWindow {
             .on_action(cx.listener(Self::find_in_note))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::toggle_status_bar))
             .relative()
             .size_full()
             .flex()
