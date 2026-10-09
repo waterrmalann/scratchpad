@@ -77,6 +77,8 @@ pub struct EditorView {
     zoom: u16,
     /// Ctrl+wheel distance, in lines, not yet turned into a zoom step.
     zoom_wheel: f32,
+    /// Long lines wrap at the text column's edge; without it they scroll horizontally.
+    soft_wrap: bool,
     focus_handle: FocusHandle,
     layouts: LayoutCache,
     /// Buffer version the layouts and scroll anchor were last updated to.
@@ -86,6 +88,8 @@ pub struct EditorView {
     /// Looked up once: enumerating fonts takes about a millisecond.
     mono_family: SharedString,
     scroll: ScrollAnchor,
+    /// How far the text is scrolled left; always 0 with soft wrap.
+    scroll_x: Pixels,
     /// Set by keyboard input and search; the next layout scrolls the cursor into view.
     autoscroll: Option<Autoscroll>,
     /// The top of the cursor's row below the viewport's top in the last frame, if it was on screen.
@@ -121,9 +125,12 @@ enum Autoscroll {
     Cursor,
     /// Put it in the middle if it is not on screen: the cursor jumped (to a search match).
     Center,
-    /// Put its row's top this far below the viewport's top: the text changed size, and the
-    /// cursor stays where it was on screen.
+    /// Put its row's top this far below the viewport's top: the text changed size or wrapping,
+    /// and the cursor stays where it was on screen.
     Keep(Pixels),
+    /// Without word wrap, scroll sideways only if the cursor is out of view: a click past the end
+    /// of a line scrolled out to the left. A click in view never moves the text under the pointer.
+    Click,
 }
 
 enum Drag {
@@ -165,7 +172,7 @@ impl EditorView {
         })];
         let mono_family = SharedString::from(typography::mono_font_family(cx));
         // Replaced by the first layout, which knows the width.
-        let base_style = base_style(cx, typography::BODY_FONT_SIZE, px(0.), &mono_family);
+        let base_style = base_style(cx, typography::BODY_FONT_SIZE, px(0.), true, &mono_family);
         let (editor, markdown) = open_document(text);
         Self {
             editor,
@@ -173,12 +180,14 @@ impl EditorView {
             source_mode: false,
             zoom: 100,
             zoom_wheel: 0.,
+            soft_wrap: true,
             focus_handle,
             layouts: LayoutCache::new(base_style),
             synced_version: 0,
             styled_for: None,
             mono_family,
             scroll: ScrollAnchor::top(&viewport(None)),
+            scroll_x: px(0.),
             autoscroll: None,
             cursor_row_top: None,
             bounds: None,
@@ -204,6 +213,7 @@ impl EditorView {
         self.layouts.clear();
         self.synced_version = self.editor.buffer().version();
         self.scroll = ScrollAnchor::top(&viewport(self.bounds));
+        self.scroll_x = px(0.);
         self.drag = None;
         self.click_offset = None;
         self.find_text_changed(true, cx);
@@ -311,6 +321,7 @@ impl EditorView {
         }
         let scale = f32::from(percent) / f32::from(self.zoom);
         self.zoom = percent;
+        self.scroll_x *= scale;
         self.keep_place(scale);
         cx.notify();
     }
@@ -328,6 +339,22 @@ impl EditorView {
         self.set_zoom_percent(percent as u16, cx);
     }
 
+    /// Whether long lines wrap at the edge of the text column.
+    pub fn soft_wrap(&self) -> bool {
+        self.soft_wrap
+    }
+
+    /// Turns wrapping on or off, keeping the cursor's row where it is on screen.
+    pub fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {
+        if soft_wrap == self.soft_wrap {
+            return;
+        }
+        self.soft_wrap = soft_wrap;
+        self.scroll_x = px(0.);
+        self.keep_place(1.);
+        cx.notify();
+    }
+
     /// Before the line heights change by about `scale`: the next layout puts the cursor's row back
     /// where it was on screen, or, with the cursor off screen, keeps the top line in place.
     fn keep_place(&mut self, scale: f32) {
@@ -343,9 +370,11 @@ impl EditorView {
         typography::BODY_FONT_SIZE * (f32::from(self.zoom) / 100.)
     }
 
-    /// The left edge of the text column in window coordinates, and the column's width.
+    /// The left edge of the text column in window coordinates, scrolled by the horizontal offset,
+    /// and the column's width.
     fn text_column(&self, bounds: Bounds<Pixels>) -> (Pixels, Pixels) {
-        text_column(bounds, self.font_size())
+        let (left, width) = text_column(bounds, self.font_size());
+        (left - self.scroll_x, width)
     }
 
     // --- Engine plumbing ---
@@ -652,6 +681,7 @@ impl EditorView {
             Granularity::Word => self.editor.select_word_at(offset),
             Granularity::Line => self.editor.select_line_at(offset),
         }
+        self.autoscroll = Some(Autoscroll::Click);
         self.drag = Some(Drag::Select {
             granularity,
             initial: self.editor.selection().range(),
@@ -667,6 +697,7 @@ impl EditorView {
             self.drag = None;
             return;
         }
+        let outside = self.drag_overshoot(event.position) != Point::default();
         match &mut self.drag {
             Some(Drag::Select {
                 position,
@@ -674,9 +705,6 @@ impl EditorView {
                 ..
             }) => {
                 *position = event.position;
-                let outside = self
-                    .bounds
-                    .is_some_and(|b| event.position.y < b.top() || event.position.y > b.bottom());
                 if !outside {
                     *autoscroll = None;
                 } else if autoscroll.is_none() {
@@ -763,25 +791,49 @@ impl EditorView {
         self.selection_changed(cx);
     }
 
-    /// One step of scrolling while a selection is dragged outside the editor. Returns false once
-    /// the pointer is back inside.
+    /// One step of scrolling while a selection is dragged past the edges of the text, faster the
+    /// further the pointer is from the edge. Returns false once the pointer is back inside.
     fn drag_scroll(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
-        let (Some(bounds), Some(Drag::Select { position, .. })) = (self.bounds, &self.drag) else {
+        let Some(Drag::Select { position, .. }) = &self.drag else {
             return false;
         };
-        let overshoot = if position.y < bounds.top() {
-            position.y - bounds.top()
-        } else if position.y > bounds.bottom() {
-            position.y - bounds.bottom()
-        } else {
+        let overshoot = self.drag_overshoot(*position);
+        if overshoot == Point::default() {
             return false;
-        };
+        }
+        if overshoot.x != px(0.) {
+            self.scroll_horizontally(overshoot.x / 2., window);
+        }
         let vp = self.viewport();
         let (mut lines, scroll) = self.lines(window);
-        // Faster the further the pointer is from the edge.
-        *scroll = scroll.scrolled_by(overshoot / 2., &mut lines, &vp);
+        *scroll = scroll.scrolled_by(overshoot.y / 2., &mut lines, &vp);
         self.extend_drag_selection(window, cx);
         true
+    }
+
+    /// How far `position` is past the edges beyond which a selection drag scrolls: the editor's
+    /// top and bottom and, without word wrap, the text's left and right. The text's rather than
+    /// the editor's: in a maximized window the pointer cannot leave the editor to the right.
+    fn drag_overshoot(&self, position: Point<Pixels>) -> Point<Pixels> {
+        let Some(bounds) = self.bounds else {
+            return Point::default();
+        };
+        let overshoot = |at: Pixels, start: Pixels, end: Pixels| {
+            if at < start {
+                at - start
+            } else if at > end {
+                at - end
+            } else {
+                px(0.)
+            }
+        };
+        let x = if self.soft_wrap {
+            px(0.)
+        } else {
+            let (left, width) = text_column(bounds, self.font_size());
+            overshoot(position.x, left, left + width)
+        };
+        Point::new(x, overshoot(position.y, bounds.top(), bounds.bottom()))
     }
 
     fn scroll_wheel(&mut self, event: &ScrollWheelEvent, window: &Window, cx: &mut Context<Self>) {
@@ -791,6 +843,11 @@ impl EditorView {
         }
         self.input_at.get_or_insert_with(Instant::now);
         let delta = event.delta.pixel_delta(self.layouts.style().line_height);
+        // Windows turns Shift+wheel into a horizontal delta, as it does a tilting wheel and a
+        // sideways swipe on a touchpad.
+        if !self.soft_wrap && delta.x != px(0.) {
+            self.scroll_horizontally(-delta.x, window);
+        }
         let vp = self.viewport();
         let (mut lines, scroll) = self.lines(window);
         *scroll = scroll.scrolled_by(-delta.y, &mut lines, &vp);
@@ -820,6 +877,31 @@ impl EditorView {
             self.zoom_wheel %= ZOOM_WHEEL_LINES;
             self.zoom_by(step, cx);
         }
+    }
+
+    /// Scrolls the text `delta` to the left (negative: back to the right), no further than the end
+    /// of the longest line on screen or back than the start of the lines.
+    fn scroll_horizontally(&mut self, delta: Pixels, window: &Window) {
+        let max = self.max_scroll_x(window).max(self.scroll_x);
+        self.scroll_x = (self.scroll_x + delta).clamp(px(0.), max);
+    }
+
+    /// The horizontal offset at which the end of the longest line on screen reaches the right
+    /// edge of the text column. Only lines on screen are looked at: the widest line of the whole
+    /// note is never known (ADR 0030).
+    fn max_scroll_x(&mut self, window: &Window) -> Pixels {
+        let Some(bounds) = self.bounds else {
+            return px(0.);
+        };
+        let (_, width) = text_column(bounds, self.font_size());
+        let visible = self.visible_lines.clone();
+        let (mut lines, _) = self.lines(window);
+        // After an edit, the lines painted last may no longer all exist.
+        let count = lines.line_count();
+        let widest = (visible.start.min(count)..visible.end.min(count))
+            .map(|line| lines.layout(line).end_x())
+            .fold(px(0.), Pixels::max);
+        (widest - width).max(px(0.))
     }
 
     fn scrollbar_mouse_down(
@@ -1325,7 +1407,13 @@ struct LineHit {
 }
 
 /// The style of body text at `font_size` (the zoomed body size) in a text column `width` wide.
-fn base_style(cx: &App, font_size: Pixels, width: Pixels, mono_family: &SharedString) -> BaseStyle {
+fn base_style(
+    cx: &App,
+    font_size: Pixels,
+    width: Pixels,
+    soft_wrap: bool,
+    mono_family: &SharedString,
+) -> BaseStyle {
     BaseStyle {
         font: font(typography::BODY_FONT_FAMILY),
         mono_family: mono_family.clone(),
@@ -1333,6 +1421,7 @@ fn base_style(cx: &App, font_size: Pixels, width: Pixels, mono_family: &SharedSt
         line_height: font_size * typography::BODY_LINE_HEIGHT,
         theme: cx.theme().clone(),
         wrap_width: width,
+        soft_wrap,
         hang_room: left_padding(font_size),
     }
 }

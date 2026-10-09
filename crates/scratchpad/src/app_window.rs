@@ -6,7 +6,7 @@ use gpui::{
 };
 use scratchpad_core::NoteStore;
 
-use crate::actions::view::{ResetZoom, ZoomIn, ZoomOut};
+use crate::actions::view::{ResetZoom, ToggleWordWrap, ZoomIn, ZoomOut};
 use crate::actions::{
     CloseWindow, NewNote, OpenSettings, SaveNote, SearchNotes, ToggleSidebar, ToggleStatusBar,
 };
@@ -70,11 +70,12 @@ impl AppWindow {
         let reopen = config.last_opened_note.clone();
         let sidebar_width = config.sidebar_width;
         let sidebar_collapsed = config.sidebar_collapsed;
-        let zoom = config.zoom_percent;
+        let (zoom, word_wrap) = (config.zoom_percent, config.word_wrap);
         let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
         let editor = cx.new(|cx| {
             let mut editor = EditorView::new("", window, cx);
             editor.set_zoom_percent(zoom.unwrap_or(100), cx);
+            editor.set_soft_wrap(word_wrap.unwrap_or(true), cx);
             editor
         });
         let session =
@@ -122,12 +123,19 @@ impl AppWindow {
                 let width = f32::from(sidebar.read(cx).width());
                 settings::update(cx, |config| config.sidebar_width = Some(width));
             }),
-            // The zoom belongs to the editor; checked on each of its updates, written only when
-            // it changes.
+            // Zoom and word wrap belong to the editor; checked on each of its updates, written
+            // only when they change.
             cx.observe(&editor, |_, editor, cx| {
-                let zoom = editor.read(cx).zoom_percent();
-                if settings::get(cx).zoom_percent.unwrap_or(100) != zoom {
-                    settings::update(cx, |config| config.zoom_percent = Some(zoom));
+                let editor = editor.read(cx);
+                let (zoom, wrap) = (editor.zoom_percent(), editor.soft_wrap());
+                let config = settings::get(cx);
+                if config.zoom_percent.unwrap_or(100) != zoom
+                    || config.word_wrap.unwrap_or(true) != wrap
+                {
+                    settings::update(cx, |config| {
+                        config.zoom_percent = Some(zoom);
+                        config.word_wrap = Some(wrap);
+                    });
                 }
             }),
             cx.observe_window_bounds(window, |this, window, cx| {
@@ -227,7 +235,7 @@ impl AppWindow {
             .update(cx, |pane, cx| pane.find(window, cx));
     }
 
-    /// Zooming acts on the note wherever focus is.
+    /// Zoom and word wrap act on the note wherever focus is.
     fn update_editor(
         &self,
         cx: &mut Context<Self>,
@@ -473,6 +481,11 @@ impl Render for AppWindow {
             }))
             .on_action(cx.listener(|this, _: &ResetZoom, _, cx| {
                 this.update_editor(cx, |editor, cx| editor.set_zoom_percent(100, cx))
+            }))
+            .on_action(cx.listener(|this, _: &ToggleWordWrap, _, cx| {
+                this.update_editor(cx, |editor, cx| {
+                    editor.set_soft_wrap(!editor.soft_wrap(), cx)
+                })
             }))
             .relative()
             .size_full()

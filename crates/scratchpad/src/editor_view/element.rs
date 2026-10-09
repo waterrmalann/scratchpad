@@ -19,6 +19,9 @@ use crate::theme::ActiveTheme;
 
 /// Lines shaped beyond each edge of the viewport so that they are ready when scrolled in.
 const OVERSCAN_LINES: usize = 4;
+/// Room kept between the cursor and the left and right edges when unwrapped text scrolls to it,
+/// in multiples of the font size, so the text around the cursor shows too.
+const AUTOSCROLL_MARGIN_EMS: f32 = 3.;
 const CARET_WIDTH: Pixels = px(2.);
 /// Width of the right-edge strip that takes scrollbar clicks.
 const SCROLLBAR_TRACK_WIDTH: Pixels = px(12.);
@@ -96,11 +99,18 @@ impl EditorView {
     fn layout_frame(&mut self, bounds: Bounds<Pixels>, window: &Window, cx: &App) -> Frame {
         self.bounds = Some(bounds);
         let font_size = self.font_size();
-        let (left, width) = text_column(bounds, font_size);
-        self.layouts
-            .set_style(base_style(cx, font_size, width, &self.mono_family));
+        let (column_left, width) = text_column(bounds, font_size);
+        let soft_wrap = self.soft_wrap;
+        self.layouts.set_style(base_style(
+            cx,
+            font_size,
+            width,
+            soft_wrap,
+            &self.mono_family,
+        ));
         let vp = self.viewport();
         let margin = self.layouts.style().line_height * AUTOSCROLL_MARGIN_ROWS;
+        let mut scroll_x = self.scroll_x;
         let selection = self.editor.selection();
         let marked = self.editor.marked_range();
         let autoscroll = self.autoscroll.take();
@@ -116,6 +126,13 @@ impl EditorView {
                 let layout = lines.layout(head.line);
                 let row_top = layout.row_top(layout.row_of(head.column));
                 let rows = row_top..row_top + layout.line_height();
+                let x = layout.x_for(head.column);
+                let clicked_in_view =
+                    autoscroll == Autoscroll::Click && scroll_x <= x && x <= scroll_x + width;
+                if !soft_wrap && !clicked_in_view {
+                    let margin = (font_size * AUTOSCROLL_MARGIN_EMS).min(width / 3.);
+                    scroll_x = revealing_x(scroll_x, x, width, margin);
+                }
                 match autoscroll {
                     Autoscroll::Cursor => {
                         scroll.revealing(head.line, rows, margin, &mut lines, &vp)
@@ -129,11 +146,13 @@ impl EditorView {
                     }
                     .clamped(&mut lines, &vp)
                     .revealing(head.line, rows, margin, &mut lines, &vp),
+                    Autoscroll::Click => scroll.clamped(&mut lines, &vp),
                 }
             }
             None => scroll.clamped(&mut lines, &vp),
         };
         let anchor = *scroll;
+        let left = column_left - scroll_x;
         let mut cursor_row_top = None;
         // Only the matches on visible lines are looked at (PLAN §29, rule 5).
         let top_line_start = buffer.line_start(anchor.line);
@@ -213,7 +232,8 @@ impl EditorView {
             }
             let height = layout.height();
             if layout.code_block() {
-                let block = Bounds::new(origin, size(width, height));
+                // To the right edge of the column, however far the text is scrolled.
+                let block = Bounds::new(origin, size(width + scroll_x, height));
                 match frame.code_blocks.last_mut() {
                     Some(last) if last.bottom() == block.top() => last.size.height += height,
                     _ => frame.code_blocks.push(block),
@@ -256,10 +276,23 @@ impl EditorView {
             self.match_highlights = frame.found.clone();
         }
         self.visible_lines = visible_lines;
+        self.scroll_x = scroll_x;
         self.cursor_row_top = cursor_row_top;
         self.scrollbar = frame.scrollbar;
         self.layouts.trim_around(anchor.line);
         frame
+    }
+}
+
+/// The horizontal scroll offset that shows `x` (from the text column's left edge) at least
+/// `margin` inside the column, scrolling as little as possible.
+fn revealing_x(scroll_x: Pixels, x: Pixels, width: Pixels, margin: Pixels) -> Pixels {
+    if x - margin < scroll_x {
+        (x - margin).max(px(0.))
+    } else if x + margin > scroll_x + width {
+        x + margin - width
+    } else {
+        scroll_x
     }
 }
 

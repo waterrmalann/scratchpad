@@ -1,4 +1,4 @@
-//! End-to-end tests of how the note is shown: zoom and the width of the text.
+//! End-to-end tests of how the note is shown: zoom, word wrap and the width of the text.
 //!
 //! The test platform shapes every BMP char 0.6 em wide: 9 px at the 15 px body size. The window is
 //! 1100 × 720, so the editor pane is 840 px wide. The text starts 42 px (2.8 em) right of
@@ -7,12 +7,15 @@
 mod common;
 
 use gpui::{
-    Bounds, Entity, EntityInputHandler, Modifiers, Pixels, ScrollDelta, ScrollWheelEvent,
-    TestAppContext, TouchPhase, VisualTestContext, point, px, size,
+    Bounds, Entity, EntityInputHandler, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
+    Pixels, Point, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext,
+    point, px, size,
 };
+use scratchpad::actions::view::ToggleWordWrap;
 use scratchpad::editor_view::EditorView;
 use scratchpad::settings::SAVE_DELAY;
 use scratchpad_core::Config;
+use scratchpad_editor::ByteOffset;
 
 const ADVANCE: f32 = 9.;
 const LEFT_PADDING: f32 = 42.;
@@ -71,6 +74,22 @@ fn wheel(delta: ScrollDelta, modifiers: Modifiers, cx: &mut VisualTestContext) {
         delta,
         modifiers,
         touch_phase: TouchPhase::Moved,
+    });
+}
+
+fn click(position: Point<Pixels>, cx: &mut VisualTestContext) {
+    cx.simulate_event(MouseDownEvent {
+        position,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        position,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
     });
 }
 
@@ -191,7 +210,7 @@ fn zooming_keeps_the_cursor_row_where_it_is_on_screen(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_zoom_is_remembered(cx: &mut TestAppContext) {
+fn zoom_and_word_wrap_are_remembered(cx: &mut TestAppContext) {
     let notes_dir = tempfile::tempdir().unwrap();
     let data_dir = tempfile::tempdir().unwrap();
     let storage = common::storage(notes_dir.path(), data_dir.path());
@@ -200,12 +219,18 @@ fn the_zoom_is_remembered(cx: &mut TestAppContext) {
     let (root, cx) = common::open_with(storage.clone(), cx);
     let editor = common::editor(&root, cx);
     assert_eq!(zoom(&editor, cx), 100);
+    assert!(
+        editor.read_with(cx, |editor, _| editor.soft_wrap()),
+        "wraps by default"
+    );
     for _ in 0..5 {
         cx.simulate_keystrokes("ctrl-=");
     }
+    cx.dispatch_action(ToggleWordWrap);
     common::wait(SAVE_DELAY, cx);
     let saved = Config::load(&config_path);
     assert_eq!(saved.zoom_percent, Some(150));
+    assert_eq!(saved.word_wrap, Some(false));
     common::close(cx);
 
     let (root, cx) = common::open_with(storage.clone(), cx);
@@ -213,6 +238,7 @@ fn the_zoom_is_remembered(cx: &mut TestAppContext) {
     editor.update(cx, |editor, cx| editor.set_text("a", cx));
     cx.run_until_parked();
     assert_eq!(zoom(&editor, cx), 150);
+    assert!(!editor.read_with(cx, |editor, _| editor.soft_wrap()));
     let height = char_bounds(&editor, 0, cx).size.height;
     assert!(
         (height - px(15. * 1.5 * 1.5)).abs() < px(0.01),
@@ -230,6 +256,97 @@ fn the_zoom_is_remembered(cx: &mut TestAppContext) {
     let (root, cx) = common::open_with(storage, cx);
     let editor = common::editor(&root, cx);
     assert_eq!(zoom(&editor, cx), 400);
+}
+
+#[gpui::test]
+fn without_word_wrap_a_long_line_is_one_row_that_scrolls_to_the_cursor(cx: &mut TestAppContext) {
+    let long = "word ".repeat(100);
+    let (editor, cx) = open_editor(cx, &format!("{long}\nnext"));
+    let pane = pane(cx);
+    let text_left = pane.left() + px(LEFT_PADDING);
+    let text_right = pane.right() - px(RIGHT_PADDING);
+    assert!(char_bounds(&editor, 200, cx).top() > char_bounds(&editor, 0, cx).top());
+
+    cx.dispatch_action(ToggleWordWrap);
+    assert_eq!(
+        char_bounds(&editor, 200, cx).top(),
+        char_bounds(&editor, 0, cx).top(),
+        "one row"
+    );
+    assert_eq!(
+        char_bounds(&editor, 200, cx).left(),
+        text_left + px(200. * ADVANCE)
+    );
+
+    cx.simulate_keystrokes("end");
+    let caret = bounds(&editor, long.len()..long.len(), cx);
+    assert!(
+        caret.left() > text_left && caret.left() <= text_right,
+        "the caret is in view: {caret:?}"
+    );
+    assert!(
+        char_bounds(&editor, 0, cx).left() < pane.left(),
+        "the start is scrolled out"
+    );
+
+    // Up and Down move by lines; the view follows the cursor back to the start.
+    cx.simulate_keystrokes("down");
+    assert_eq!(cursor(&editor, cx), long.len() + 1 + "next".len());
+    assert_eq!(char_bounds(&editor, long.len() + 1, cx).left(), text_left);
+
+    // Wrapping again shows the whole line.
+    cx.simulate_keystrokes("up end");
+    cx.dispatch_action(ToggleWordWrap);
+    assert_eq!(char_bounds(&editor, 0, cx).left(), text_left);
+    assert!(char_bounds(&editor, 200, cx).top() > char_bounds(&editor, 0, cx).top());
+}
+
+#[gpui::test]
+fn unwrapped_text_scrolls_sideways_and_clicks_land_under_the_pointer(cx: &mut TestAppContext) {
+    let long = "0123456789".repeat(50);
+    let (editor, cx) = open_editor(cx, &format!("{long}\nshort"));
+    let pane = pane(cx);
+    let text_left = pane.left() + px(LEFT_PADDING);
+    let text_right = pane.right() - px(RIGHT_PADDING);
+    cx.dispatch_action(ToggleWordWrap);
+    cx.simulate_keystrokes("end");
+
+    let target = char_bounds(&editor, 480, cx);
+    assert!(
+        target.left() > text_left && target.right() < text_right,
+        "{target:?}"
+    );
+    click(point(target.left() + px(2.), target.center().y), cx);
+    assert_eq!(cursor(&editor, cx), 480);
+
+    // Windows sends Shift+wheel as a horizontal delta in lines (a line is 22.5 px); forward
+    // scrolls to the left.
+    let shift = Modifiers::shift();
+    wheel(ScrollDelta::Lines(point(1., 0.)), shift, cx);
+    assert_eq!(
+        char_bounds(&editor, 480, cx).left(),
+        target.left() + px(15. * 1.5)
+    );
+    wheel(ScrollDelta::Lines(point(1000., 0.)), shift, cx);
+    assert_eq!(
+        char_bounds(&editor, 0, cx).left(),
+        text_left,
+        "no further than the start"
+    );
+    wheel(
+        ScrollDelta::Pixels(point(px(-100_000.), px(0.))),
+        Modifiers::none(),
+        cx,
+    );
+    let column_width = text_right - text_left;
+    let end = bounds(&editor, long.len()..long.len(), cx);
+    assert_eq!(end.left(), text_right, "the line's end at the right edge");
+
+    // 40 px into the column is 40 px past the part of the line scrolled out to the left.
+    let scrolled = f32::from(px(long.len() as f32 * ADVANCE) - column_width);
+    click(point(text_left + px(40.), target.center().y), cx);
+    let nearest = ((scrolled + 40.) / ADVANCE).round() as usize;
+    assert_eq!(cursor(&editor, cx), nearest);
 }
 
 #[gpui::test]
@@ -285,4 +402,70 @@ fn heading_markers_hang_in_the_margin_unclipped_at_every_zoom(cx: &mut TestAppCo
             "{percent}%: the H1's text stays in line with the body text"
         );
     }
+}
+
+#[gpui::test]
+fn a_click_on_a_short_line_scrolled_out_to_the_left_shows_the_cursor(cx: &mut TestAppContext) {
+    let long = "0123456789".repeat(50);
+    let (editor, cx) = open_editor(
+        cx,
+        &format!(
+            "{long}
+{}",
+            numbered_lines(100)
+        ),
+    );
+    let pane = pane(cx);
+    let text_left = pane.left() + px(LEFT_PADDING);
+    let text_right = pane.right() - px(RIGHT_PADDING);
+    cx.dispatch_action(ToggleWordWrap);
+    cx.simulate_keystrokes("end");
+    // The long line scrolls away upwards; the short lines left on screen end left of the view.
+    wheel(ScrollDelta::Lines(point(0., -10.)), Modifiers::none(), cx);
+    let visible = editor.read_with(cx, |editor, _| editor.visible_lines());
+    assert!(visible.start > 0, "{visible:?}");
+
+    // The click lands past the end of a short line: the view scrolls back to show the cursor.
+    click(pane.center(), cx);
+    let offset = cursor(&editor, cx);
+    let caret = bounds(&editor, offset..offset, cx);
+    assert!(
+        caret.left() >= text_left && caret.left() <= text_right,
+        "the cursor is in view: {caret:?}"
+    );
+    let line_start = editor.read_with(cx, |editor, _| {
+        let buffer = editor.editor().buffer();
+        buffer
+            .line_start(buffer.offset_to_point(ByteOffset(offset)).line)
+            .0
+    });
+
+    // A click on text in view does not move the text under the pointer.
+    let target = char_bounds(&editor, line_start + 3, cx);
+    click(point(target.left() + px(2.), target.center().y), cx);
+    assert_eq!(cursor(&editor, cx), line_start + 3);
+    assert_eq!(char_bounds(&editor, line_start + 3, cx), target);
+}
+
+#[gpui::test]
+fn dragging_to_the_right_edge_of_a_maximized_window_scrolls_sideways(cx: &mut TestAppContext) {
+    let long = "0123456789".repeat(50);
+    let (editor, cx) = open_editor(cx, &format!("{long}\nshort"));
+    cx.dispatch_action(ToggleWordWrap);
+    let pane = pane(cx);
+    let start = char_bounds(&editor, 0, cx);
+    let visible_columns = ((pane.right() - start.left()) / px(ADVANCE)) as usize;
+
+    // In a maximized window the pointer stops at the screen's edge, inside the editor.
+    let edge = point(pane.right() - px(2.), start.center().y);
+    cx.simulate_mouse_down(start.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(edge, MouseButton::Left, Modifiers::none());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.simulate_mouse_up(edge, MouseButton::Left, Modifiers::none());
+    assert!(
+        cursor(&editor, cx) > visible_columns,
+        "selected past the first screen: {}",
+        cursor(&editor, cx)
+    );
 }

@@ -21,8 +21,8 @@ with every new ADR.
 | [0020](0020-e2e-testing-strategy.md) | End-to-end testing strategy | Accepted |
 | [0021](0021-build-profiles.md) | Build profiles and panic strategy | Accepted |
 | [0022](0022-theme-and-typography.md) | Theme tokens and typography | Accepted |
-| [0030](0030-virtualized-editor-rendering.md) | Virtualized editor rendering with an anchor scroll position | Accepted |
-| [0031](0031-soft-wrapping-and-visual-navigation.md) | Soft wrapping and navigation by visual rows | Accepted; amended by 0126, 0130 |
+| [0030](0030-virtualized-editor-rendering.md) | Virtualized editor rendering with an anchor scroll position | Accepted; amended by 0132 |
+| [0031](0031-soft-wrapping-and-visual-navigation.md) | Soft wrapping and navigation by visual rows | Accepted; amended by 0126, 0130, 0132 |
 | [0032](0032-editor-input-clipboard-and-ime.md) | Editor input: keys, clipboard, IME and mouse | Accepted |
 | [0040](0040-markdown-decorations-with-pulldown-cmark.md) | Markdown decorations parsed with pulldown-cmark | Accepted |
 | [0041](0041-block-regions-and-incremental-markdown-parsing.md) | Block regions with lazy, incremental Markdown parsing | Accepted |
@@ -61,6 +61,7 @@ with every new ADR.
 | [0126](0126-keyboard-conventions-for-markdown-text.md) | Keyboard conventions for Markdown text | Accepted |
 | [0130](0130-the-text-uses-the-full-window-width.md) | The text uses the full window width | Accepted |
 | [0131](0131-zooming-the-note.md) | Zooming the note | Accepted |
+| [0132](0132-turning-word-wrap-off.md) | Turning word wrap off | Accepted |
 | [0135](0135-collapsible-sidebar-and-narrow-windows.md) | A collapsible sidebar that floats over the note in narrow windows | Accepted |
 | [0136](0136-confirm-before-deleting-a-note.md) | Confirm before deleting a note | Accepted |
 | [0137](0137-notepad-style-status-bar.md) | A Notepad-style status bar | Accepted |

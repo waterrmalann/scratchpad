@@ -58,7 +58,10 @@ pub(crate) struct BaseStyle {
     pub font_size: Pixels,
     pub line_height: Pixels,
     pub theme: Theme,
+    /// Width of the text column.
     pub wrap_width: Pixels,
+    /// Whether lines wrap at `wrap_width`; otherwise each line is one row.
+    pub soft_wrap: bool,
     /// How far a heading's `#`s may hang into the margin left of the text column.
     pub hang_room: Pixels,
 }
@@ -362,7 +365,11 @@ impl LineLayout {
         }
 
         let mut indents = Indents::default();
-        let mut wrap_width = base.wrap_width;
+        let mut wrap_width = if base.soft_wrap {
+            base.wrap_width
+        } else {
+            Pixels::MAX
+        };
         if block.code_block {
             let padding = base.scaled(CODE_BLOCK_PADDING);
             indents.first = padding;
@@ -593,6 +600,11 @@ impl LineLayout {
         self.geometry.x_for(self.display(column))
     }
 
+    /// x of the end of the line: how far an unwrapped line reaches.
+    pub fn end_x(&self) -> Pixels {
+        self.x_for(self.len)
+    }
+
     /// The cursor position closest to `x` on `row`. Next to hidden markers it is the position after
     /// them, so a click just before a word lands in the word; it is never inside a bullet or task box.
     pub fn column_at(&self, row: usize, x: Pixels) -> usize {
@@ -687,14 +699,19 @@ impl LineLayout {
     }
 
     /// Paints the rows of the line that intersect the content mask, and the shapes drawn over the
-    /// text. Only the glyphs of those rows are visited, so a frame (even a caret blink) costs the
-    /// same on a megabyte-long line as on a short one.
+    /// text. Only the glyphs within the mask are visited, so a frame (even a caret blink) costs the
+    /// same on a megabyte-long line, wrapped or not, as on a short one.
     pub fn paint(&self, origin: Point<Pixels>, window: &mut Window) {
         let clip = window.content_mask().bounds;
         let first_row = self.row_at(clip.top() - origin.y);
         let last_row = self.row_at(clip.bottom() - origin.y);
-        let visible =
-            self.geometry.row_glyphs(first_row).start..self.geometry.row_glyphs(last_row).end;
+        // Room for glyphs that reach left of their origin or are wider than usual.
+        let slack = self.line_height * 2.;
+        let clip_x = clip.left() - origin.x - slack..clip.right() - origin.x;
+        let visible = self
+            .geometry
+            .row_glyphs_within(first_row, clip_x.clone())
+            .start..self.geometry.row_glyphs_within(last_row, clip_x).end;
         let baseline = self.baseline();
         let mut row = first_row;
         for segment in &self.segments {

@@ -60,6 +60,9 @@ pub struct Config {
     /// Size of the note's text in percent of the normal size (View > Zoom).
     #[serde(deserialize_with = "or_default")]
     pub zoom_percent: Option<u16>,
+    /// Whether long lines wrap at the window's edge (View > Word wrap); `None` is on.
+    #[serde(deserialize_with = "or_default")]
+    pub word_wrap: Option<bool>,
 }
 
 impl Config {

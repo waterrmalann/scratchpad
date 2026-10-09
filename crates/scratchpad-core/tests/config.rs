@@ -41,6 +41,7 @@ fn save_and_load_round_trip_every_field() {
         sidebar_collapsed: true,
         status_bar_hidden: true,
         zoom_percent: Some(150),
+        word_wrap: Some(false),
     };
 
     config.save(&path).unwrap();
@@ -76,6 +77,7 @@ fn loads_the_documented_file_format() {
             "sidebar_collapsed": true,
             "status_bar_hidden": true,
             "zoom_percent": 120,
+            "word_wrap": false,
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -96,6 +98,7 @@ fn loads_the_documented_file_format() {
             sidebar_collapsed: true,
             status_bar_hidden: true,
             zoom_percent: Some(120),
+            word_wrap: Some(false),
         }
     );
 }
@@ -121,7 +124,8 @@ fn invalid_fields_fall_back_individually() {
             "theme": "solarized",
             "last_opened_note": 42,
             "notes_dir": "C:/Notes",
-            "zoom_percent": -5
+            "zoom_percent": -5,
+            "word_wrap": "no"
         }"#,
     );
     assert_eq!(

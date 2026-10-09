@@ -81,8 +81,8 @@ pub fn register_app_handlers(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
 
-/// How the note is shown: its text size. Handled by the main window, so they work wherever focus
-/// is, and they apply to the note's text only, not to the rest of the window.
+/// How the note is shown: text size and word wrap. Handled by the main window, so they work
+/// wherever focus is, and they apply to the note's text only, not to the rest of the window.
 pub mod view {
     use gpui::{KeyBinding, actions};
 
@@ -95,12 +95,14 @@ pub mod view {
             ZoomOut,
             /// Back to the normal text size.
             ResetZoom,
+            /// Turns wrapping long lines at the window's edge on or off.
+            ToggleWordWrap,
         ]
     );
 
     pub fn key_bindings() -> Vec<KeyBinding> {
         // Windows reports Ctrl+Shift+= and Ctrl+numpad-plus as `ctrl-+`, and Ctrl+numpad-minus
-        // as `ctrl--`.
+        // as `ctrl--`. Word wrap has no key, as in Notepad.
         vec![
             KeyBinding::new("secondary-=", ZoomIn, None),
             KeyBinding::new("secondary-+", ZoomIn, None),

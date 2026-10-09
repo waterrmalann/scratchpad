@@ -1,6 +1,6 @@
 # 0030. Virtualized editor rendering with an anchor scroll position
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted; unwrapped lines and horizontal scrolling in ADR 0132
 
 ## Context
 A 100k-line or 10 MB note must type and scroll as smoothly as a short one (PLAN §22–23, §37, rule 5). With

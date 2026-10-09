@@ -111,12 +111,11 @@ impl LineGeometry {
         let row = row.min(self.rows.len() - 1);
         let glyphs = self.row_glyphs(row);
         let x = x - self.indent(row) + self.rows[row].start_x;
-        for i in glyphs.clone() {
-            let left = self.glyphs[i].x;
-            let right = self.glyphs.get(i + 1).map_or(self.width, |next| next.x);
-            if x < (left + right) / 2. {
-                return self.glyphs[i].column;
-            }
+        let i = partition(glyphs.clone(), |i| {
+            (self.glyphs[i].x + self.right(i)) / 2. <= x
+        });
+        if i < glyphs.end {
+            return self.glyphs[i].column;
         }
         if row + 1 < self.rows.len() {
             self.glyphs[glyphs.end - 1].column
@@ -167,6 +166,14 @@ impl LineGeometry {
         start..end
     }
 
+    /// Glyph indices on `row` whose x (as [`glyph_x`](Self::glyph_x) gives it) is within `x`.
+    pub fn row_glyphs_within(&self, row: usize, x: Range<Pixels>) -> Range<usize> {
+        let glyphs = self.row_glyphs(row);
+        let start = partition(glyphs.clone(), |i| self.glyph_x(row, i) < x.start);
+        let end = partition(glyphs, |i| self.glyph_x(row, i) <= x.end);
+        start..end.max(start)
+    }
+
     /// x of `glyph` on `row`.
     pub fn glyph_x(&self, row: usize, glyph: usize) -> Pixels {
         self.indent(row) + self.glyphs[glyph].x - self.rows[row].start_x
@@ -177,12 +184,14 @@ impl LineGeometry {
     pub fn glyph_at(&self, row: usize, x: Pixels) -> Option<usize> {
         let row = row.min(self.rows.len() - 1);
         let x = x - self.indent(row) + self.rows[row].start_x;
-        self.row_glyphs(row)
-            .find(|&i| {
-                let right = self.glyphs.get(i + 1).map_or(self.width, |next| next.x);
-                self.glyphs[i].x <= x && x < right
-            })
-            .map(|i| self.glyphs[i].column)
+        let glyphs = self.row_glyphs(row);
+        let i = partition(glyphs.clone(), |i| self.right(i) <= x);
+        (i < glyphs.end && self.glyphs[i].x <= x).then(|| self.glyphs[i].column)
+    }
+
+    /// x in the unwrapped line where glyph `i` ends: where the next one starts.
+    fn right(&self, i: usize) -> Pixels {
+        self.glyphs.get(i + 1).map_or(self.width, |next| next.x)
     }
 
     fn indent(&self, row: usize) -> Pixels {
@@ -205,6 +214,22 @@ impl LineGeometry {
             .map_or(self.width, |next| next.start_x);
         (end_x - self.rows[row].start_x).min(self.room(row))
     }
+}
+
+/// The first index in `range` for which `before` is false, where it is true for the indices before
+/// it and false after. Glyphs are in column order and left to right (GPUI shapes all text left to
+/// right), so searches by x are binary: an unwrapped line can have a million glyphs on one row.
+fn partition(range: Range<usize>, before: impl Fn(usize) -> bool) -> usize {
+    let (mut low, mut high) = (range.start, range.end);
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if before(mid) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    low
 }
 
 /// x in the unwrapped line of the first glyph at or after `column`, or the line's `width` past the
@@ -578,6 +603,21 @@ mod tests {
         assert_eq!(width, px(55.));
         let width = set_span_width(&mut glyphs, 2..4, px(5.), width);
         assert_eq!(width, px(40.), "the last span ends the line");
+    }
+
+    #[test]
+    fn the_glyphs_within_an_x_range_are_found_on_their_row() {
+        let line = layout("hello world", 80.);
+        assert_eq!(line.row_glyphs_within(0, px(15.)..px(30.)), 2..4);
+        assert_eq!(line.row_glyphs_within(1, px(-100.)..px(0.)), 6..7);
+        assert_eq!(line.row_glyphs_within(1, px(15.)..px(1000.)), 8..11);
+        assert_eq!(line.row_glyphs_within(1, px(100.)..px(200.)), 11..11);
+
+        let unwrapped = layout(&"a".repeat(1_000_000), f32::MAX);
+        assert_eq!(
+            unwrapped.row_glyphs_within(0, px(5_000_000.)..px(5_000_100.)),
+            500_000..500_011
+        );
     }
 
     #[test]
