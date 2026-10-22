@@ -27,6 +27,8 @@ const CARET_WIDTH: Pixels = px(2.);
 const SCROLLBAR_TRACK_WIDTH: Pixels = px(12.);
 const SCROLLBAR_THUMB_WIDTH: Pixels = px(6.);
 const SCROLLBAR_MIN_THUMB: Pixels = px(24.);
+/// Height of the bottom-edge strip that takes horizontal scrollbar clicks.
+const HSCROLLBAR_TRACK_HEIGHT: Pixels = px(12.);
 const CODE_BLOCK_RADIUS: Pixels = px(6.);
 
 pub(super) struct EditorElement {
@@ -64,6 +66,31 @@ impl ScrollbarLayout {
     }
 }
 
+/// The horizontal scrollbar of unwrapped text as last laid out.
+///
+/// Its extent is the longest line on screen (ADR 0030, 0132): the thumb resizes as lines scroll in
+/// and out of view.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HScrollbarLayout {
+    pub track: Bounds<Pixels>,
+    pub thumb: Bounds<Pixels>,
+    /// The horizontal offset at which the thumb reaches the right end of the track.
+    max_scroll: Pixels,
+}
+
+impl HScrollbarLayout {
+    /// The horizontal offset of the text when the thumb's left edge is at `left`.
+    pub fn scroll_for_thumb_left(&self, left: Pixels) -> Pixels {
+        let travel = self.track.size.width - self.thumb.size.width;
+        let fraction = if travel > px(0.) {
+            ((left - self.track.left()) / travel).clamp(0., 1.)
+        } else {
+            0.
+        };
+        self.max_scroll * fraction
+    }
+}
+
 pub(super) struct Frame {
     lines: Vec<(Arc<LineLayout>, gpui::Point<Pixels>)>,
     /// Backgrounds of code blocks, one per run of consecutive code lines.
@@ -75,6 +102,7 @@ pub(super) struct Frame {
     marked: Vec<Bounds<Pixels>>,
     cursor: Option<Bounds<Pixels>>,
     scrollbar: Option<ScrollbarLayout>,
+    hscrollbar: Option<HScrollbarLayout>,
     colors: FrameColors,
 }
 
@@ -92,6 +120,7 @@ pub(super) struct PrepaintState {
     frame: Frame,
     hitbox: Hitbox,
     scrollbar_hitbox: Option<Hitbox>,
+    hscrollbar_hitbox: Option<Hitbox>,
 }
 
 impl EditorView {
@@ -167,6 +196,7 @@ impl EditorView {
             marked: Vec::new(),
             cursor: None,
             scrollbar: None,
+            hscrollbar: None,
             colors: FrameColors {
                 code_block: cx.theme().surface,
                 // A lighter shade of the selection: the selected match stands out among them.
@@ -270,6 +300,17 @@ impl EditorView {
                 viewport_lines,
             ));
         }
+        if !soft_wrap {
+            let widest = frame
+                .lines
+                .iter()
+                .map(|(layout, _)| layout.end_x())
+                .fold(px(0.), Pixels::max);
+            let max_scroll = (widest - width).max(scroll_x);
+            if max_scroll > px(0.) {
+                frame.hscrollbar = Some(hscrollbar_layout(bounds, scroll_x, max_scroll, width));
+            }
+        }
         self.find = find;
         #[cfg(feature = "test-support")]
         {
@@ -279,6 +320,7 @@ impl EditorView {
         self.scroll_x = scroll_x;
         self.cursor_row_top = cursor_row_top;
         self.scrollbar = frame.scrollbar;
+        self.hscrollbar = frame.hscrollbar;
         self.layouts.trim_around(anchor.line);
         frame
     }
@@ -320,6 +362,37 @@ fn scrollbar_layout(
             size(SCROLLBAR_THUMB_WIDTH, thumb_height),
         ),
         max_position,
+    }
+}
+
+fn hscrollbar_layout(
+    bounds: Bounds<Pixels>,
+    scroll_x: Pixels,
+    max_scroll: Pixels,
+    width: Pixels,
+) -> HScrollbarLayout {
+    // Ends where the vertical scrollbar's track starts.
+    let track = Bounds::new(
+        point(bounds.left(), bounds.bottom() - HSCROLLBAR_TRACK_HEIGHT),
+        size(
+            bounds.size.width - SCROLLBAR_TRACK_WIDTH,
+            HSCROLLBAR_TRACK_HEIGHT,
+        ),
+    );
+    let content = max_scroll + width;
+    let thumb_width = (track.size.width * (width / content).min(1.))
+        .max(SCROLLBAR_MIN_THUMB)
+        .min(track.size.width);
+    let travel = track.size.width - thumb_width;
+    let thumb_left = track.left() + travel * (scroll_x / max_scroll).clamp(0., 1.);
+    let inset = (HSCROLLBAR_TRACK_HEIGHT - SCROLLBAR_THUMB_WIDTH) / 2.;
+    HScrollbarLayout {
+        track,
+        thumb: Bounds::new(
+            point(thumb_left, track.top() + inset),
+            size(thumb_width, SCROLLBAR_THUMB_WIDTH),
+        ),
+        max_scroll,
     }
 }
 
@@ -383,11 +456,15 @@ impl Element for EditorElement {
         let scrollbar_hitbox = frame.scrollbar.map(|scrollbar| {
             window.insert_hitbox(scrollbar.track, HitboxBehavior::BlockMouseExceptScroll)
         });
+        let hscrollbar_hitbox = frame.hscrollbar.map(|scrollbar| {
+            window.insert_hitbox(scrollbar.track, HitboxBehavior::BlockMouseExceptScroll)
+        });
         PrepaintState {
             started,
             frame,
             hitbox,
             scrollbar_hitbox,
+            hscrollbar_hitbox,
         }
     }
 
@@ -427,6 +504,9 @@ impl Element for EditorElement {
         if let Some(scrollbar) = &state.scrollbar_hitbox {
             window.set_cursor_style(CursorStyle::Arrow, scrollbar);
         }
+        if let Some(scrollbar) = &state.hscrollbar_hitbox {
+            window.set_cursor_style(CursorStyle::Arrow, scrollbar);
+        }
         self.register_mouse_listeners(state, window);
 
         let frame = &state.frame;
@@ -434,7 +514,15 @@ impl Element for EditorElement {
         let text = ContentMask {
             bounds: Bounds::from_corners(
                 bounds.origin,
-                point(bounds.right() - SCROLLBAR_TRACK_WIDTH, bounds.bottom()),
+                point(
+                    bounds.right() - SCROLLBAR_TRACK_WIDTH,
+                    bounds.bottom()
+                        - if frame.hscrollbar.is_some() {
+                            HSCROLLBAR_TRACK_HEIGHT
+                        } else {
+                            px(0.)
+                        },
+                ),
             ),
         };
         window.with_content_mask(Some(text), |window| {
@@ -469,6 +557,13 @@ impl Element for EditorElement {
             );
         }
 
+        if let Some(scrollbar) = &frame.hscrollbar {
+            window.paint_quad(
+                fill(scrollbar.thumb, frame.colors.scrollbar)
+                    .corner_radii(SCROLLBAR_THUMB_WIDTH / 2.),
+            );
+        }
+
         // Typing latency budget (PLAN §37): `latency` runs from the input event to here, including
         // the wait for the frame; `frame` is the editor's own layout and paint time.
         let frame_time = state.started.elapsed();
@@ -485,11 +580,20 @@ impl EditorElement {
         let view = self.view.clone();
         let hitbox = state.hitbox.clone();
         let scrollbar = state.scrollbar_hitbox.clone();
+        let hscrollbar = state.hscrollbar_hitbox.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
                 return;
             }
-            if scrollbar
+            if hscrollbar
+                .as_ref()
+                .is_some_and(|hitbox| hitbox.is_hovered(window))
+            {
+                view.update(cx, |view, cx| {
+                    view.hscrollbar_mouse_down(event.position, cx)
+                });
+                cx.stop_propagation();
+            } else if scrollbar
                 .as_ref()
                 .is_some_and(|hitbox| hitbox.is_hovered(window))
             {

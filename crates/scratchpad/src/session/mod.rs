@@ -46,6 +46,8 @@ const TITLE_SEARCH_LINES: usize = 200;
 /// Recovery snapshots of new notes that have no file yet are keyed by a path in the notes
 /// folder starting with this; it is hidden and not `.md`, so it can never be a note.
 const DRAFT_KEY_PREFIX: &str = ".draft-";
+/// What a new note starts with: an empty heading for the title.
+const NEW_NOTE_TEXT: &str = "# ";
 
 /// What the editor shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -414,7 +416,9 @@ impl Session {
         self.watch_file(None, cx);
         self.editor.update(cx, |editor, cx| {
             editor.set_markdown(true, cx);
-            editor.set_text("", cx);
+            // A new note starts as a heading, which the user can backspace away.
+            editor.set_text(NEW_NOTE_TEXT, cx);
+            editor.move_cursor_to_end(cx);
             editor.set_read_only(false);
         });
         window.focus(&self.editor.focus_handle(cx));
@@ -574,7 +578,7 @@ impl Session {
         let text: Arc<str> = editor.text().into();
         let title = title_in(editor.editor().buffer());
         let title_finished = title_line_finished(editor.editor().buffer());
-        if text.trim().is_empty() {
+        if text.trim().is_empty() || text.trim() == "#" {
             // Nothing worth a file.
             self.doc.dirty = false;
             if self.doc.snapshot {

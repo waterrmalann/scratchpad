@@ -277,10 +277,10 @@ fn a_new_note_is_saved_to_the_old_folder_and_an_empty_folder_starts_a_new_note(
     assert_eq!(titles_on_disk(old.path()), ["Shopping"]);
     assert_eq!(
         fs::read_to_string(old.path().join("Shopping.md")).unwrap(),
-        "Shopping"
+        "# Shopping"
     );
     assert!(notes.read_with(cx, |notes, _| notes.has_draft()));
-    assert_eq!(editor_text(&root, cx), "");
+    assert_eq!(editor_text(&root, cx), "# ");
     cx.simulate_input("Ideas\n");
     wait(AUTOSAVE_DELAY, cx);
     assert_eq!(titles_on_disk(new.path()), ["Ideas"]);
@@ -470,7 +470,7 @@ milk",
     click("choice:Restore", cx);
     assert_eq!(
         fs::read_to_string(new.path().join("Shopping.md")).unwrap(),
-        "Shopping
+        "# Shopping
 milk"
     );
 }

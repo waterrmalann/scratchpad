@@ -124,14 +124,14 @@ fn a_new_note_saved_into_the_notes_folder_gets_only_the_chosen_file(cx: &mut Tes
     wait(AUTOSAVE_DELAY, cx);
 
     assert_eq!(titles_on_disk(folders.notes.path()), ["Groceries"]);
-    assert_eq!(fs::read_to_string(&list).unwrap(), "Shopping\nmilk");
+    assert_eq!(fs::read_to_string(&list).unwrap(), "# Shopping\nmilk");
     assert_eq!(selection(&root, cx), Selection::Note(list.clone()));
     assert_eq!(listed(&root, cx), [list.as_path()]);
     assert!(is_markdown(&root, cx));
     assert_eq!(folders.snapshots(), 0, "nothing left to recover");
 
     // It is a note like any other from now on: editing its title renames it.
-    cx.simulate_keystrokes("ctrl-home");
+    cx.simulate_keystrokes("ctrl-home right right");
     cx.simulate_input("Weekly ");
     cx.simulate_keystrokes("ctrl-s");
     assert_eq!(titles_on_disk(folders.notes.path()), ["Weekly Shopping"]);

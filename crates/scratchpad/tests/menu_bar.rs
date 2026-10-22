@@ -159,15 +159,15 @@ fn undo_from_the_menu_undoes_in_the_note_and_leaves_the_caret_there(cx: &mut Tes
     click("menu:Edit", cx);
     assert!(!editor_focused(&root, cx), "the open menu has the keys");
     click("menu-item:Undo", cx);
-    assert_eq!(editor_text(&root, cx), "");
+    assert_eq!(editor_text(&root, cx), "# ");
     assert_eq!(open_menu(&root, cx), None);
     assert!(editor_focused(&root, cx));
 
     choose("Edit", "Redo", cx);
-    assert_eq!(editor_text(&root, cx), "hello");
+    assert_eq!(editor_text(&root, cx), "# hello");
     // Typing goes on in the note.
     cx.simulate_input("!");
-    assert_eq!(editor_text(&root, cx), "hello!");
+    assert_eq!(editor_text(&root, cx), "# hello!");
 }
 
 #[gpui::test]
@@ -180,22 +180,22 @@ fn cut_copy_and_paste_from_the_menu_use_the_clipboard(cx: &mut TestAppContext) {
 
     choose("Edit", "Select all", cx);
     choose("Edit", "Copy", cx);
-    assert_eq!(clipboard(cx).as_deref(), Some("abc"));
+    assert_eq!(clipboard(cx).as_deref(), Some("# abc"));
     cx.simulate_keystrokes("ctrl-end");
     choose("Edit", "Paste", cx);
-    assert_eq!(editor_text(&root, cx), "abcabc");
+    assert_eq!(editor_text(&root, cx), "# abc# abc");
 
     cx.simulate_keystrokes("shift-home");
     choose("Edit", "Cut", cx);
-    assert_eq!(editor_text(&root, cx), "");
-    assert_eq!(clipboard(cx).as_deref(), Some("abcabc"));
+    assert_eq!(editor_text(&root, cx), "# ");
+    assert_eq!(clipboard(cx).as_deref(), Some("abc# abc"));
 
     cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("xyz".into())));
     choose("Edit", "Paste", cx);
-    assert_eq!(editor_text(&root, cx), "xyz");
+    assert_eq!(editor_text(&root, cx), "# xyz");
     cx.simulate_keystrokes("shift-left");
     choose("Edit", "Delete", cx);
-    assert_eq!(editor_text(&root, cx), "xy");
+    assert_eq!(editor_text(&root, cx), "# xy");
 }
 
 #[gpui::test]
@@ -284,9 +284,9 @@ fn edit_commands_act_on_the_note_wherever_focus_was(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("ctrl-h");
     cx.simulate_input("1");
     cx.simulate_keystrokes("alt-a");
-    assert_eq!(editor_text(&root, cx), "1 two 1");
+    assert_eq!(editor_text(&root, cx), "# 1 two 1");
     choose("Edit", "Undo", cx);
-    assert_eq!(editor_text(&root, cx), "one two one");
+    assert_eq!(editor_text(&root, cx), "# one two one");
     assert!(
         editor_focused(&root, cx),
         "the caret is where the undo happened"
@@ -301,7 +301,7 @@ fn edit_commands_act_on_the_note_wherever_focus_was(cx: &mut TestAppContext) {
     cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("!".into())));
     cx.simulate_keystrokes("ctrl-end ctrl-p");
     choose("Edit", "Paste", cx);
-    assert_eq!(editor_text(&root, cx), "one two one!");
+    assert_eq!(editor_text(&root, cx), "# one two one!");
     let search = root.read_with(cx, |root, cx| root.sidebar().read(cx).search_text(cx));
     assert_eq!(search, "");
     assert!(editor_focused(&root, cx));
@@ -322,7 +322,7 @@ fn a_menu_opened_over_the_narrow_sidebar_gives_the_note_the_keys_and_commands(
     click("menu:View", cx);
     cx.simulate_keystrokes("escape");
     cx.simulate_input("typed");
-    assert_eq!(editor_text(&root, cx), "typed");
+    assert_eq!(editor_text(&root, cx), "# typed");
 
     // Nor do the commands chosen there: they run as from the note.
     let editor = common::editor(&root, cx);

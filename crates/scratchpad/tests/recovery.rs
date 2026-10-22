@@ -64,7 +64,7 @@ fn a_new_note_is_snapshotted_until_it_gets_its_file(cx: &mut TestAppContext) {
     wait(AUTOSAVE_DELAY, cx);
     let snapshots = folders.snapshots();
     assert_eq!(snapshots.len(), 1);
-    assert_eq!(snapshots[0].1, "Half a title");
+    assert_eq!(snapshots[0].1, "# Half a title");
 
     cx.simulate_input(" done\nbody");
     wait(AUTOSAVE_DELAY, cx);
@@ -89,7 +89,7 @@ fn a_new_note_lost_in_a_crash_is_restored_as_a_new_note(cx: &mut TestAppContext)
         }]
     );
     click("choice:Restore", cx);
-    assert_eq!(editor_text(&root, cx), "Lost idea");
+    assert_eq!(editor_text(&root, cx), "# Lost idea");
     cx.simulate_keystrokes("ctrl-s");
 
     assert!(notices(&root, cx).is_empty());

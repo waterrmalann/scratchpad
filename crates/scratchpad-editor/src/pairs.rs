@@ -49,6 +49,19 @@ impl Editor {
         }
 
         let cursor = selection.head;
+        if c == '`' && self.opens_code_fence(cursor) {
+            let buffer = self.buffer();
+            let line_start = buffer.line_start(buffer.line_of(cursor));
+            let line = buffer.text_for_range(line_start..cursor);
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            self.transact(|editor| {
+                editor.replace_range(cursor..cursor, &format!("`\n{indent}\n{indent}```"));
+                // On the empty line between the fences.
+                let inside = cursor.0 + 1 + 1 + indent.len();
+                editor.set_selection(Selection::cursor(ByteOffset(inside)));
+            });
+            return;
+        }
         let (before, after) = self.chars_around(cursor);
         if after == Some(c) && PAIRS.iter().any(|(_, close)| *close == c) && self.line_balanced(c) {
             self.move_cursor(Motion::Right, false);
@@ -77,6 +90,16 @@ impl Editor {
             return self.replace_range(start..end, "");
         }
         self.backspace();
+    }
+
+    /// Whether a backtick typed at `cursor` completes "```" alone on its line (indentation aside), and so
+    /// opens a code block.
+    fn opens_code_fence(&self, cursor: ByteOffset) -> bool {
+        let buffer = self.buffer();
+        let line = buffer.line_of(cursor);
+        let start = buffer.line_start(line);
+        buffer.text_for_range(start..cursor).trim_start() == "``"
+            && cursor == buffer.line_end(line)
     }
 
     fn wrap_selection(&mut self, open: char, close: char) {

@@ -39,7 +39,7 @@ fn a_new_note_has_no_file_until_it_has_content(cx: &mut TestAppContext) {
 
     cx.simulate_keystrokes("ctrl-n");
     assert!(editor_focused(&root, cx));
-    assert_eq!(editor_text(&root, cx), "");
+    assert_eq!(editor_text(&root, cx), "# ");
     cx.simulate_input("  \n ");
     wait(AUTOSAVE_DELAY * 10, cx);
     cx.simulate_keystrokes("ctrl-s");
@@ -68,7 +68,7 @@ fn a_new_note_gets_its_file_once_its_title_line_is_finished(cx: &mut TestAppCont
     assert_eq!(titles_on_disk(&dir), ["Ideas for webhooks"]);
     assert_eq!(
         fs::read_to_string(dir.join("Ideas for webhooks.md")).unwrap(),
-        "Ideas for webhooks\nretries"
+        "# Ideas for webhooks\nretries"
     );
     let notes = common::notes(&root, cx);
     assert_eq!(
@@ -85,7 +85,7 @@ fn leaving_a_new_note_gives_it_a_file_at_once(cx: &mut TestAppContext) {
     let (root, cx) = common::open_main_window_in(dir.path(), cx);
 
     cx.simulate_keystrokes("ctrl-n");
-    cx.simulate_input("# Short: one line");
+    cx.simulate_input("Short: one line");
     click("note:Ideas", cx);
 
     assert_eq!(titles_on_disk(dir.path()), ["Ideas", "Short one line"]);

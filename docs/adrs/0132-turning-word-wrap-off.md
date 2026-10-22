@@ -19,8 +19,9 @@ sideways. Scratchpad wraps (ADR 0031) and never knows the whole document's geome
   caret out of view (past the end of a line scrolled out to the left); a click in view never moves
   the text. Dragging a selection past the text's left or right edge scrolls it too (the text's,
   not the window's: a maximized window's edge is the screen's). Wrapping again resets it.
-- There is no horizontal scrollbar: its extent would only describe the lines on screen, and a
-  thumb that changes size as one scrolls vertically misleads more than it helps.
+- A horizontal scrollbar runs along the bottom edge while the text can scroll sideways. Its extent
+  is only the lines on screen, so the thumb changes size as one scrolls vertically; a scrollbar
+  that is missing altogether is the worse answer, since nothing then shows that the text goes on.
 - Painting and hit-testing an unwrapped line find the glyphs in view by binary search on their x.
 
 ## Consequences

@@ -27,7 +27,7 @@ use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Selectio
 
 use crate::actions::editor::*;
 use crate::theme::{ActiveTheme, typography};
-use element::{EditorElement, ScrollbarLayout};
+use element::{EditorElement, HScrollbarLayout, ScrollbarLayout};
 pub use find::{BACKGROUND_SEARCH_BYTES, Direction, FindStatus, SEARCH_DEBOUNCE};
 use layout_cache::LayoutCache;
 use line_layout::{BaseStyle, LineKey, LineLayout};
@@ -100,6 +100,7 @@ pub struct EditorView {
     bounds: Option<Bounds<Pixels>>,
     visible_lines: Range<usize>,
     scrollbar: Option<ScrollbarLayout>,
+    hscrollbar: Option<HScrollbarLayout>,
     cursor_visible: bool,
     /// Running while the editor is focused in an active window.
     blink_task: Option<Task<()>>,
@@ -147,6 +148,8 @@ enum Drag {
     },
     /// Dragging the scrollbar thumb, grabbed `grab` below its top.
     Scrollbar { grab: Pixels },
+    /// Dragging the horizontal scrollbar thumb, grabbed `grab` right of its left edge.
+    HScrollbar { grab: Pixels },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -196,6 +199,7 @@ impl EditorView {
             bounds: None,
             visible_lines: 0..0,
             scrollbar: None,
+            hscrollbar: None,
             cursor_visible: true,
             blink_task: None,
             drag: None,
@@ -220,6 +224,13 @@ impl EditorView {
         self.drag = None;
         self.click_offset = None;
         self.find_text_changed(true, cx);
+        cx.notify();
+    }
+
+    /// Puts the cursor at the end of the document.
+    pub fn move_cursor_to_end(&mut self, cx: &mut Context<Self>) {
+        self.editor.move_cursor(Motion::DocumentEnd, false);
+        self.autoscroll = Some(Autoscroll::Cursor);
         cx.notify();
     }
 
@@ -768,6 +779,10 @@ impl EditorView {
                 let grab = *grab;
                 self.drag_scrollbar(event.position.y - grab, window, cx);
             }
+            Some(Drag::HScrollbar { grab }) => {
+                let grab = *grab;
+                self.drag_hscrollbar(event.position.x - grab, cx);
+            }
             None => {}
         }
     }
@@ -964,6 +979,28 @@ impl EditorView {
         };
         self.drag = Some(Drag::Scrollbar { grab });
         self.drag_scrollbar(position.y - grab, window, cx);
+    }
+
+    fn hscrollbar_mouse_down(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(scrollbar) = self.hscrollbar else {
+            return;
+        };
+        let grab = if scrollbar.thumb.contains(&position) {
+            position.x - scrollbar.thumb.left()
+        } else {
+            scrollbar.thumb.size.width / 2.
+        };
+        self.drag = Some(Drag::HScrollbar { grab });
+        self.drag_hscrollbar(position.x - grab, cx);
+    }
+
+    /// Scrolls so the horizontal scrollbar thumb's left edge is at `thumb_left`.
+    fn drag_hscrollbar(&mut self, thumb_left: Pixels, cx: &mut Context<Self>) {
+        let Some(scrollbar) = self.hscrollbar else {
+            return;
+        };
+        self.scroll_x = scrollbar.scroll_for_thumb_left(thumb_left);
+        cx.notify();
     }
 
     /// Scrolls so the scrollbar thumb's top is at `thumb_top`.

@@ -57,8 +57,20 @@ fn quotes_after_letters_stay_single_so_apostrophes_work() {
 #[test]
 fn three_backticks_type_a_fence() {
     assert_eq!(typed("|", "`"), "`|`");
-    assert_eq!(typed("|", "```"), "```|");
     assert_eq!(typed("|", "`code`"), "`code`|");
+}
+
+#[test]
+fn the_third_backtick_opens_and_closes_a_code_block() {
+    assert_eq!(typed("|", "```"), "```\n|\n```");
+    assert_eq!(typed("  |", "```"), "  ```\n  |\n  ```");
+    // Not alone on the line: an inline span.
+    assert_eq!(typed("a |", "```"), "a ```|");
+    assert_eq!(typed("|x", "```"), "```|x");
+    let mut ed = editor("|");
+    type_keys(&mut ed, "```");
+    assert!(ed.undo());
+    assert_eq!(state(&ed), "``|");
 }
 
 #[test]

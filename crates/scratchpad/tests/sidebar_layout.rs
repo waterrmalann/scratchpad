@@ -61,7 +61,7 @@ fn ctrl_backslash_collapses_and_expands_the_sidebar_and_it_is_remembered(cx: &mu
     assert_eq!(note_left(cx), width);
     let editor = common::editor(&root, cx);
     let caret = editor.read_with(cx, |editor, _| editor.editor().selection().head.0);
-    assert_eq!(caret, "one\ntwo".len());
+    assert_eq!(caret, "# one\ntwo".len());
     cx.simulate_keystrokes("ctrl-\\");
     common::close(cx);
 
