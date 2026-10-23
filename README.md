@@ -17,6 +17,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 
 - **Live preview** — Headings, bold, italic, strikethrough, inline code, code blocks, quotes, lists, task boxes, rules and links are drawn as you type. The Markdown markers show only where the cursor is. `Ctrl+/` shows all of them.
 - **Markdown-aware editing** — Enter continues a list or quote, Tab nests a list item, `Ctrl+B`/`I`/`E`/`K` format the selection, and clicking a task box ticks it. `Ctrl`+click opens a link.
+- **Typing helpers** — A new note starts with a `# ` heading for its title (Backspace removes it). Brackets and quotes pair up conservatively, and a third backtick alone on a line opens a code block and closes it for you.
 - **Plain text for other files** — Files that are not named `.md` or `.markdown` are edited as plain text, untouched by Markdown rules.
 
 <picture>
@@ -28,6 +29,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 
 - **Plain files** — Every note is one `.md` file named after its first line. Sync it, put it in Git, edit it elsewhere.
 - **Note list** — Newest first and grouped by date, with search over titles and contents (`Ctrl+P`). Rename in place, delete to the Recycle Bin after a confirmation.
+- **Pinned notes** — Right-click a note and choose Pin to keep it in a Pinned section above the date groups. Pins survive renames and restarts.
 - **Open anything** — `Ctrl+O` or `scratchpad.exe <file>` edits any text file in place. Save as writes a copy and carries on editing it.
 
 **Saving and safety**
@@ -40,7 +42,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 **Finding and view**
 
 - **Find and replace** — In the open note, with match case, replace all and go to line.
-- **Zoom and wrap** — Text size from 50 % to 400 % (`Ctrl+=`, `Ctrl+-`, `Ctrl`+wheel), word wrap on or off, a Notepad-style status bar with line, column, character count, zoom, line ending and encoding.
+- **Zoom and wrap** — Text size from 50 % to 400 % (`Ctrl+=`, `Ctrl+-`, `Ctrl`+wheel), word wrap on or off (with a horizontal scrollbar when it is off), a Notepad-style status bar with line, column, character count, zoom, line ending and encoding.
 - **Themes and narrow windows** — System, Light or Dark. The note list collapses (`Ctrl+\`) and floats over the note in a narrow window.
 
 <p>
@@ -82,6 +84,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 | Ctrl+= / Ctrl+-, Ctrl+wheel | Make the note's text larger / smaller (50% to 400%) |
 | Ctrl+0 | Normal text size |
 | Ctrl+click | Open a link |
+| Right-click a note | Pin or unpin, rename, delete, show in folder |
 | Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete (asks first) |
 | Ctrl+, | Settings |
 | Ctrl+W, Ctrl+Q | Close the window, quit |
@@ -92,7 +95,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 ## Where things live
 
 - **Notes** — `Documents\Scratchpad`. Change the folder in Settings (`Ctrl+,`).
-- **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, status bar, sidebar and last note are remembered there too.
+- **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, status bar, sidebar, pinned notes and last note are remembered there too.
 - **Environment** — `SCRATCHPAD_NOTES_DIR` uses another notes folder (Settings then cannot change it) and `SCRATCHPAD_CONFIG_DIR` another folder for the config, recovery snapshots and log. Set both to try the app on a scratch folder.
 - **Command line** — `scratchpad.exe <file>` opens that file, as File > Open does. The installer registers no file associations yet, so use "Open with" and pick `scratchpad.exe`.
 
