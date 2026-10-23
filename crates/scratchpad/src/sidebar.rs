@@ -51,6 +51,8 @@ const SIDEBAR_ICON: &str = if cfg!(windows) { "\u{E700}" } else { "=" };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
     Header(DateGroup),
+    /// The heading of the pinned notes, which are [`Row::Note`]s.
+    PinnedHeader,
     Draft,
     /// Index into [`Notes::notes`].
     Note(usize),
@@ -83,14 +85,17 @@ struct ContextMenu {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MenuItem {
+    TogglePin,
     Rename,
     Delete,
     ShowInFolder,
 }
 
 impl MenuItem {
-    fn label(self) -> &'static str {
+    fn label(self, pinned: bool) -> &'static str {
         match self {
+            MenuItem::TogglePin if pinned => "Unpin",
+            MenuItem::TogglePin => "Pin",
             MenuItem::Rename => "Rename",
             MenuItem::Delete => "Delete",
             MenuItem::ShowInFolder => "Show in Folder",
@@ -302,7 +307,7 @@ impl Sidebar {
         let row_of = |row: &Row| match *row {
             Row::Note(ix) => notes.notes().get(ix).map(|note| note.path.as_path()),
             Row::Hit(ix) => notes.search_hits()?.get(ix).map(|hit| hit.path.as_path()),
-            Row::Header(_) | Row::Draft => None,
+            Row::Header(_) | Row::PinnedHeader | Row::Draft => None,
         };
         if let Some(ix) = self.rows.iter().position(|row| row_of(row) == Some(path)) {
             let strategy = if moving_down {
@@ -490,6 +495,9 @@ impl Sidebar {
         };
         self.close_menu(window, cx);
         match item {
+            MenuItem::TogglePin => self
+                .notes
+                .update(cx, |notes, cx| notes.toggle_pin(&path, cx)),
             MenuItem::Rename => self.start_rename(path, window, cx),
             MenuItem::Delete => self.confirm_delete(path, window, cx),
             MenuItem::ShowInFolder => {
@@ -509,18 +517,8 @@ impl Sidebar {
         let theme = cx.theme();
         let today = self.rows_date;
         match row {
-            Row::Header(group) => div()
-                .debug_selector(|| format!("group:{}", group.label()))
-                .h(ROW_HEIGHT)
-                .px_5()
-                .pb_1()
-                .flex()
-                .items_end()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.muted)
-                .child(group.label())
-                .into_any_element(),
+            Row::Header(group) => section_header(group.label(), theme),
+            Row::PinnedHeader => section_header("Pinned", theme),
             // The draft only exists while it is open, so it is always selected.
             Row::Draft => {
                 let highlight = Some(self.selection_color(window, cx));
@@ -729,10 +727,12 @@ impl Sidebar {
 
     fn render_menu(&self, menu: &ContextMenu, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let pinned = self.notes.read(cx).is_pinned(&menu.path);
         let item = |item: MenuItem, cx: &mut Context<Self>| {
+            let label = item.label(pinned);
             div()
-                .id(item.label())
-                .debug_selector(|| format!("menu:{}", item.label()))
+                .id(label)
+                .debug_selector(|| format!("menu:{label}"))
                 .px_3()
                 .py_1()
                 .rounded_sm()
@@ -741,7 +741,7 @@ impl Sidebar {
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.choose(item, window, cx)
                 }))
-                .child(item.label())
+                .child(label)
         };
         let menu_element = div()
             .id("context-menu")
@@ -766,6 +766,7 @@ impl Sidebar {
                     cx.stop_propagation();
                 }
             }))
+            .child(item(MenuItem::TogglePin, cx))
             .child(item(MenuItem::Rename, cx))
             .child(item(MenuItem::Delete, cx))
             .child(div().my_1().h(px(1.)).bg(theme.border))
@@ -828,6 +829,22 @@ pub fn sidebar_toggle_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
         .child(SIDEBAR_ICON)
 }
 
+/// A heading above a section of the list; the space above it separates the sections.
+fn section_header(label: &'static str, theme: &Theme) -> AnyElement {
+    div()
+        .debug_selector(|| format!("group:{label}"))
+        .h(ROW_HEIGHT)
+        .px_5()
+        .pb_1()
+        .flex()
+        .items_end()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.muted)
+        .child(label)
+        .into_any_element()
+}
+
 /// A two-line list row: the title and a muted second line. `highlight` is the background of
 /// the selected row; `outlined` marks the row a context menu is open for.
 fn list_row(
@@ -883,7 +900,19 @@ fn rows(notes: &Notes, today: NaiveDate) -> Vec<Row> {
         rows.extend([Row::Header(DateGroup::Today), Row::Draft]);
         current = Some(DateGroup::Today);
     }
+    let pinned: Vec<usize> = (0..notes.notes().len())
+        .filter(|&ix| notes.is_pinned(&notes.notes()[ix].path))
+        .collect();
+    if !pinned.is_empty() {
+        rows.push(Row::PinnedHeader);
+        rows.extend(pinned.iter().map(|&ix| Row::Note(ix)));
+        // The date headings start afresh below the pinned notes.
+        current = None;
+    }
     for (ix, note) in notes.notes().iter().enumerate() {
+        if pinned.binary_search(&ix).is_ok() {
+            continue;
+        }
         let group = DateGroup::of(local_date(note.modified_at), today);
         if current != Some(group) {
             rows.push(Row::Header(group));

@@ -11,10 +11,10 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use gpui::{AppContext, Context, EventEmitter, Task};
+use gpui::{App, AppContext, Context, EventEmitter, Task};
 use scratchpad_core::{Note, NoteSearch, NoteStore, SearchHit, is_note_path};
 
-use crate::toast;
+use crate::{settings, toast};
 
 /// Where notes live and how they are deleted.
 #[derive(Clone, Debug)]
@@ -113,6 +113,8 @@ pub struct Notes {
     /// is not applied over it.
     changes: u64,
     selection: Selection,
+    /// Notes of this folder pinned to the top of the list, in the order they were pinned.
+    pinned: Vec<PathBuf>,
     /// The id of the most recent draft.
     last_draft: u64,
     /// Shown instead of the open note's file name while its title line has been edited but
@@ -149,6 +151,7 @@ impl Notes {
             loaded: false,
             changes: 0,
             selection: Selection::None,
+            pinned: Vec::new(),
             last_draft: 0,
             open_title: None,
             open_after_listing: true,
@@ -158,8 +161,18 @@ impl Notes {
             search: Arc::default(),
             search_task: None,
         };
+        notes.load_pins(cx);
         notes.open_folder(reopen, cx);
         notes
+    }
+
+    /// Takes the pins of this folder from the settings.
+    fn load_pins(&mut self, cx: &App) {
+        let dir = self.location.dir.clone();
+        self.pinned = settings::pinned_notes(cx)
+            .into_iter()
+            .filter(|path| path.parent() == Some(dir.as_path()))
+            .collect();
     }
 
     fn open_folder(&mut self, reopen: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -263,6 +276,7 @@ impl Notes {
         self.open_after_listing = self.selection == Selection::None;
         self.query.clear();
         self.hits = None;
+        self.load_pins(cx);
         // Its cache holds the texts of the other folder's notes.
         self.search = Arc::default();
         self.search_task = None;
@@ -341,6 +355,7 @@ impl Notes {
         let neighbour = self.neighbour_of(path);
         self.changes += 1;
         Arc::make_mut(&mut self.notes).retain(|note| note.path != path);
+        self.pinned.retain(|pinned| pinned != path);
         if let Some(hits) = &mut self.hits {
             hits.retain(|hit| hit.path != path);
         }
@@ -528,6 +543,9 @@ impl Notes {
             return Ok(new_path);
         }
         self.changes += 1;
+        for pinned in self.pinned.iter_mut().filter(|pinned| *pinned == path) {
+            *pinned = new_path.clone();
+        }
         // Renaming keeps the modification time, so the note keeps its place in the list.
         match self.opened_store()?.note(&new_path) {
             Ok(renamed) => {
@@ -562,6 +580,7 @@ impl Notes {
         self.opened_store()?.delete(path)?;
         self.changes += 1;
         Arc::make_mut(&mut self.notes).retain(|note| note.path != path);
+        self.pinned.retain(|pinned| pinned != path);
         if let Some(hits) = &mut self.hits {
             hits.retain(|hit| hit.path != path);
         }
@@ -576,12 +595,44 @@ impl Notes {
         Ok(())
     }
 
-    /// The paths in the order the sidebar shows them.
+    /// Whether the note is pinned to the top of the list.
+    pub fn is_pinned(&self, path: &Path) -> bool {
+        self.pinned.iter().any(|pinned| pinned == path)
+    }
+
+    /// Pins the note to the top of the list, or unpins it.
+    pub fn toggle_pin(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if self.is_pinned(path) {
+            self.pinned.retain(|pinned| pinned != path);
+        } else if self.note(path).is_some() {
+            self.pinned.push(path.to_owned());
+        } else {
+            return;
+        }
+        cx.notify();
+    }
+
+    /// The folder's pinned notes.
+    pub fn pinned(&self) -> &[PathBuf] {
+        &self.pinned
+    }
+
+    /// The paths in the order the sidebar shows them: pinned notes first.
     pub fn visible_paths(&self) -> Vec<&Path> {
         match (&self.hits, self.is_searching()) {
             (Some(hits), true) => hits.iter().map(|hit| hit.path.as_path()).collect(),
             (None, true) => Vec::new(),
-            (_, false) => self.notes.iter().map(|note| note.path.as_path()).collect(),
+            (_, false) => {
+                let (pinned, others): (Vec<_>, Vec<_>) = self
+                    .notes
+                    .iter()
+                    .partition(|note| self.is_pinned(&note.path));
+                pinned
+                    .into_iter()
+                    .chain(others)
+                    .map(|note| note.path.as_path())
+                    .collect()
+            }
         }
     }
 

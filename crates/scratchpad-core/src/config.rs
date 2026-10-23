@@ -67,6 +67,9 @@ pub struct Config {
     /// again instead of `last_opened_note` while it exists.
     #[serde(deserialize_with = "or_default")]
     pub last_opened_file: Option<PathBuf>,
+    /// Notes pinned to the top of the sidebar, in every notes folder the user has used.
+    #[serde(deserialize_with = "or_default")]
+    pub pinned_notes: Vec<PathBuf>,
 }
 
 impl Config {

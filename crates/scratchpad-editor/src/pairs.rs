@@ -98,8 +98,7 @@ impl Editor {
         let buffer = self.buffer();
         let line = buffer.line_of(cursor);
         let start = buffer.line_start(line);
-        buffer.text_for_range(start..cursor).trim_start() == "``"
-            && cursor == buffer.line_end(line)
+        buffer.text_for_range(start..cursor).trim_start() == "``" && cursor == buffer.line_end(line)
     }
 
     fn wrap_selection(&mut self, open: char, close: char) {

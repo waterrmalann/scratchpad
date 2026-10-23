@@ -145,6 +145,7 @@ impl AppWindow {
                 })
             }),
             cx.observe_in(&notes, window, |this, notes, window, cx| {
+                this.remember_pins(cx);
                 let selection = notes.read(cx).selection().clone();
                 this.show_file_name(&selection, window);
                 match selection {
@@ -217,6 +218,19 @@ impl AppWindow {
             window_title: WINDOW_TITLE.to_owned(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Writes the pinned notes to the settings, keeping the pins of other folders.
+    fn remember_pins(&self, cx: &mut Context<Self>) {
+        let notes = self.notes.read(cx);
+        let dir = notes.location().dir.clone();
+        let pinned = notes.pinned().to_vec();
+        settings::update(cx, |config| {
+            config
+                .pinned_notes
+                .retain(|path| path.parent() != Some(dir.as_path()));
+            config.pinned_notes.extend(pinned);
+        });
     }
 
     /// The settings panel, while it is open.

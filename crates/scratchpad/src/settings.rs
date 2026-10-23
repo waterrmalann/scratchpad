@@ -39,6 +39,13 @@ pub fn get(cx: &App) -> &Config {
     &cx.global::<Settings>().config
 }
 
+/// The pinned notes of every folder; empty before [`init`].
+pub fn pinned_notes(cx: &App) -> Vec<PathBuf> {
+    cx.try_global::<Settings>()
+        .map(|settings| settings.config.pinned_notes.clone())
+        .unwrap_or_default()
+}
+
 /// The config file, if settings are kept between runs.
 pub fn path(cx: &App) -> Option<&Path> {
     cx.global::<Settings>().path.as_deref()
