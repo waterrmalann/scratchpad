@@ -106,7 +106,7 @@ pub fn register_app_handlers(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
 
-/// How the note is shown: text size and word wrap. Handled by the main window, so they work
+/// How the note is shown: text size, word wrap and spelling. Handled by the main window, so they work
 /// wherever focus is, and they apply to the note's text only, not to the rest of the window.
 pub mod view {
     use gpui::{KeyBinding, actions};
@@ -122,6 +122,11 @@ pub mod view {
             ResetZoom,
             /// Turns wrapping long lines at the window's edge on or off.
             ToggleWordWrap,
+            /// Turns underlining misspelled words on or off (ADR 0170).
+            ToggleSpellCheck,
+            /// Turns correcting typos from the system's autocorrect list as they are typed
+            /// on or off.
+            ToggleAutocorrect,
         ]
     );
 

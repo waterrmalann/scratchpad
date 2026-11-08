@@ -111,6 +111,8 @@ fn each_menu_lists_its_commands_with_the_keys_from_the_keymap(cx: &mut TestAppCo
             "Zoom",
             "Status bar",
             "Word wrap",
+            "Spell check",
+            "Autocorrect",
             "Source mode Ctrl+/",
             "Sidebar Ctrl+\\"
         ]

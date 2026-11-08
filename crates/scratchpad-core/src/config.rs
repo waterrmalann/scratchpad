@@ -70,6 +70,13 @@ pub struct Config {
     /// Notes pinned to the top of the sidebar, in every notes folder the user has used.
     #[serde(deserialize_with = "or_default")]
     pub pinned_notes: Vec<PathBuf>,
+    /// Whether misspelled words are underlined (View > Spell check); `None` is on.
+    #[serde(deserialize_with = "or_default")]
+    pub spell_check: Option<bool>,
+    /// Whether typos on the system's autocorrect list are corrected as they are typed
+    /// (View > Autocorrect); `None` is on.
+    #[serde(deserialize_with = "or_default")]
+    pub autocorrect: Option<bool>,
 }
 
 impl Config {

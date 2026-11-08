@@ -6,7 +6,7 @@ with every new ADR.
 
 | ADR | Title | Status |
 | --- | --- | --- |
-| [0001](0001-workspace-layout.md) | Three-crate workspace layout | Accepted |
+| [0001](0001-workspace-layout.md) | Three-crate workspace layout | Accepted; amended by 0170 |
 | [0002](0002-rope-buffer-and-byte-offsets.md) | Rope buffer with byte offsets as the canonical coordinate | Accepted |
 | [0003](0003-line-ending-normalization.md) | Normalize line endings to LF in the buffer | Accepted |
 | [0004](0004-selection-goal-and-word-motions.md) | Single selection, goal column and word motions | Accepted |
@@ -73,3 +73,4 @@ with every new ADR.
 | [0150](0150-an-in-window-menu-bar.md) | An in-window menu bar whose keys come from the keymap | Accepted |
 | [0155](0155-recovery-snapshots-belong-to-their-instance.md) | Recovery snapshots belong to the instance that wrote them | Accepted |
 | [0160](0160-pinned-notes.md) | Notes can be pinned to a section above the date groups | Accepted |
+| [0170](0170-spell-checking-with-the-system-checker.md) | Spell checking with the system's checker | Accepted |

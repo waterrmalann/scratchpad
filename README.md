@@ -43,6 +43,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 
 - **Find and replace** — In the open note, with match case, replace all and go to line.
 - **Zoom and wrap** — Text size from 50 % to 400 % (`Ctrl+=`, `Ctrl+-`, `Ctrl`+wheel), word wrap on or off (with a horizontal scrollbar when it is off), a Notepad-style status bar with line, column, character count, zoom, line ending and encoding.
+- **Spelling** — Misspelled words are underlined by Windows' own spell checker, with its suggestions, your dictionary and its autocorrect list ("teh" becomes "the" as you type; `Ctrl+Z` undoes it). Code and links are left alone. Both can be turned off in the View menu.
 - **Themes and narrow windows** — System, Light or Dark. The note list collapses (`Ctrl+\`) and floats over the note in a narrow window.
 
 <p>
@@ -59,7 +60,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 <details>
 <summary><b>Keyboard shortcuts</b></summary>
 
-The menu bar under the title bar has File (new note, open, save, save as, settings, exit), Edit (undo, redo, clipboard, delete, find, find next and previous, replace, go to line, select all) and View (zoom, and ticks for the status bar, word wrap, source mode and the sidebar). Each command shows its key. Alt+F, Alt+E, Alt+V or F10 open a menu from the keyboard.
+The menu bar under the title bar has File (new note, open, save, save as, settings, exit), Edit (undo, redo, clipboard, delete, find, find next and previous, replace, go to line, select all) and View (zoom, and ticks for the status bar, word wrap, spell check, autocorrect, source mode and the sidebar). Each command shows its key. Alt+F, Alt+E, Alt+V or F10 open a menu from the keyboard.
 
 The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Shift+Delete.
 
@@ -85,6 +86,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 | Ctrl+0 | Normal text size |
 | Ctrl+click | Open a link |
 | Right-click a note | Pin or unpin, rename, delete, show in folder |
+| Right-click an underlined word | Spelling suggestions, add to dictionary, ignore |
 | Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete (asks first) |
 | Ctrl+, | Settings |
 | Ctrl+W, Ctrl+Q | Close the window, quit |
@@ -95,7 +97,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 ## Where things live
 
 - **Notes** — `Documents\Scratchpad`. Change the folder in Settings (`Ctrl+,`).
-- **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, status bar, sidebar, pinned notes and last note are remembered there too.
+- **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, spell check, status bar, sidebar, pinned notes and last note are remembered there too.
 - **Environment** — `SCRATCHPAD_NOTES_DIR` uses another notes folder (Settings then cannot change it) and `SCRATCHPAD_CONFIG_DIR` another folder for the config, recovery snapshots and log. Set both to try the app on a scratch folder.
 - **Command line** — `scratchpad.exe <file>` opens that file, as File > Open does. The installer registers no file associations yet, so use "Open with" and pick `scratchpad.exe`.
 
@@ -106,6 +108,7 @@ scratchpad/
 ├─ crates/
 │  ├─ scratchpad-editor/   # Rope buffer, cursor, undo, Markdown parsing, find. No GPUI.
 │  ├─ scratchpad-core/     # Notes folder, atomic saves, search, config, recovery, watcher. No GPUI.
+│  ├─ scratchpad-spell/    # Spell checking: Windows' checker, or Hunspell dictionaries. No GPUI.
 │  └─ scratchpad/          # The GPUI app: window, views, key bindings. Thin.
 ```
 

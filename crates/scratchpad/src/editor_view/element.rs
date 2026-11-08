@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
-    Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, ScrollWheelEvent, Style, Window, fill, point, px, relative, size,
+    App, Bounds, ContentMask, Context, CursorStyle, DispatchPhase, Element, ElementId,
+    ElementInputHandler, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    IntoElement, LayoutId, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, ScrollWheelEvent, Style, UnderlineStyle, Window, fill, point, px,
+    relative, size,
 };
 use scratchpad_editor::ByteOffset;
 
@@ -100,6 +101,9 @@ pub(super) struct Frame {
     selection: Vec<Bounds<Pixels>>,
     /// Underlines of IME composition text.
     marked: Vec<Bounds<Pixels>>,
+    /// Wavy underlines of misspelled words: where each starts, and its width.
+    misspelled: Vec<(gpui::Point<Pixels>, Pixels)>,
+    misspelling_thickness: Pixels,
     cursor: Option<Bounds<Pixels>>,
     scrollbar: Option<ScrollbarLayout>,
     hscrollbar: Option<HScrollbarLayout>,
@@ -112,6 +116,7 @@ struct FrameColors {
     selection: Hsla,
     caret: Hsla,
     composition: Hsla,
+    misspelling: Hsla,
     scrollbar: Hsla,
 }
 
@@ -125,7 +130,12 @@ pub(super) struct PrepaintState {
 
 impl EditorView {
     /// Scrolls as requested, shapes the visible lines and computes everything paint needs.
-    fn layout_frame(&mut self, bounds: Bounds<Pixels>, window: &Window, cx: &App) -> Frame {
+    fn layout_frame(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Frame {
         self.bounds = Some(bounds);
         let font_size = self.font_size();
         let (column_left, width) = text_column(bounds, font_size);
@@ -146,6 +156,10 @@ impl EditorView {
         // Out of `self` while the lines borrow it; put back below.
         let find = self.find.take();
         let found = find.as_ref().map_or(&[][..], |find| &find.matches[..]);
+        let misspelled: Vec<Range<ByteOffset>> = self
+            .visible_misspellings()
+            .map(|found| found.range.clone())
+            .collect();
 
         let (mut lines, scroll) = self.lines(window);
         let buffer = lines.buffer;
@@ -186,6 +200,9 @@ impl EditorView {
         // Only the matches on visible lines are looked at (PLAN §29, rule 5).
         let top_line_start = buffer.line_start(anchor.line);
         let mut next_found = found.partition_point(|m| m.end <= top_line_start);
+        let mut next_misspelled = misspelled.partition_point(|m| m.end <= top_line_start);
+        // Below the baseline, clear of the descenders, at any zoom.
+        let misspelling_thickness = (font_size / 15.).max(px(1.));
 
         let newline_width = lines.cache.style().font_size / 3.;
         let mut frame = Frame {
@@ -194,6 +211,8 @@ impl EditorView {
             found: Vec::new(),
             selection: Vec::new(),
             marked: Vec::new(),
+            misspelled: Vec::new(),
+            misspelling_thickness,
             cursor: None,
             scrollbar: None,
             hscrollbar: None,
@@ -204,6 +223,7 @@ impl EditorView {
                 selection: cx.theme().selection,
                 caret: cx.theme().accent,
                 composition: cx.theme().foreground,
+                misspelling: cx.theme().misspelling,
                 scrollbar: cx.theme().muted.opacity(0.45),
             },
         };
@@ -248,6 +268,23 @@ impl EditorView {
                         .marked
                         .push(rect(row, x0, x1, layout.baseline() + px(2.), px(1.)));
                 }
+            }
+            while let Some(m) = misspelled
+                .get(next_misspelled)
+                .filter(|m| m.start <= line_range.end)
+            {
+                if let Some(columns) = columns_in(m, &line_range) {
+                    for (row, x0, x1) in layout.spans(columns, false, px(0.)) {
+                        let top = origin.y + layout.row_top(row) + layout.baseline();
+                        frame
+                            .misspelled
+                            .push((point(left + x0, top + misspelling_thickness), x1 - x0));
+                    }
+                }
+                if m.end > line_range.end {
+                    break;
+                }
+                next_misspelled += 1;
             }
             if line_range.contains(&selection.head) || line_range.end == selection.head {
                 let column = selection.head.0 - line_range.start.0;
@@ -317,6 +354,7 @@ impl EditorView {
             self.match_highlights = frame.found.clone();
         }
         self.visible_lines = visible_lines;
+        self.spell_check_visible(cx);
         self.scroll_x = scroll_x;
         self.cursor_row_top = cursor_row_top;
         self.scrollbar = frame.scrollbar;
@@ -543,6 +581,14 @@ impl Element for EditorElement {
             for (layout, origin) in &frame.lines {
                 layout.paint(*origin, window);
             }
+            let misspelling = UnderlineStyle {
+                thickness: frame.misspelling_thickness,
+                color: Some(frame.colors.misspelling),
+                wavy: true,
+            };
+            for (origin, width) in &frame.misspelled {
+                window.paint_underline(*origin, *width, &misspelling);
+            }
             for underline in &frame.marked {
                 window.paint_quad(fill(*underline, frame.colors.composition));
             }
@@ -582,7 +628,26 @@ impl EditorElement {
         let scrollbar = state.scrollbar_hitbox.clone();
         let hscrollbar = state.hscrollbar_hitbox.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            // A right-click on a misspelled word opens its corrections (ADR 0170).
+            if event.button == MouseButton::Right {
+                let over_scrollbar = [&scrollbar, &hscrollbar]
+                    .into_iter()
+                    .flatten()
+                    .any(|hitbox| hitbox.is_hovered(window));
+                if hitbox.is_hovered(window)
+                    && !over_scrollbar
+                    && view.update(cx, |view, cx| view.spelling_mouse_down(event, window, cx))
+                {
+                    // Or the click would take focus from the menu.
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+                return;
+            }
+            if event.button != MouseButton::Left {
                 return;
             }
             if hscrollbar

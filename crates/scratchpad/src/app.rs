@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use gpui::{
@@ -12,7 +12,7 @@ use scratchpad_core::{Config, RecoveryStore, default_config_path};
 use crate::app_window::AppWindow;
 use crate::notes::NotesLocation;
 use crate::theme::{self, ThemeMode};
-use crate::{actions, logging, settings, toast};
+use crate::{actions, logging, settings, spelling, toast};
 
 pub(crate) const WINDOW_TITLE: &str = "Scratchpad";
 const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1100.), px(720.));
@@ -72,6 +72,8 @@ pub fn run() {
         // GPUI's platform (Direct3D device, DirectWrite) is ready; none of our views exist yet.
         tracing::info!(elapsed = ?started.elapsed(), "platform initialised");
         init(cx);
+        // On its own thread: loading a dictionary never holds up the first frame.
+        spelling::init(storage.config_path.as_deref().and_then(Path::parent), cx);
         if let Some(file) = file {
             open_file_argument(file, &mut config, cx);
         }

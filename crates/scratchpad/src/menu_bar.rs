@@ -18,15 +18,17 @@ use gpui::{
 };
 
 use crate::actions::editor::{Copy, Cut, Delete, Paste, Redo, SelectAll, ToggleSourceMode, Undo};
-use crate::actions::view::{ResetZoom, ToggleWordWrap, ZoomIn, ZoomOut};
+use crate::actions::view::{
+    ResetZoom, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn, ZoomOut,
+};
 use crate::actions::{
     NewNote, OpenFile, OpenSettings, Quit, SaveAs, SaveNote, ToggleSidebar, ToggleStatusBar,
 };
 use crate::editor_view::EditorView;
 use crate::find_bar::{FindInNote, FindNext, FindPrevious, ReplaceInNote};
 use crate::go_to_line::GoToLine;
-use crate::settings;
 use crate::theme::{ActiveTheme, Theme, typography};
+use crate::{settings, spelling};
 
 actions!(
     menu_bar,
@@ -318,6 +320,14 @@ impl MenuBar {
                     .into(),
                 item("Word wrap", ToggleWordWrap)
                     .checked(self.editor.read(cx).soft_wrap())
+                    .into(),
+                item("Spell check", ToggleSpellCheck)
+                    .checked(self.editor.read(cx).spell_check())
+                    .enabled(spelling::is_available(cx))
+                    .into(),
+                item("Autocorrect", ToggleAutocorrect)
+                    .checked(self.editor.read(cx).autocorrect())
+                    .enabled(spelling::is_available(cx) && self.editor.read(cx).spell_check())
                     .into(),
                 edit("Source mode", ToggleSourceMode)
                     .checked(self.editor.read(cx).source_mode())

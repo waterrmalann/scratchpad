@@ -1,6 +1,7 @@
 # 0001. Three-crate workspace layout
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted; amended by 0170 (a fourth crate, `scratchpad-spell`, also without GPUI and
+used only by the app)
 
 ## Context
 The product plan sketches five crates (`scratchpad`, `-ui`, `-editor`, `-core`, `-fs`) but also warns against

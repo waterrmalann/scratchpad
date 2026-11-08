@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 scratchpad-core.workspace = true
 scratchpad-editor.workspace = true
+scratchpad-spell.workspace = true
 chrono.workspace = true
 dirs.workspace = true
 tracing.workspace = true

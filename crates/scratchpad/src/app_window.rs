@@ -6,7 +6,9 @@ use gpui::{
 };
 use scratchpad_core::NoteStore;
 
-use crate::actions::view::{ResetZoom, ToggleWordWrap, ZoomIn, ZoomOut};
+use crate::actions::view::{
+    ResetZoom, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn, ZoomOut,
+};
 use crate::actions::{
     CloseWindow, NewNote, OpenFile, OpenSettings, SaveAs, SaveNote, SearchNotes, ToggleSidebar,
     ToggleStatusBar,
@@ -90,11 +92,14 @@ impl AppWindow {
         let sidebar_width = config.sidebar_width;
         let sidebar_collapsed = config.sidebar_collapsed;
         let (zoom, word_wrap) = (config.zoom_percent, config.word_wrap);
+        let (spell_check, autocorrect) = (config.spell_check, config.autocorrect);
         let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
         let editor = cx.new(|cx| {
             let mut editor = EditorView::new("", window, cx);
             editor.set_zoom_percent(zoom.unwrap_or(100), cx);
             editor.set_soft_wrap(word_wrap.unwrap_or(true), cx);
+            editor.set_spell_check(spell_check.unwrap_or(true), cx);
+            editor.set_autocorrect(autocorrect.unwrap_or(true), cx);
             editor
         });
         let session =
@@ -166,18 +171,23 @@ impl AppWindow {
                 let width = f32::from(sidebar.read(cx).width());
                 settings::update(cx, |config| config.sidebar_width = Some(width));
             }),
-            // Zoom and word wrap belong to the editor; checked on each of its updates, written
-            // only when they change.
+            // Zoom, word wrap and spelling belong to the editor; checked on each of its
+            // updates, written only when they change.
             cx.observe(&editor, |_, editor, cx| {
                 let editor = editor.read(cx);
                 let (zoom, wrap) = (editor.zoom_percent(), editor.soft_wrap());
+                let (spell_check, autocorrect) = (editor.spell_check(), editor.autocorrect());
                 let config = settings::get(cx);
                 if config.zoom_percent.unwrap_or(100) != zoom
                     || config.word_wrap.unwrap_or(true) != wrap
+                    || config.spell_check.unwrap_or(true) != spell_check
+                    || config.autocorrect.unwrap_or(true) != autocorrect
                 {
                     settings::update(cx, |config| {
                         config.zoom_percent = Some(zoom);
                         config.word_wrap = Some(wrap);
+                        config.spell_check = Some(spell_check);
+                        config.autocorrect = Some(autocorrect);
                     });
                 }
             }),
@@ -631,6 +641,16 @@ impl Render for AppWindow {
             .on_action(cx.listener(|this, _: &ToggleWordWrap, _, cx| {
                 this.update_editor(cx, |editor, cx| {
                     editor.set_soft_wrap(!editor.soft_wrap(), cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSpellCheck, _, cx| {
+                this.update_editor(cx, |editor, cx| {
+                    editor.set_spell_check(!editor.spell_check(), cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ToggleAutocorrect, _, cx| {
+                this.update_editor(cx, |editor, cx| {
+                    editor.set_autocorrect(!editor.autocorrect(), cx)
                 })
             }))
             .on_action(cx.listener(Self::open_file))

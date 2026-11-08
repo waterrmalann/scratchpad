@@ -11,6 +11,7 @@ mod geometry;
 mod layout_cache;
 mod line_layout;
 mod scroll;
+mod spell;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -115,6 +116,8 @@ pub struct EditorView {
     read_only: bool,
     /// The find bar's query and its matches while the bar is open.
     find: Option<find::Find>,
+    /// Misspelled words, autocorrect and the spelling menu (ADR 0170).
+    spell: spell::Spell,
     /// The match highlights painted in the last frame.
     #[cfg(feature = "test-support")]
     match_highlights: Vec<Bounds<Pixels>>,
@@ -207,6 +210,7 @@ impl EditorView {
             input_at: None,
             read_only: false,
             find: None,
+            spell: spell::Spell::default(),
             #[cfg(feature = "test-support")]
             match_highlights: Vec::new(),
             _subscriptions: subscriptions,
@@ -224,6 +228,7 @@ impl EditorView {
         self.drag = None;
         self.click_offset = None;
         self.find_text_changed(true, cx);
+        self.spell_text_changed(true, cx);
         cx.notify();
     }
 
@@ -264,6 +269,7 @@ impl EditorView {
         let offset = self.editor.buffer().point_to_offset(cursor);
         self.editor.move_to(offset, false);
         self.find_text_changed(false, cx);
+        self.spell_text_changed(false, cx);
         cx.notify();
     }
 
@@ -399,6 +405,8 @@ impl EditorView {
             self.plain = !markdown;
             // Every line's key is checked again on the next layout.
             self.styled_for = None;
+            // Plain text is not spell checked.
+            self.spell_text_changed(true, cx);
             cx.notify();
         }
     }
@@ -428,6 +436,7 @@ impl EditorView {
         if self.editor.buffer().version() != version {
             cx.emit(EditorEvent::Changed);
             self.find_text_changed(false, cx);
+            self.spell_text_changed(false, cx);
         }
         self.autoscroll = Some(Autoscroll::Cursor);
         self.selection_changed(cx);
@@ -1185,6 +1194,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|this, _: &ToggleSourceMode, _, cx| this.toggle_source_mode(cx)))
             .child(EditorElement::new(cx.entity()))
+            .children(self.render_spelling_menu(cx))
     }
 }
 
@@ -1240,6 +1250,7 @@ impl EntityInputHandler for EditorView {
         }
         let range = range_utf16.map(|range| self.range_from_utf16(&range));
         let plain = self.plain;
+        let keystroke = range.is_none() && marked.is_none() && !plain;
         self.edit(cx, |editor| match range {
             Some(range) if marked.as_ref() != Some(&range) => {
                 editor.unmark();
@@ -1249,6 +1260,9 @@ impl EntityInputHandler for EditorView {
             // Keystrokes pair brackets; IME commits (with marked text) are inserted as they are.
             _ => editor.insert_typed(text),
         });
+        if keystroke && !self.read_only {
+            self.after_typing(text, cx);
+        }
     }
 
     fn replace_and_mark_text_in_range(

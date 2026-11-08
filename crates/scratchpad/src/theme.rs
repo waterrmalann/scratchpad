@@ -51,6 +51,8 @@ pub struct Theme {
     pub accent: Hsla,
     /// Text selection; translucent so the text stays readable on top of it.
     pub selection: Hsla,
+    /// The wavy underline of misspelled words, red as everywhere else.
+    pub misspelling: Hsla,
 }
 
 impl Theme {
@@ -64,6 +66,7 @@ impl Theme {
             border: color(rgb(0xe2e2e0)),
             accent: color(rgb(0xd99a00)),
             selection: color(rgba(0xf2c14e66)),
+            misspelling: color(rgb(0xd93025)),
         }
     }
 
@@ -77,6 +80,7 @@ impl Theme {
             border: color(rgb(0x3a3a3c)),
             accent: color(rgb(0xf2b32a)),
             selection: color(rgba(0xf2b32a4d)),
+            misspelling: color(rgb(0xff6b5f)),
         }
     }
 
