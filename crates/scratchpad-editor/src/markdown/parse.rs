@@ -119,11 +119,13 @@ impl Builder<'_> {
             }
             Tag::Superscript => {
                 // `^^x^^` is superscript too, and `^^^x^^^` a `^` around a `^^`: of a run of carets, inner
-                // elements take two each and the outermost one takes the odd one left.
-                let carets = match self.run_len(range.start, b'^') {
-                    0 => 0,
-                    run => 2 - run % 2,
-                };
+                // elements take two each and the outermost one takes the odd one left. Each side is read
+                // that way, since an opener's caret may close an inner element elsewhere (`^^a^b^`, a `^`
+                // around `^a^`), and the element takes no more than either side has.
+                let side = |run: usize| run.min(2 - run % 2);
+                let opener = side(self.run_len(range.start, b'^'));
+                let closer = side(range.end - self.skip_back(range.end, range.start, b"^"));
+                let carets = opener.min(closer);
                 self.delimited(DecorationKind::Superscript, range, carets);
             }
             Tag::Subscript => {

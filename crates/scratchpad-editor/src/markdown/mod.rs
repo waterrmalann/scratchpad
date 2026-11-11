@@ -622,6 +622,26 @@ mod tests {
         }
     }
 
+    /// Found by `regions_parse_like_the_whole_document`: a callout's tag line continues lazily into an
+    /// indented blank line, which keeps its quote open.
+    #[test]
+    fn a_callout_quote_open_across_an_indented_blank_line_is_one_region() {
+        for text in [
+            "> [!NOTE]\n    \n> ",
+            "> [!NOTE]\n\t\n> x\n\ny",
+            "- > [!TIP]\n      \n  > x",
+        ] {
+            let buffer = Buffer::from_text(text);
+            let mut markdown = MarkdownState::new(&buffer);
+            let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
+            assert_eq!(
+                by_region,
+                parse::parse(text, MarkdownOptions::default()),
+                "{text:?}"
+            );
+        }
+    }
+
     #[test]
     fn combined_changes_cover_every_change() {
         let mut buffer = Buffer::from_text("0123456789");

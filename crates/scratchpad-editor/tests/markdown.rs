@@ -481,6 +481,15 @@ fn superscript_and_subscript_with_their_options() {
             d("Superscript", "^^e^^", "e", &["^^", "^^"]),
         ]
     );
+    // Found by the property test: the second `^` of the opener closes an inner element, so the outer
+    // one has a single caret on each side (its closer must not take the `é` before it).
+    assert_eq!(
+        describe_with("##^^a^#é^#", MarkdownOptions::ALL),
+        [
+            d("Superscript", "^^a^#é^", "^a^#é", &["^", "^"]),
+            d("Superscript", "^a^", "a", &["^", "^"]),
+        ]
+    );
     // Off (the default), `^` is text and a single `~` is strikethrough.
     assert_eq!(
         describe(text),
