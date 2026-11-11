@@ -11,6 +11,8 @@ ropey.workspace = true
 unicode-segmentation.workspace = true
 
 [dev-dependencies]
+# Generates and checks the shortcode table (ADR 0190); not linked into the app.
+emojis.workspace = true
 proptest.workspace = true
 criterion.workspace = true
 

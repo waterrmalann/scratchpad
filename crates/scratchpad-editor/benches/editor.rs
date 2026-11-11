@@ -4,7 +4,7 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use scratchpad_editor::markdown::MarkdownState;
+use scratchpad_editor::markdown::{MarkdownOptions, MarkdownState};
 use scratchpad_editor::search::{CaseSensitivity, adjust_matches, find_all};
 use scratchpad_editor::{ByteOffset, Editor, Motion, Selection};
 
@@ -283,6 +283,38 @@ fn markdown_parse_prose(c: &mut Criterion) {
     group.finish();
 }
 
+/// Parsing all of a 1 MB document of prose with every option on (ADR 0190): without any `==`, `$` or `:` (only
+/// the quick checks run on each text event), and with highlights, math, emoji shortcodes and their lookalikes
+/// (unknown shortcodes, times, prices, `===`) in every paragraph. Styling a screenful of the latter is the
+/// per-frame cost.
+fn markdown_parse_extensions(c: &mut Criterion) {
+    let mut group = c.benchmark_group("markdown_parse_extensions_1MB");
+    let prose = "A long paragraph of prose, the kind a note is mostly made of. It has sentences, commas and \
+                 full stops; some words are *emphasised* and some café or 日本語 mixed in.\n\n";
+    let marked = "A paragraph with ==highlighted words== and ==*more*== of them, math $x^2 + y^2$ and \
+                  $$\\sum_i i$$, emoji :smile: :+1: :tada: and :not_one:, at 10:30:45 for $5, a == b, ===.\n\n";
+    for (name, block) in [("none", prose), ("many", marked)] {
+        let editor = Editor::from_text(&block.repeat(MB / block.len()));
+        let buffer = editor.buffer();
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                MarkdownState::with_options(black_box(buffer), MarkdownOptions::ALL)
+                    .decorations(buffer, ByteOffset(0)..buffer.end())
+            })
+        });
+    }
+    let editor = Editor::from_text(&marked.repeat(MB / marked.len()));
+    let buffer = editor.buffer();
+    let mut markdown = MarkdownState::with_options(buffer, MarkdownOptions::ALL);
+    markdown.decorations(buffer, ByteOffset(0)..buffer.end());
+    let first = buffer.line_count() / 2;
+    let selection = Selection::cursor(buffer.line_start(first + 10));
+    group.bench_function("styled_lines_50_many", |b| {
+        b.iter(|| markdown.styled_lines(buffer, black_box(first..first + 50), Some(selection)))
+    });
+    group.finish();
+}
+
 /// A note with a 200-row table of three columns between paragraphs (ADR 0186).
 fn table_note() -> String {
     table_note_of(200)
@@ -388,6 +420,7 @@ criterion_group!(
     markdown_styled_screen,
     markdown_styled_long_line,
     markdown_parse_prose,
+    markdown_parse_extensions,
     markdown_table,
     markdown_table_lengths
 );

@@ -188,6 +188,52 @@ pub fn in_code_span(line: &str) -> bool {
     open.is_some()
 }
 
+/// Whether the end of `line` (the line before a match) is in inline math, closed or being typed, with Math on
+/// (ADR 0190): a `$` or `$$` that can open (no whitespace after it) and no run as long after it that can close
+/// (no whitespace before it). Code spans and backslash-escaped dollars open nothing. So with Math on, `$5 ->`
+/// keeps its arrow until a closing `$`, as `` `a -> `` does.
+pub fn in_math_span(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let space = |i: Option<&u8>| i.is_none_or(|b| b.is_ascii_whitespace());
+    let mut open = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'`' if open.is_none() => {
+                let run = bytes[i..].iter().take_while(|&&b| b == b'`').count();
+                // A code span, closed by a run as long; an open one is `in_code_span`'s.
+                let mut j = i + run;
+                let mut closed = None;
+                while j < bytes.len() {
+                    let len = bytes[j..].iter().take_while(|&&b| b == b'`').count();
+                    if len == run {
+                        closed = Some(j + len);
+                        break;
+                    }
+                    j += len.max(1);
+                }
+                match closed {
+                    Some(end) => i = end,
+                    None => return false,
+                }
+            }
+            b'$' => {
+                let run = bytes[i..].iter().take_while(|&&b| b == b'$').count();
+                let len = run.min(2);
+                if open.is_none() && !space(bytes.get(i + run)) {
+                    open = Some(len);
+                } else if open == Some(len) && !space(i.checked_sub(1).map(|j| &bytes[j])) {
+                    open = None;
+                }
+                i += run;
+            }
+            _ => i += 1,
+        }
+    }
+    open.is_some()
+}
+
 /// After `c` was typed at the end of `line` (the line before it): if `line` is only dashes and whitespace and
 /// ends with a `--` run and whitespace, held off as the line could still become `---`, and `c` is neither a dash
 /// nor whitespace, the line can no longer be a thematic break, and that `--` (at the offset returned) becomes a
@@ -368,19 +414,21 @@ impl Editor {
     }
 
     /// Whether the text at `range`, matched by a rule, is where nothing is replaced: in code (a code block or a
-    /// span, closed or being typed), front matter or an HTML comment.
+    /// span, closed or being typed), math (with Math on, likewise), front matter or an HTML comment.
     fn excluded(&mut self, range: Range<ByteOffset>, markdown: &mut MarkdownState) -> bool {
         let buffer = self.buffer();
         let line_start = buffer.line_start(buffer.line_of(range.start));
         let line_bytes = (range.start.0 - line_start.0).min(LINE_BYTES);
+        let line = self.text_before(range.start, line_bytes);
         // Cheapest first: the Markdown structure may have to parse the edited region.
-        in_code_span(&self.text_before(range.start, line_bytes))
+        in_code_span(&line)
+            || markdown.options().math && in_math_span(&line)
             || in_html_comment(
                 &self.text_before(range.end, COMMENT_BYTES),
                 range.end.0 - range.start.0,
             )
             || self.in_front_matter(range.end)
-            || markdown.in_code(self.buffer(), range.clone())
+            || markdown.in_code_or_math(self.buffer(), range.clone())
     }
 
     /// Backspace right after a replacement: brings back the text it replaced, as its own undo step. Returns
@@ -512,6 +560,20 @@ mod tests {
         // After wide whitespace (an em space) the run starts past it.
         assert_eq!(to("a\u{2003}->"), Some("→"));
         assert_eq!(to("a\u{2003}src/->"), None);
+    }
+
+    #[test]
+    fn math_is_open_until_a_dollar_run_as_long_closes_it() {
+        assert!(in_math_span("$a "));
+        assert!(in_math_span("$$a "));
+        assert!(in_math_span("price $5 and $6 "));
+        assert!(!in_math_span("$a$ "));
+        assert!(!in_math_span("$$a$$ "));
+        assert!(!in_math_span("a $ b "));
+        assert!(!in_math_span(r"a \$b "));
+        assert!(!in_math_span("`$a` "));
+        assert!(in_math_span("$a `b` "));
+        assert!(!in_math_span("plain "));
     }
 
     #[test]

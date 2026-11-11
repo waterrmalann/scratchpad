@@ -3,7 +3,7 @@
 use proptest::prelude::*;
 use scratchpad_editor::markdown::{
     Decoration, DecorationKind, MarkdownOptions, MarkdownState, MarkerKind, StyledSpan,
-    wikilink_page,
+    emoji_for_shortcode, wikilink_page,
 };
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Selection};
 
@@ -78,14 +78,27 @@ const ATOMS: &[&str] = &[
     "- | -",
     r"\|",
     "| a | b |\n|---|---|\n",
+    "==",
+    "===",
+    "=",
+    "$",
+    "$$",
+    r"\$",
+    ":smile:",
+    ":+1:",
+    ":nope:",
+    ":",
+    "10:30:45",
 ];
 
 /// Any options, every one on in a third of the cases.
 fn options() -> impl Strategy<Value = MarkdownOptions> {
     prop_oneof![
         1 => Just(MarkdownOptions::ALL),
-        2 => any::<[bool; 5]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks]| {
-            MarkdownOptions { callouts, superscript, subscript, heading_ids, wikilinks }
+        2 => any::<[bool; 8]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks, highlights, math, emoji_shortcodes]| {
+            MarkdownOptions {
+                callouts, superscript, subscript, heading_ids, wikilinks, highlights, math, emoji_shortcodes,
+            }
         }),
     ]
 }
@@ -185,6 +198,60 @@ proptest! {
                 prop_assert!(left <= column && column <= right, "{column} -> {shown} -> {left}..{right}");
                 prop_assert_eq!(line.display_column(left), shown);
                 prop_assert_eq!(line.display_column(right), shown);
+            }
+        }
+    }
+
+    /// Math changes nothing in text without a `$` (ADR 0190): pulldown-cmark's math only adds `$` delimiters
+    /// and brace tracking for them. Highlights, shortcodes and math are well formed and hold no other
+    /// decoration's markers; shortcodes name known emoji and never touch a letter or digit.
+    #[test]
+    fn math_changes_nothing_without_dollars_and_text_marks_are_well_formed(
+        text in markdown_text(),
+        options in options(),
+    ) {
+        let buffer = Buffer::from_text(&text);
+        let all = ByteOffset(0)..buffer.end();
+        let with = |math| {
+            MarkdownState::with_options(&buffer, MarkdownOptions { math, ..options }).decorations(&buffer, all.clone())
+        };
+        let decorations = with(true);
+        let text = buffer.normalized_text();
+        if !text.contains('$') {
+            prop_assert_eq!(&decorations, &with(false), "{:?}", text);
+        }
+        check_well_formed(&text, &decorations)?;
+        for mark in &decorations {
+            let shown = &text[mark.range.start.0..mark.range.end.0];
+            match mark.kind {
+                DecorationKind::Highlight => {
+                    prop_assert!(shown.starts_with("==") && shown.ends_with("==") && shown.len() > 4, "{shown:?}");
+                }
+                DecorationKind::Emoji { emoji } => {
+                    let name = shown.strip_prefix(':').and_then(|s| s.strip_suffix(':'));
+                    prop_assert_eq!(name.and_then(emoji_for_shortcode), Some(emoji), "{:?}", shown);
+                    let before = text[..mark.range.start.0].chars().next_back();
+                    let after = text[mark.range.end.0..].chars().next();
+                    prop_assert!(!before.is_some_and(char::is_alphanumeric), "{shown:?} in {text:?}");
+                    prop_assert!(!after.is_some_and(char::is_alphanumeric), "{shown:?} in {text:?}");
+                }
+                DecorationKind::Math { display } => {
+                    let dollars = if display { "$$" } else { "$" };
+                    prop_assert!(shown.starts_with(dollars) && shown.ends_with(dollars), "{shown:?}");
+                }
+                _ => continue,
+            }
+            for other in &decorations {
+                // Its markers are its own: neither code nor another decoration's marker overlaps them. (It may
+                // enclose code and other decorations.)
+                let marker_overlaps = |r: &std::ops::Range<ByteOffset>| {
+                    mark.markers.iter().any(|m| r.start < m.end && m.start < r.end)
+                };
+                let code = matches!(other.kind, DecorationKind::InlineCode | DecorationKind::CodeBlock { .. });
+                prop_assert!(!(code && marker_overlaps(&other.content)), "{mark:?} in code {other:?} in {text:?}");
+                if other != mark {
+                    prop_assert!(!other.markers.iter().any(marker_overlaps), "{mark:?} and {other:?} in {text:?}");
+                }
             }
         }
     }

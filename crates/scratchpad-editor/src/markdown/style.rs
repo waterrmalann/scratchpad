@@ -34,6 +34,10 @@ pub struct SpanStyle {
     pub table: Option<TableRowKind>,
     /// The column of the table cell the span is in, 0-based.
     pub table_column: Option<u16>,
+    /// Highlighted text (`==text==`, ADR 0190); a renderer draws a highlighter background behind it.
+    pub highlight: bool,
+    /// Math (`$x$`, `$$x$$`, ADR 0190), markers included; a renderer sets it in a math font and colour.
+    pub math: bool,
 }
 
 /// Which syntax a marker span belongs to.
@@ -41,9 +45,17 @@ pub struct SpanStyle {
 pub enum MarkerKind {
     /// `#`s with their spaces, a closing `#` sequence, a setext underline or an attribute block (`{#id}`).
     Heading,
-    /// `*`, `_`, `**`, `__`, `~` or `~~` around emphasis, strong or strikethrough text, and `^` or `~` around
-    /// superscript or subscript text.
+    /// `*`, `_`, `**`, `__`, `~` or `~~` around emphasis, strong or strikethrough text, `^` or `~` around
+    /// superscript or subscript text, and `==` around highlighted text.
     Emphasis,
+    /// `$` or `$$` around math.
+    Math,
+    /// A known emoji shortcode such as `:smile:`, while the selection is off it (and only in live preview):
+    /// never hidden, but a renderer draws `emoji` in its place. Where the selection touches it, it is plain text
+    /// with no marker.
+    Emoji {
+        emoji: &'static str,
+    },
     /// Backticks around inline code.
     Code,
     /// `[`, `](destination)`, `<` or `>` of a link, `![` and `](source)` of an image, or `[[`, `target|` and
@@ -288,7 +300,14 @@ fn style_line(
         // The innermost marker: decorations are ordered with enclosing ones first.
         let marker = markers
             .last()
-            .map(|&(index, m)| (on_line[index], &on_line[index].markers[m]));
+            .map(|&(index, m)| (on_line[index], &on_line[index].markers[m]))
+            // An emoji shortcode is shown as typed where the selection touches it, and in source mode.
+            .filter(|&(d, m)| {
+                !matches!(d.kind, DecorationKind::Emoji { .. })
+                    || selection
+                        .as_ref()
+                        .is_some_and(|selection| !reveals(buffer, selection, d, m, table))
+            });
         let hidden = marker.is_some_and(|(d, m)| {
             hideable(&d.kind)
                 && selection
@@ -302,10 +321,12 @@ fn style_line(
             hidden,
         };
         match spans.last_mut() {
+            // Each shortcode is drawn as its own emoji, also next to the same one.
             Some(last)
                 if last.style == span.style
                     && last.marker == span.marker
-                    && last.hidden == span.hidden =>
+                    && last.hidden == span.hidden
+                    && !matches!(span.marker, Some(MarkerKind::Emoji { .. })) =>
             {
                 last.columns.end = span.columns.end;
             }
@@ -346,6 +367,9 @@ fn apply(kind: &DecorationKind, style: &mut SpanStyle) {
         DecorationKind::TableCell { column, .. } => {
             style.table_column = Some(u16::try_from(*column).unwrap_or(u16::MAX));
         }
+        DecorationKind::Highlight => style.highlight = true,
+        DecorationKind::Math { .. } => style.math = true,
+        DecorationKind::Emoji { .. } => {}
     }
 }
 
@@ -356,7 +380,10 @@ fn marker_kind(kind: &DecorationKind) -> MarkerKind {
         | DecorationKind::Emphasis
         | DecorationKind::Strikethrough
         | DecorationKind::Superscript
-        | DecorationKind::Subscript => MarkerKind::Emphasis,
+        | DecorationKind::Subscript
+        | DecorationKind::Highlight => MarkerKind::Emphasis,
+        DecorationKind::Math { .. } => MarkerKind::Math,
+        DecorationKind::Emoji { emoji } => MarkerKind::Emoji { emoji },
         DecorationKind::InlineCode => MarkerKind::Code,
         DecorationKind::Link { .. } | DecorationKind::WikiLink { .. } => MarkerKind::Link,
         DecorationKind::BlockQuote => MarkerKind::Quote,
@@ -375,13 +402,14 @@ fn marker_kind(kind: &DecorationKind) -> MarkerKind {
 }
 
 /// List bullets, numbers and task boxes stay in place: hiding them would shift the item text. An alert's tag is
-/// shown as its label rather than hidden.
+/// shown as its label, and an emoji shortcode as its emoji, rather than hidden.
 fn hideable(kind: &DecorationKind) -> bool {
     !matches!(
         kind,
         DecorationKind::ListItem { .. }
             | DecorationKind::Task { .. }
             | DecorationKind::Callout { .. }
+            | DecorationKind::Emoji { .. }
     )
 }
 
@@ -407,7 +435,12 @@ fn reveals(
         | DecorationKind::Subscript
         | DecorationKind::InlineCode
         | DecorationKind::Link { .. }
-        | DecorationKind::WikiLink { .. } => decoration.range.clone(),
+        | DecorationKind::WikiLink { .. }
+        | DecorationKind::Highlight
+        | DecorationKind::Math { display: false }
+        | DecorationKind::Emoji { .. } => decoration.range.clone(),
+        // Display math is a block: its `$$` show while the selection is on any of its lines.
+        DecorationKind::Math { display: true } => lines_of(&decoration.range),
         DecorationKind::BlockQuote
         | DecorationKind::Callout { .. }
         | DecorationKind::ListItem { .. }

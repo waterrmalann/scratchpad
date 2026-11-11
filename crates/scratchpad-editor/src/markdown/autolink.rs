@@ -40,17 +40,25 @@ fn may_contain_address(text: &str) -> bool {
     })
 }
 
-/// Whether `decoration` is a bare address: a link without markers.
-fn is_bare_address(decoration: &Decoration) -> bool {
-    matches!(decoration.kind, DecorationKind::Link { .. }) && decoration.markers.is_empty()
+/// Whether `decoration` is found in a region's text rather than given by pulldown-cmark's block structure, and is
+/// not syntax of front matter, which is YAML: a bare address (a link without markers), a highlight, an emoji
+/// shortcode or math (ADR 0187, 0190).
+fn is_text_mark(decoration: &Decoration) -> bool {
+    match decoration.kind {
+        DecorationKind::Link { .. } => decoration.markers.is_empty(),
+        DecorationKind::Highlight | DecorationKind::Emoji { .. } | DecorationKind::Math { .. } => {
+            true
+        }
+        _ => false,
+    }
 }
 
 impl MarkdownState {
-    /// Drops the bare addresses in the note's closed front matter from `found`, decorations of the synced
-    /// `buffer`. Front matter is YAML, not prose, and it is a property of the whole note, which a region's parse
-    /// cannot see (ADR 0041), so it is applied to query results. It is looked for only when an address lies
-    /// where front matter could be, and then once per buffer version.
-    pub(super) fn drop_front_matter_autolinks(
+    /// Drops the bare addresses, highlights, emoji shortcodes and math in the note's closed front matter from
+    /// `found`, decorations of the synced `buffer`. Front matter is YAML, not prose, and it is a property of the
+    /// whole note, which a region's parse cannot see (ADR 0041), so it is applied to query results. It is looked
+    /// for only when such a decoration lies where front matter could be, and then once per buffer version.
+    pub(super) fn drop_front_matter_text_marks(
         &mut self,
         buffer: &Buffer,
         found: &mut Vec<Decoration>,
@@ -59,7 +67,7 @@ impl MarkdownState {
         let reach = MAX_FRONT_MATTER_BYTES + 9;
         if !found
             .iter()
-            .any(|d| is_bare_address(d) && d.range.start.0 < reach)
+            .any(|d| is_text_mark(d) && d.range.start.0 < reach)
         {
             return;
         }
@@ -81,9 +89,33 @@ impl MarkdownState {
             }
         };
         if end > 0 {
-            found.retain(|d| !(is_bare_address(d) && d.range.start.0 < end));
+            found.retain(|d| !(is_text_mark(d) && d.range.start.0 < end));
         }
     }
+}
+
+/// Whether links of `link_type` resolve against reference definitions, which may be in another region: those
+/// stay text (ADR 0040), so text scanners see through them, reading their brackets as text. Whether a definition
+/// exists then changes nothing found in the text around them, which a region's parse could not know.
+pub(super) fn is_reference(link_type: LinkType) -> bool {
+    matches!(
+        link_type,
+        LinkType::Reference
+            | LinkType::ReferenceUnknown
+            | LinkType::Collapsed
+            | LinkType::CollapsedUnknown
+            | LinkType::Shortcut
+            | LinkType::ShortcutUnknown
+    )
+}
+
+/// A link or image the next event is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenLink {
+    Wiki,
+    Other,
+    /// A reference link (see [`is_reference`]), with where the events inside it end so far.
+    Reference(usize),
 }
 
 /// Collects the bare addresses of one region's text while its events go by.
@@ -96,8 +128,10 @@ pub(super) struct Autolinks {
     node_start: Option<usize>,
     /// How many code blocks the next event is in.
     code_blocks: usize,
-    /// The links and images the next event is in, innermost last: whether each is a wikilink.
-    links: Vec<bool>,
+    /// The links and images the next event is in, innermost last.
+    links: Vec<OpenLink>,
+    /// How many of them are not reference links: text in those is not scanned.
+    opaque: usize,
     found: Vec<Decoration>,
 }
 
@@ -112,31 +146,61 @@ impl Autolinks {
         text_end: Option<usize>,
     ) {
         let range = &(range.start..range.end.min(text_end.unwrap_or(usize::MAX)));
+        let link_end = matches!(event, Event::End(TagEnd::Link | TagEnd::Image));
+        if let Some(OpenLink::Reference(end)) = self.links.last_mut()
+            && !link_end
+        {
+            *end = (*end).max(range.end);
+        }
+        let scanned = self.code_blocks == 0 && self.opaque == 0;
         match event {
-            Event::Text(_)
-                if self.code_blocks == 0 && self.links.is_empty() && !range.is_empty() =>
-            {
-                match &mut self.run {
-                    // Entities, escapes and unmatched delimiters split text into several events.
-                    Some(run) if run.end == range.start => run.end = range.end,
-                    _ => {
-                        self.flush(text);
-                        self.run = Some(range.clone());
-                    }
-                }
+            Event::Text(_) if scanned => {
+                self.text(text, range.clone());
                 return;
             }
             Event::Start(Tag::CodeBlock(_)) => self.code_blocks += 1,
             Event::End(TagEnd::CodeBlock) => self.code_blocks = self.code_blocks.saturating_sub(1),
-            Event::Start(Tag::Link { link_type, .. }) => {
-                self.links
-                    .push(matches!(link_type, LinkType::WikiLink { .. }));
+            Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. })
+                if is_reference(*link_type) =>
+            {
+                // Its `[` or `![` is text, as without a definition.
+                let opener = if matches!(event, Event::Start(Tag::Image { .. })) {
+                    2
+                } else {
+                    1
+                };
+                let opener = range.start..(range.start + opener).min(range.end);
+                self.links.push(OpenLink::Reference(opener.end));
+                if scanned {
+                    self.text(text, opener);
+                }
+                return;
             }
-            Event::Start(Tag::Image { .. }) => self.links.push(false),
+            Event::Start(Tag::Link { link_type, .. }) => {
+                let wikilink = matches!(link_type, LinkType::WikiLink { .. });
+                self.links.push(if wikilink {
+                    OpenLink::Wiki
+                } else {
+                    OpenLink::Other
+                });
+                self.opaque += 1;
+            }
+            Event::Start(Tag::Image { .. }) => {
+                self.links.push(OpenLink::Other);
+                self.opaque += 1;
+            }
             Event::End(TagEnd::Link | TagEnd::Image) => {
-                let wikilink = self.links.pop() == Some(true);
+                let open = self.links.pop();
+                if let Some(OpenLink::Reference(inner_end)) = open {
+                    // Its `]`, `][ref]` or `][]` is text too.
+                    if scanned {
+                        self.text(text, inner_end.min(range.end)..range.end);
+                    }
+                    return;
+                }
+                self.opaque = self.opaque.saturating_sub(1);
                 self.flush(text);
-                if wikilink {
+                if open == Some(OpenLink::Wiki) {
                     self.node_start = Some(range.end);
                 }
                 return;
@@ -148,6 +212,32 @@ impl Autolinks {
             }
             _ => {}
         }
+        self.flush(text);
+    }
+
+    /// Adds `piece` of `text` to the run of text it follows, or scans that run and starts a new one.
+    fn text(&mut self, text: &str, piece: Range<usize>) {
+        if piece.is_empty() {
+            return;
+        }
+        match &mut self.run {
+            // Entities, escapes and unmatched delimiters split text into several events.
+            Some(run) if run.end == piece.start => run.end = piece.end,
+            _ => {
+                self.flush(text);
+                self.run = Some(piece);
+            }
+        }
+    }
+
+    /// The addresses found so far, in document order. A text run is scanned when the event after it arrives, so
+    /// those of a run are here once [`Autolinks::event`] has taken the event that ends it.
+    pub(super) fn found(&self) -> &[Decoration] {
+        &self.found
+    }
+
+    /// Scans the last text run; the addresses are then all in [`Autolinks::found`].
+    pub(super) fn flush_last(&mut self, text: &str) {
         self.flush(text);
     }
 

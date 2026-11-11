@@ -8,14 +8,17 @@
 
 pub(crate) mod autolink;
 mod blocks;
+mod emoji;
 mod format;
 mod front_matter;
+mod highlight;
 mod lists;
 mod parse;
 mod style;
 mod table;
 mod wikilinks;
 
+pub use emoji::emoji_for_shortcode;
 pub use front_matter::{FrontMatter, MAX_FRONT_MATTER_BYTES, MAX_FRONT_MATTER_LINES, front_matter};
 pub use style::{MarkerKind, SpanStyle, StyledLine, StyledSpan};
 pub use table::{Table, TableAlignment, TableRowKind};
@@ -110,6 +113,19 @@ pub enum DecorationKind {
         column: usize,
         alignment: TableAlignment,
     },
+    /// `==text==`, with [`MarkdownOptions::highlights`] (ADR 0190); its markers are the two `==`.
+    Highlight,
+    /// `$math$` or `$$math$$`, with [`MarkdownOptions::math`] (ADR 0190): styled, not typeset. Its markers are
+    /// the `$` or `$$` at each end; `display` is set for `$$`.
+    Math {
+        display: bool,
+    },
+    /// A known `:shortcode:` such as `:smile:`, with [`MarkdownOptions::emoji_shortcodes`] (ADR 0190). Its one
+    /// marker is the whole shortcode, never hidden: a renderer draws `emoji` in its place while the selection
+    /// is off it. Its content is empty, at its end.
+    Emoji {
+        emoji: &'static str,
+    },
 }
 
 /// What a link opens ([`MarkdownState::link_target_at`]).
@@ -145,7 +161,7 @@ impl CalloutKind {
 }
 
 /// Optional Markdown syntax on top of CommonMark with GFM strikethrough and task lists, which the user turns on
-/// or off (View > Markdown features; ADR 0185). One field per extension, so adding one is adding a field;
+/// or off (View > Markdown Extensions; ADR 0185, 0190). One field per extension, so adding one is adding a field;
 /// [`Default`] is what a new install gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MarkdownOptions {
@@ -160,6 +176,12 @@ pub struct MarkdownOptions {
     pub heading_ids: bool,
     /// `[[Page]]` links to other notes ([`DecorationKind::WikiLink`]). On by default.
     pub wikilinks: bool,
+    /// `==text==` ([`DecorationKind::Highlight`]). On by default.
+    pub highlights: bool,
+    /// `$math$` and `$$math$$` ([`DecorationKind::Math`]). Off by default: `$` is common in prose (prices).
+    pub math: bool,
+    /// `:smile:` shown as its emoji ([`DecorationKind::Emoji`]). On by default.
+    pub emoji_shortcodes: bool,
 }
 
 impl MarkdownOptions {
@@ -170,6 +192,9 @@ impl MarkdownOptions {
         subscript: true,
         heading_ids: true,
         wikilinks: true,
+        highlights: true,
+        math: true,
+        emoji_shortcodes: true,
     };
 }
 
@@ -181,6 +206,9 @@ impl Default for MarkdownOptions {
             subscript: false,
             heading_ids: false,
             wikilinks: true,
+            highlights: true,
+            math: false,
+            emoji_shortcodes: true,
         }
     }
 }
@@ -295,7 +323,7 @@ impl MarkdownState {
                     .map(|&i| parsed.decorations[i].shifted(start)),
             );
         }
-        self.drop_front_matter_autolinks(buffer, &mut found);
+        self.drop_front_matter_text_marks(buffer, &mut found);
         found
     }
 
@@ -303,17 +331,41 @@ impl MarkdownState {
     /// lies within that text or at either end of it (between a span's backticks, not outside them). Typing rules
     /// that write Markdown or rewrite what is typed ask this to leave code as it is typed.
     pub fn in_code(&mut self, buffer: &Buffer, range: Range<ByteOffset>) -> bool {
-        self.decorations(buffer, range.clone()).iter().any(|d| {
-            let code = matches!(
-                d.kind,
+        self.in_kind(buffer, range, |kind| {
+            matches!(
+                kind,
                 DecorationKind::InlineCode | DecorationKind::CodeBlock { .. }
-            );
+            )
+        })
+    }
+
+    /// Whether `range` is in code ([`MarkdownState::in_code`]) or in math ([`DecorationKind::Math`]) alike:
+    /// typed replacements leave both as typed (ADR 0180, 0190).
+    pub fn in_code_or_math(&mut self, buffer: &Buffer, range: Range<ByteOffset>) -> bool {
+        self.in_kind(buffer, range, |kind| {
+            matches!(
+                kind,
+                DecorationKind::InlineCode
+                    | DecorationKind::CodeBlock { .. }
+                    | DecorationKind::Math { .. }
+            )
+        })
+    }
+
+    fn in_kind(
+        &mut self,
+        buffer: &Buffer,
+        range: Range<ByteOffset>,
+        kind: impl Fn(&DecorationKind) -> bool,
+    ) -> bool {
+        self.decorations(buffer, range.clone()).iter().any(|d| {
             let content = &d.content;
-            code && if range.is_empty() {
-                content.start <= range.start && range.start <= content.end
-            } else {
-                range.start < content.end && content.start < range.end
-            }
+            kind(&d.kind)
+                && if range.is_empty() {
+                    content.start <= range.start && range.start <= content.end
+                } else {
+                    range.start < content.end && content.start < range.end
+                }
         })
     }
 
@@ -578,6 +630,13 @@ mod tests {
         "- | -",
         "| a | b |\n|---|---|\n",
         r"\|",
+        "==",
+        "===",
+        "$",
+        "$$",
+        ":smile:",
+        ":",
+        "x==y==",
     ];
 
     #[derive(Debug, Clone)]
@@ -600,8 +659,10 @@ mod tests {
     pub(super) fn options() -> impl Strategy<Value = MarkdownOptions> {
         prop_oneof![
             1 => Just(MarkdownOptions::ALL),
-            2 => any::<[bool; 5]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks]| {
-                MarkdownOptions { callouts, superscript, subscript, heading_ids, wikilinks }
+            2 => any::<[bool; 8]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks, highlights, math, emoji_shortcodes]| {
+                MarkdownOptions {
+                    callouts, superscript, subscript, heading_ids, wikilinks, highlights, math, emoji_shortcodes,
+                }
             }),
         ]
     }
@@ -718,6 +779,9 @@ mod tests {
         "> |---|",
         "  |---|",
         "| ",
+        "$$",
+        "==",
+        "$$x",
     ];
     /// What follows on the line: text, inline syntax, fragments that open or close blocks, wikilinks, table
     /// cells, and addresses with what may stop or end them (ADR 0187).
@@ -774,6 +838,20 @@ mod tests {
         ".com",
         "/p?q=1",
         "<https://c.d>",
+        "==",
+        "===",
+        "=",
+        r"\=",
+        "$",
+        "$$",
+        "{",
+        "\\",
+        ":smile:",
+        ":+1:",
+        ":nope:",
+        ":",
+        "10:30:45",
+        "==a==",
     ];
 
     /// A line of the random documents the region tests split: any of the starts above, then up to four pieces.
@@ -801,7 +879,7 @@ mod tests {
             let mut markdown = MarkdownState::with_options(&buffer, options);
             let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
             let mut whole = parse::parse(&text, options);
-            markdown.drop_front_matter_autolinks(&buffer, &mut whole);
+            markdown.drop_front_matter_text_marks(&buffer, &mut whole);
             prop_assert_eq!(by_region, whole, "{:?} split at {:?}", text, markdown.starts);
         }
 
@@ -859,6 +937,28 @@ mod tests {
         let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
         assert_eq!(by_region, parse::parse(text, MarkdownOptions::ALL));
         assert!(markdown.starts.len() > 1);
+    }
+
+    /// Found by `regions_parse_like_the_whole_document`: `[!NOTE]:smile:` is a reference definition, which makes
+    /// `[!NOTE]` in another region a (shortcut) link in the whole document only. Reference links stay text, so
+    /// the text scanners read through them: the address, highlight and emoji found are the same either way.
+    #[test]
+    fn a_reference_definition_in_another_region_changes_nothing_found_in_text() {
+        for text in [
+            "https://-->[!NOTE]\n# \n> [!NOTE]:smile:",
+            "==a [b== c] :+1:\n# \n[b== c]: u",
+            "x [*a*][r]www.x.y\n# \n[r]: u",
+        ] {
+            let buffer = Buffer::from_text(text);
+            let mut markdown = MarkdownState::with_options(&buffer, MarkdownOptions::ALL);
+            let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
+            assert!(markdown.starts.len() > 1);
+            assert_eq!(
+                by_region,
+                parse::parse(text, MarkdownOptions::ALL),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

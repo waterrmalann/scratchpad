@@ -14,6 +14,7 @@ use pulldown_cmark::{
 };
 
 use super::autolink::Autolinks;
+use super::highlight::TextMarks;
 use super::table::{self, TableState};
 use super::{CalloutKind, Decoration, DecorationKind, MarkdownOptions, wikilink_page};
 use crate::coords::ByteOffset;
@@ -32,6 +33,7 @@ pub(super) fn parse(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
         heading: None,
     };
     let mut autolinks = Autolinks::default();
+    let mut marks = TextMarks::new(options);
     for (event, range) in Parser::new_ext(text, pulldown_options(options)).into_offset_iter() {
         // A heading's attribute block is a marker, not text, so no address is found in it. The heading's start
         // event comes before its text, so the builder knows the block by then.
@@ -40,11 +42,16 @@ pub(super) fn parse(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
             .as_ref()
             .map(|heading| heading.attributes.start);
         autolinks.event(&event, &range, text, text_end);
+        // After the addresses: a text run is scanned for both when the event after it arrives, and highlights
+        // and shortcodes are not looked for inside an address.
+        marks.event(&event, &range, text, text_end, autolinks.found());
         builder.event(event, range);
     }
     // Events come in document order except a task box, which follows the start of the item's first block, e.g.
     // a setext heading.
     let mut decorations = builder.decorations;
+    autolinks.flush_last(text);
+    decorations.extend(marks.finish(text, autolinks.found()));
     decorations.extend(autolinks.finish(text));
     decorations.sort_by_key(|d| (d.range.start, std::cmp::Reverse(d.range.end)));
     decorations
@@ -61,6 +68,9 @@ fn pulldown_options(options: MarkdownOptions) -> Options {
     // Never `ENABLE_HEADING_ATTRIBUTES`: pulldown-cmark 0.13.4 and 0.13.6 panic on some input with it
     // (`- a\n    {#a}\n  - `), which would abort the app. The builder finds attribute blocks itself (ADR 0185).
     pulldown.set(Options::ENABLE_WIKILINKS, options.wikilinks);
+    // `$` then splits text events, and `{`, `}` are tracked for math's brace balance; nothing else changes
+    // (ADR 0190). Highlights and emoji shortcodes are found in text by `TextMarks`.
+    pulldown.set(Options::ENABLE_MATH, options.math);
     // GFM tables are always on (ADR 0186).
     pulldown |= Options::ENABLE_TABLES;
     pulldown
@@ -115,6 +125,8 @@ impl Builder<'_> {
                 self.delimited(DecorationKind::InlineCode, range, ticks);
             }
             Event::TaskListMarker(checked) => self.task(checked, range),
+            Event::InlineMath(_) => self.math(range, false),
+            Event::DisplayMath(_) => self.math(range, true),
             Event::Rule => {
                 let range = self.trim(range);
                 let end = range.end;
@@ -261,6 +273,17 @@ impl Builder<'_> {
         let content = range.start + len..range.end - len;
         let markers = vec![range.start..content.start, content.end..range.end];
         self.push(kind, range, content, markers);
+    }
+
+    /// `$math$`, or `$$math$$` for `display` (ADR 0190). pulldown-cmark 0.13.4 reports a wrong range for math
+    /// that starts in a wikilink's target (`[[$$|a|$]]` gives `a|$`), so math is taken only where its range is
+    /// delimited by its dollars.
+    fn math(&mut self, range: Range<usize>, display: bool) {
+        let dollars = if display { "$$" } else { "$" };
+        let text = self.text.get(range.clone()).unwrap_or_default();
+        if text.len() > 2 * dollars.len() && text.starts_with(dollars) && text.ends_with(dollars) {
+            self.delimited(DecorationKind::Math { display }, range, dollars.len());
+        }
     }
 
     fn heading(&mut self, level: u8, range: Range<usize>) {

@@ -99,6 +99,11 @@ pub fn markdown_options(config: &Config) -> MarkdownOptions {
         subscript: config.markdown_subscript.unwrap_or(default.subscript),
         heading_ids: config.markdown_heading_ids.unwrap_or(default.heading_ids),
         wikilinks: config.markdown_wikilinks.unwrap_or(default.wikilinks),
+        highlights: config.markdown_highlights.unwrap_or(default.highlights),
+        math: config.markdown_math.unwrap_or(default.math),
+        emoji_shortcodes: config
+            .markdown_emoji_shortcodes
+            .unwrap_or(default.emoji_shortcodes),
     }
 }
 
@@ -109,6 +114,9 @@ pub fn store_markdown_options(config: &mut Config, options: MarkdownOptions) {
     config.markdown_subscript = Some(options.subscript);
     config.markdown_heading_ids = Some(options.heading_ids);
     config.markdown_wikilinks = Some(options.wikilinks);
+    config.markdown_highlights = Some(options.highlights);
+    config.markdown_math = Some(options.math);
+    config.markdown_emoji_shortcodes = Some(options.emoji_shortcodes);
 }
 
 pub fn theme_mode(preference: ThemePreference) -> ThemeMode {

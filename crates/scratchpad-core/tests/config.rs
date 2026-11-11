@@ -52,6 +52,9 @@ fn save_and_load_round_trip_every_field() {
         markdown_subscript: Some(true),
         markdown_heading_ids: None,
         markdown_wikilinks: Some(false),
+        markdown_highlights: Some(false),
+        markdown_math: Some(true),
+        markdown_emoji_shortcodes: None,
     };
 
     config.save(&path).unwrap();
@@ -98,6 +101,9 @@ fn loads_the_documented_file_format() {
             "markdown_subscript": "yes",
             "markdown_heading_ids": true,
             "markdown_wikilinks": false,
+            "markdown_highlights": false,
+            "markdown_math": true,
+            "markdown_emoji_shortcodes": 1,
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -130,6 +136,9 @@ fn loads_the_documented_file_format() {
             markdown_subscript: None,
             markdown_heading_ids: Some(true),
             markdown_wikilinks: Some(false),
+            markdown_highlights: Some(false),
+            markdown_math: Some(true),
+            markdown_emoji_shortcodes: None,
         }
     );
 }

@@ -16,6 +16,8 @@ scratchpad-spell = { path = "crates/scratchpad-spell" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 dirs = "7"
+# gemoji's shortcodes, from which the editor's shortcode table is generated (ADR 0190).
+emojis = { version = "0.9.1", default-features = false }
 # Already in the tree through GPUI. Blocking sends and receives on the spell-check thread,
 # awaited ones in the UI (ADR 0170).
 flume = { version = "0.11", default-features = false, features = ["async"] }
