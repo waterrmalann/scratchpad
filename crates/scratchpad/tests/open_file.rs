@@ -435,7 +435,9 @@ fn the_file_stays_open_when_the_notes_folder_changes(cx: &mut TestAppContext) {
 fn a_file_that_becomes_a_note_of_the_new_notes_folder_is_left_like_a_note(cx: &mut TestAppContext) {
     let folders = Folders::new();
     let readme = folders.file("Readme.md", b"Readme");
-    write_note(folders.elsewhere.path(), "Newer", "Newer", days_ago(0, 1));
+    // In the past at any time of day: 01:00 today is still to come just after midnight, and a
+    // note from the future would be the newest.
+    write_note(folders.elsewhere.path(), "Newer", "Newer", days_ago(1, 23));
     let (root, cx) = folders.open(cx);
     open_file(&readme, cx);
     cx.simulate_keystrokes("ctrl-end");
