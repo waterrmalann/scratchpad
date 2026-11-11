@@ -24,7 +24,19 @@ layout (ADR 0071) never needed before, and typing in a 200-row table must stay w
 - **Styled lines.** `SpanStyle` gets `table: Option<TableRowKind>` (header, delimiter, body; also on
   the line style) and `table_column`. `MarkerKind` gets `TablePipe` and `TableDelimiter`.
   `MarkdownState::table(buffer, line, selection)` returns the table of a line (range, lines,
-  alignments, whether the selection reveals it) without cloning anything but the alignments.
+  alignments, whether the selection reveals it). The alignments are an `Arc<[TableAlignment]>`
+  shared by the `Table` decoration and every query, so a query copies a pointer.
+- **Queries per line.** A table is one region however long, so a query must not look at every
+  decoration of its region: each region keeps, beside its sorted decorations, the nearest enclosing
+  decoration of each (they are nested or disjoint, which the parse's property tests check; if not,
+  the region falls back to a scan). A query for a range takes the decorations starting in it with
+  `partition_point` and those starting before it that reach it by walking up from the last one
+  starting before it, as deep as the nesting (table, row, cell, inline span). Styling a line or
+  looking up its table then costs the same in a 10,000-row table as in a 20-row one. A property
+  test checks every query against the whole document's decorations.
+- **Wikilinks in cells.** `|` splits cells, so Obsidian writes a wikilink's label separator as `\|`
+  in tables: `[[a\|b]]` links to `a` with label `b`, its marker `a\|` (accepted outside tables too,
+  as in Obsidian; ADR 0188).
 - **Table-wide reveal.** Every table marker shows while the selection touches any line of the table,
   as for code blocks and headings, rather than only on the cursor's row. Column widths come from all
   rows: with row-wide reveal, typing in one row (shown as typed) would change the widths of the grid
@@ -69,9 +81,19 @@ layout (ADR 0071) never needed before, and typing in a 200-row table must stay w
   `cargo bench -p scratchpad-editor -- table`): a keystroke in the middle of a 200-row table plus
   restyling 50 of its lines and querying their table: ~0.58 ms; styling all 200 rows for measuring:
   ~0.6 ms, once (`docs/performance.md`).
-- Tables longer than 256 lines are one region, so a keystroke in a 10,000-row pasted table reparses
-  all of it (~15 ms per 400 KB). That is the price of keeping such tables whole; a table that big is
-  rare in notes.
+- By table length (release, `cargo bench -p scratchpad-editor -- markdown_table_rows`, loaded
+  desktop, 2026-11-12; before and after the bounded queries): a keystroke in the middle row plus
+  styling 50 of its lines one at a time and looking up their table: 200 rows 0.44 / 0.45 ms,
+  2,000 rows 3.7 / 3.4 ms, 10,000 rows 21.6 / 18.9 ms; the 50 lines' styling and lookups alone:
+  0.22 / 0.20 ms, 0.53 / 0.20 ms, 5.2 / 0.19 ms. What is left grows with the table only through
+  reparsing its region.
+- Tables longer than 256 lines stay one region, so a keystroke in a 10,000-row pasted table reparses
+  all of it (~19 ms per 470 KB) and misses a frame. Splitting a long table into regions would need
+  each later part parsed with the header and delimiter row of the first, so an edit there would have
+  to drop the parse of every part, and regions would no longer depend only on their own text (ADR
+  0041); capping it (rows past a limit shown as text) would change what the note means at an
+  arbitrary row. Both cost more, in correctness and code, than a slow keystroke in a table nobody
+  types into by hand; tables up to a few thousand rows stay within a frame.
 - Rows typed with fewer cells than the header leave their last columns empty in the grid; cells past
   the header's count are hidden with the trailing pipe, as GitHub drops them.
 - A table in a list item nested in a quote, or after tabs, may be a few pixels off its header, since
