@@ -234,7 +234,7 @@ fn measure(table: &Table, base: &BaseStyle, cx: &mut KeyContext) -> Columns {
         }
         start = end;
     }
-    let mut columns = Columns::new(widths, table.alignments.clone(), base.font_size);
+    let mut columns = Columns::new(widths, table.alignments.to_vec(), base.font_size);
     columns.reach = indent + lead + columns.width();
     columns
 }

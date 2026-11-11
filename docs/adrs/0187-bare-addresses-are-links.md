@@ -1,6 +1,6 @@
 # 0187. Bare web and e-mail addresses are links, found in text without changing it
 Date: 2026-11-11
-Status: Accepted; amends ADR 0040
+Status: Accepted; amends ADR 0040 and 0041
 
 ## Context
 Notes are full of pasted addresses (`https://...`, `www.example.com`, `name@example.com`) that nobody wraps
@@ -28,8 +28,10 @@ on the keystroke path (ADR 0041).
   whose markers are empty, so live preview styles it and hides nothing. The destination is made
   openable: `https://` before `www.`, `mailto:` before an e-mail address, a URL as written. `link_at`,
   Ctrl+click and the pointing hand work unchanged; spell checking skips a link without markers whole.
-- **Cost.** A text run with no `:`, `@` or `www.` costs three std byte searches (`memchr`-backed for
-  single bytes) and allocates nothing; only a match allocates (its destination). No new dependency.
+- **Cost.** A text run with no `:`, `@` or `www.` costs one pass over its bytes
+  (`may_contain_address`, a plain loop: `str::contains` with a pattern builds a searcher per call,
+  which costs more than the search on the short texts of most events) and allocates nothing; only a
+  match allocates (its destination). No new dependency.
 - **Shared rule.** `autolink::looks_like_web_address` (`://`, `@` or a leading `www.`) is what typed
   replacements (ADR 0180) use to leave an address being typed alone, so both agree on what an address
   starts with.
@@ -37,12 +39,18 @@ on the keystroke path (ADR 0041).
 ## Consequences
 - Addresses are found from the source text, so `&amp;` in an address stays as written in its destination.
 - The text before `www.` is checked in the region text, so `**www.x.com**` links and `'www.x.com'` does not,
-  as on GitHub. Table cells, once enabled, start after `|`, which does not allow `www.` right after it.
+  as on GitHub. The start of a table cell's text counts as a start of line, as in cmark-gfm, which parses
+  each cell on its own (`|www.x.com|` links), and so does the text right after a wikilink
+  (`[[a]]www.x.com`), which GitHub does not have. Only those two: what counts must not depend on how
+  pulldown-cmark splits text into events, which can differ between a region and the whole document.
 - There is no option to turn it off; it can join `MarkdownOptions` if someone asks.
 - The region property test intermittently found a mismatch (from ADR 0185) between pulldown-cmark and the
-  region scanner: pulldown-cmark continues a GFM alert across a whitespace-only line indented 4 or more columns. Such
-  a line no longer separates regions, which only removes cuts.
-- Tests: the spec's examples and exclusions (`tests/autolinks.rs`), region and edit equivalence
-  (`markdown::autolink::tests`), the well-formedness properties (`tests/markdown_properties.rs`),
-  Ctrl+click end to end (`scratchpad/tests/live_preview.rs`). `cargo bench -- markdown_parse_prose`
+  region scanner: pulldown-cmark continues a GFM alert across a whitespace-only line indented 4 or more columns.
+  This amends ADR 0041: such a line no longer separates regions while a block quote may be open (a line since
+  the last blank line started with `>`, after any indentation and list markers), which only removes cuts;
+  elsewhere it is a blank line as before.
+- Tests: the spec's examples and exclusions (`tests/autolinks.rs`), region equivalence
+  (`markdown::tests`, whose one generator of random lines has addresses, wikilinks and tables, with
+  any options), edit equivalence (`markdown::autolink::tests`), the well-formedness properties
+  (`tests/markdown_properties.rs`), Ctrl+click end to end (`scratchpad/tests/live_preview.rs`). `cargo bench -- markdown_parse_prose`
   measures 1 MB of prose with and without addresses.

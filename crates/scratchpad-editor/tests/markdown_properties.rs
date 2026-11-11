@@ -241,7 +241,11 @@ proptest! {
             prop_assert_eq!(markers.first().map(String::as_str), Some("[["));
             prop_assert_eq!(markers.last().map(String::as_str), Some("]]"));
             if markers.len() == 3 {
-                prop_assert_eq!(&markers[1], &format!("{target}|"));
+                // `\|` separates the label too (Obsidian's form for tables).
+                prop_assert!(
+                    markers[1] == format!("{target}|") || markers[1] == format!("{target}\\|"),
+                    "{d:?}"
+                );
             } else {
                 prop_assert_eq!(markers.len(), 2);
                 prop_assert_eq!(&slice(&d.content), target);
@@ -260,6 +264,31 @@ proptest! {
                 prop_assert_eq!(a, &b);
             }
         }
+    }
+}
+
+/// Headings, setext text and list items around attribute blocks and the syntax that may reach into them: the
+/// input pulldown-cmark 0.13 panics on with its own heading attributes (`- a\n    {#a}\n  - `) and its variants.
+fn heading_text() -> impl Strategy<Value = String> {
+    const ATOMS: &[&str] = &[
+        "# ", "## ", "- ", "* ", "1. ", "> ", "  ", "    ", "\t", "\n", "\r\n", "\n---", "\n===",
+        "a", " ", "{", "}", "{#a}", " {.b}", "{}", "\\", "*", "_", "`", "[[a]]", "[x](y)",
+        "http://x", "www.x.y", "<", ">", "#",
+    ];
+    prop::collection::vec(prop::sample::select(ATOMS), 0..16).prop_map(|atoms| atoms.concat())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8192))]
+
+    /// With heading IDs on, nothing panics and decorations stay well formed (ADR 0185).
+    #[test]
+    fn heading_attribute_blocks_never_break_the_parse(text in heading_text(), options in options()) {
+        let options = MarkdownOptions { heading_ids: true, ..options };
+        let buffer = Buffer::from_text(&text);
+        let mut markdown = MarkdownState::with_options(&buffer, options);
+        let decorations = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
+        check_well_formed(&buffer.normalized_text(), &decorations)?;
     }
 }
 

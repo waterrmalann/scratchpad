@@ -13,9 +13,12 @@
 #![allow(clippy::single_range_in_vec_init)]
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use pulldown_cmark::Alignment;
 
+use super::blocks;
+use super::parse::{offsets, push, skip, skip_back, trim};
 use super::{Decoration, DecorationKind, MarkdownState};
 use crate::buffer::Buffer;
 use crate::coords::ByteOffset;
@@ -48,8 +51,9 @@ pub struct Table {
     pub range: Range<ByteOffset>,
     /// The lines it covers.
     pub lines: Range<usize>,
-    /// One per column, from the delimiter row; their number is the table's column count.
-    pub alignments: Vec<TableAlignment>,
+    /// One per column, from the delimiter row; their number is the table's column count. Shared with the
+    /// table's decoration, so a query copies no more than a pointer.
+    pub alignments: Arc<[TableAlignment]>,
     /// Whether the selection touches the table's lines, so that its markers show: a renderer then shows the
     /// table as typed rather than as a grid. Always set without a selection (source mode).
     pub revealed: bool,
@@ -57,7 +61,8 @@ pub struct Table {
 
 impl MarkdownState {
     /// The table `line` belongs to, if any, parsing only the region it is in. With a `selection` (live preview),
-    /// [`Table::revealed`] says whether it touches the table. Nothing is cloned but the table's alignments.
+    /// [`Table::revealed`] says whether it touches the table. Only the decorations on the line are looked at, so
+    /// the cost does not grow with the table's length, and nothing is cloned.
     pub fn table(
         &mut self,
         buffer: &Buffer,
@@ -72,20 +77,20 @@ impl MarkdownState {
         let end = buffer.line_end(line).0;
         let index = self.region_index(at);
         let region_start = self.starts[index];
-        let (range, alignments) = self
-            .region_decorations(buffer, index)
-            .iter()
-            .find_map(|d| match &d.kind {
-                DecorationKind::Table { alignments }
-                    if d.range.start.0 + region_start <= end
-                        && at <= d.range.end.0 + region_start =>
-                {
+        let parsed = self.region_decorations(buffer, index);
+        let mut touching = Vec::new();
+        parsed.touching(at - region_start..end - region_start, &mut touching);
+        let (range, alignments) = touching.iter().find_map(|&i| {
+            let d = &parsed.decorations[i];
+            match &d.kind {
+                DecorationKind::Table { alignments } => {
                     let range = ByteOffset(d.range.start.0 + region_start)
                         ..ByteOffset(d.range.end.0 + region_start);
-                    Some((range, alignments.clone()))
+                    Some((range, Arc::clone(alignments)))
                 }
                 _ => None,
-            })?;
+            }
+        })?;
         let lines = buffer.line_of(range.start)..buffer.line_of(range.end) + 1;
         let revealed = selection.is_none_or(|selection| {
             let start = buffer.line_start(lines.start);
@@ -134,7 +139,7 @@ impl TableState {
                 let range = trim(text, range);
                 self.alignments = alignments.iter().map(|&a| alignment(a)).collect();
                 let kind = DecorationKind::Table {
-                    alignments: self.alignments.clone(),
+                    alignments: self.alignments.as_slice().into(),
                 };
                 push(decorations, kind, range.clone(), range, Vec::new());
             }
@@ -204,9 +209,8 @@ impl TableState {
     }
 }
 
-/// The delimiter row, on the line after the header row that ends at `header_end`: after any container prefix
-/// (indentation and the `>` of quotes), to its last non-blank byte. Delimiter rows consist of `|`, `-`, `:` and
-/// whitespace, so the prefix is the `>` and whitespace it starts with.
+/// The delimiter row, on the line after the header row that ends at `header_end` (pulldown-cmark reports nothing
+/// for it), with the range [`blocks::delimiter_row`] gives: after any container prefix, to its last non-blank byte.
 fn delimiter_row(text: &str, decorations: &mut Vec<Decoration>, header_end: usize) {
     if header_end >= text.len() {
         return;
@@ -215,9 +219,8 @@ fn delimiter_row(text: &str, decorations: &mut Vec<Decoration>, header_end: usiz
     let line_end = text[line_start..]
         .find('\n')
         .map_or(text.len(), |i| line_start + i);
-    let start = skip(text, line_start, line_end, b" \t>");
-    let end = skip_back(text, line_end, start, b" \t");
-    if start < end {
+    if let Some(row) = blocks::delimiter_row(&text[line_start..line_end]) {
+        let (start, end) = (line_start + row.start, line_start + row.end);
         let kind = DecorationKind::TableDelimiter;
         push(decorations, kind, start..end, end..end, vec![start..end]);
     }
@@ -238,45 +241,4 @@ pub(super) fn enclosing<'a>(on_line: &[&'a Decoration]) -> Option<&'a Decoration
         .iter()
         .find(|d| matches!(d.kind, DecorationKind::Table { .. }))
         .copied()
-}
-
-fn push(
-    decorations: &mut Vec<Decoration>,
-    kind: DecorationKind,
-    range: Range<usize>,
-    content: Range<usize>,
-    markers: Vec<Range<usize>>,
-) -> usize {
-    decorations.push(Decoration {
-        kind,
-        range: offsets(range),
-        content: offsets(content),
-        markers: markers.into_iter().map(offsets).collect(),
-    });
-    decorations.len() - 1
-}
-
-fn offsets(range: Range<usize>) -> Range<ByteOffset> {
-    ByteOffset(range.start)..ByteOffset(range.end)
-}
-
-/// `range` without the line breaks and blank lines pulldown-cmark ends some block ranges with.
-fn trim(text: &str, range: Range<usize>) -> Range<usize> {
-    let last_text = skip_back(text, range.end, range.start, b" \t\n");
-    let line_end = text[last_text..range.end]
-        .find('\n')
-        .map_or(range.end, |i| last_text + i);
-    range.start..line_end
-}
-
-/// The first position in `from..to` whose byte is not in `set`, or `to`.
-fn skip(text: &str, from: usize, to: usize, set: &[u8]) -> usize {
-    let bytes = &text.as_bytes()[from.min(to)..to];
-    from + bytes.iter().take_while(|b| set.contains(b)).count()
-}
-
-/// Moves back from `from` over bytes in `set`, stopping at `limit`.
-fn skip_back(text: &str, from: usize, limit: usize, set: &[u8]) -> usize {
-    let bytes = &text.as_bytes()[limit.min(from)..from];
-    from - bytes.iter().rev().take_while(|b| set.contains(b)).count()
 }

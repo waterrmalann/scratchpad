@@ -15,7 +15,7 @@
 
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Tag, TagEnd};
+use pulldown_cmark::{Event, LinkType, Tag, TagEnd};
 
 use super::{Decoration, DecorationKind, MAX_FRONT_MATTER_BYTES, MarkdownState, front_matter};
 use crate::buffer::Buffer;
@@ -91,17 +91,31 @@ impl MarkdownState {
 pub(super) struct Autolinks {
     /// The run of consecutive text events seen last, not yet scanned.
     run: Option<Range<usize>>,
-    /// How many code blocks and how many links or images the next event is in.
+    /// Where text starts that is a text node of its own in GFM, as at the start of a line: a table cell's text,
+    /// and (an Obsidian addition) text right after a wikilink. `www.` may start an address there.
+    node_start: Option<usize>,
+    /// How many code blocks the next event is in.
     code_blocks: usize,
-    links: usize,
+    /// The links and images the next event is in, innermost last: whether each is a wikilink.
+    links: Vec<bool>,
     found: Vec<Decoration>,
 }
 
 impl Autolinks {
-    /// Takes the next event of the parse of `text`, with its range.
-    pub(super) fn event(&mut self, event: &Event<'_>, range: &Range<usize>, text: &str) {
+    /// Takes the next event of the parse of `text`, with its range. Text from `text_end` on is not prose (a
+    /// heading's attribute block) and is not scanned.
+    pub(super) fn event(
+        &mut self,
+        event: &Event<'_>,
+        range: &Range<usize>,
+        text: &str,
+        text_end: Option<usize>,
+    ) {
+        let range = &(range.start..range.end.min(text_end.unwrap_or(usize::MAX)));
         match event {
-            Event::Text(_) if self.code_blocks == 0 && self.links == 0 => {
+            Event::Text(_)
+                if self.code_blocks == 0 && self.links.is_empty() && !range.is_empty() =>
+            {
                 match &mut self.run {
                     // Entities, escapes and unmatched delimiters split text into several events.
                     Some(run) if run.end == range.start => run.end = range.end,
@@ -114,8 +128,24 @@ impl Autolinks {
             }
             Event::Start(Tag::CodeBlock(_)) => self.code_blocks += 1,
             Event::End(TagEnd::CodeBlock) => self.code_blocks = self.code_blocks.saturating_sub(1),
-            Event::Start(Tag::Link { .. } | Tag::Image { .. }) => self.links += 1,
-            Event::End(TagEnd::Link | TagEnd::Image) => self.links = self.links.saturating_sub(1),
+            Event::Start(Tag::Link { link_type, .. }) => {
+                self.links
+                    .push(matches!(link_type, LinkType::WikiLink { .. }));
+            }
+            Event::Start(Tag::Image { .. }) => self.links.push(false),
+            Event::End(TagEnd::Link | TagEnd::Image) => {
+                let wikilink = self.links.pop() == Some(true);
+                self.flush(text);
+                if wikilink {
+                    self.node_start = Some(range.end);
+                }
+                return;
+            }
+            Event::Start(Tag::TableCell) => {
+                self.flush(text);
+                self.node_start = Some(range.start);
+                return;
+            }
             _ => {}
         }
         self.flush(text);
@@ -129,13 +159,15 @@ impl Autolinks {
 
     fn flush(&mut self, text: &str) {
         if let Some(run) = self.run.take() {
-            scan(text, run, &mut self.found);
+            let starts_node = self.node_start == Some(run.start);
+            scan(text, run, starts_node, &mut self.found);
         }
     }
 }
 
-/// Finds the addresses in `text[run]`, a run of text, and pushes their decorations to `found`.
-fn scan(text: &str, run: Range<usize>, found: &mut Vec<Decoration>) {
+/// Finds the addresses in `text[run]`, a run of text, and pushes their decorations to `found`. `starts_node` says
+/// whether the run starts a text node of its own, where `www.` may start an address whatever comes before.
+fn scan(text: &str, run: Range<usize>, starts_node: bool, found: &mut Vec<Decoration>) {
     if !may_contain_address(&text[run.clone()]) {
         return;
     }
@@ -146,7 +178,7 @@ fn scan(text: &str, run: Range<usize>, found: &mut Vec<Decoration>) {
     while i < run.end {
         let address = match bytes[i] {
             b':' => url(text, floor, i, run.end),
-            b'w' => www(text, i, run.end),
+            b'w' => www(text, i, starts_node && i == run.start, run.end),
             b'@' => email(text, floor, i, run.end),
             _ => None,
         };
@@ -189,15 +221,19 @@ fn url(text: &str, floor: usize, colon: usize, end: usize) -> Option<(Range<usiz
     (link_end > colon + 3).then(|| (start..link_end, text[start..link_end].to_owned()))
 }
 
-/// A `www.` address starting at `at`, if `www.` is there.
-fn www(text: &str, at: usize, end: usize) -> Option<(Range<usize>, String)> {
+/// A `www.` address starting at `at`, if `www.` is there. `node_start` says `at` starts a text node, which counts
+/// as a start of line (as each table cell's text does in cmark-gfm), so `|www.x.com|` in a table cell and
+/// `[[a]]www.x.com` link the address.
+fn www(text: &str, at: usize, node_start: bool, end: usize) -> Option<(Range<usize>, String)> {
     let bytes = text.as_bytes();
     if !bytes[at..end].starts_with(WWW.as_bytes()) {
         return None;
     }
-    let after_allowed = at.checked_sub(1).is_none_or(|before| {
-        matches!(bytes[before], b'*' | b'_' | b'~' | b'(') || bytes[before].is_ascii_whitespace()
-    });
+    let after_allowed = node_start
+        || at.checked_sub(1).is_none_or(|before| {
+            matches!(bytes[before], b'*' | b'_' | b'~' | b'(')
+                || bytes[before].is_ascii_whitespace()
+        });
     if !after_allowed {
         return None;
     }
@@ -332,84 +368,29 @@ mod tests {
 
     use super::*;
     use crate::Editor;
-    use crate::markdown::{MarkdownOptions, parse};
-
-    /// Prose and syntax around addresses and fragments of them.
-    const PIECES: &[&str] = &[
-        "a",
-        "word",
-        " ",
-        "  ",
-        "é",
-        "日本",
-        "**",
-        "*",
-        "_",
-        "~",
-        "`",
-        "(",
-        ")",
-        "[x](y)",
-        "<",
-        ">",
-        "&amp;",
-        ";",
-        ".",
-        ",",
-        "'",
-        "https://",
-        "http://a.b",
-        "www.",
-        "www.x.y",
-        "x@y.z",
-        "@",
-        ".com",
-        "/p?q=1",
-        "_b",
-        "<https://c.d>",
-    ];
-    const LINE_STARTS: &[&str] = &[
-        "", "", "", "# ", "- ", "1. ", "> ", "    ", "```", "---", "<div>",
-    ];
-
-    fn line() -> impl Strategy<Value = String> {
-        (
-            prop::sample::select(LINE_STARTS),
-            prop::collection::vec(prop::sample::select(PIECES), 0..8),
-        )
-            .prop_map(|(start, rest)| format!("{start}{}", rest.concat()))
-    }
+    use crate::markdown::tests::{line, options};
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(2048))]
 
-        /// Region boundaries never change which addresses are found (ADR 0041).
-        #[test]
-        fn regions_find_the_addresses_of_the_whole_document(lines in prop::collection::vec(line(), 0..12)) {
-            let text = lines.join("\n");
-            let buffer = Buffer::from_text(&text);
-            let mut markdown = MarkdownState::new(&buffer);
-            let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
-            let mut whole = parse::parse(&text, MarkdownOptions::default());
-            markdown.drop_front_matter_autolinks(&buffer, &mut whole);
-            prop_assert_eq!(by_region, whole, "{:?} split at {:?}", text, markdown.starts);
-        }
-
         /// Typing addresses in and out keeps the decorations, front matter included, those of a fresh parse.
+        /// (That regions find the addresses of the whole document is `regions_parse_like_the_whole_document`.)
         #[test]
         fn edits_keep_the_addresses_of_a_fresh_parse(
             lines in prop::collection::vec(line(), 0..8),
-            edits in prop::collection::vec((0..120usize, 0..8usize, prop::sample::select(PIECES)), 0..12),
+            options in options(),
+            edits in prop::collection::vec((0..120usize, 0..8usize, line()), 0..12),
         ) {
             let mut editor = Editor::from_text(&lines.join("\n"));
-            let mut markdown = MarkdownState::new(editor.buffer());
+            let mut markdown = MarkdownState::with_options(editor.buffer(), options);
             for (at, len, text) in edits {
                 markdown.decorations(editor.buffer(), ByteOffset(0)..editor.buffer().end());
-                editor.replace_range(ByteOffset(at)..ByteOffset(at + len), text);
+                editor.replace_range(ByteOffset(at)..ByteOffset(at + len), &text);
             }
             let buffer = editor.buffer();
             let all = ByteOffset(0)..buffer.end();
-            prop_assert_eq!(markdown.decorations(buffer, all.clone()), MarkdownState::new(buffer).decorations(buffer, all));
+            let fresh = MarkdownState::with_options(buffer, options).decorations(buffer, all.clone());
+            prop_assert_eq!(markdown.decorations(buffer, all), fresh);
         }
     }
 
@@ -427,6 +408,25 @@ mod tests {
         }
         for run in ["word", "www", "a.b", "x:y", "->"] {
             assert!(!looks_like_web_address(run), "{run}");
+        }
+    }
+
+    /// Whatever typed replacements take for an address being typed is scanned for addresses, so the two rules
+    /// cannot disagree about where one may start.
+    #[test]
+    fn runs_that_look_like_addresses_are_scanned() {
+        for run in [
+            "www.",
+            "https://",
+            "a@",
+            "x@y.z",
+            "(https://a.b)",
+            "www.x.com/p",
+        ] {
+            assert!(
+                looks_like_web_address(run) && may_contain_address(run),
+                "{run}"
+            );
         }
     }
 

@@ -48,11 +48,20 @@ must stay lazy per block region (ADR 0041) and cost nothing per keystroke.
   strikethrough as before. A tilde run only closes a run as long, so the strikethrough marker is
   the run at its start in both cases. For `^`, pulldown-cmark nests a run of carets with two per
   element and one left for the outermost, so the marker is 1 caret for an odd run, else 2.
-- **Heading IDs** use `ENABLE_HEADING_ATTRIBUTES`. The trailing `{...}` block, with the whitespace
-  before it, is found with pulldown-cmark's own rule (last non-blank byte `}`, nearest `{`, `}`, `<`,
-  `>`, `\` or line break before it a `{`) and becomes the heading's last marker, after a closing `#`
-  sequence, or the setext text line's marker before the underline. It is not part of the content,
-  hides with the heading's other markers and shows while the cursor is on the heading's lines.
+- **Heading IDs** are found by the parser, not by pulldown-cmark: `ENABLE_HEADING_ATTRIBUTES` is
+  never passed, because pulldown-cmark 0.13.4 (and 0.13.6, the latest checked) panics on some input
+  with it (`- a`, `    {#a}`, `  - `: a slice out of range), and with `panic = "abort"` that would
+  close the app on a keystroke. The trailing `{...}` block, with the whitespace before it, is found
+  with pulldown-cmark's own rule (last non-blank byte `}`, nearest `{`, `}`, `<`, `>`, `\` or line
+  break before it a `{`) and becomes the heading's last marker, after a closing `#` sequence, or the
+  setext text line's marker before the underline; a block on a line of its own leaves the text before
+  it, without its line break, as the content. It is not part of the content, hides with the
+  heading's other markers and shows while the cursor is on the heading's lines. Since pulldown-cmark
+  now parses the block as heading text, inline decorations reaching into it are dropped (`# *a {*}`
+  has no emphasis) and no address is looked for in it; what ends before it pairs as it did with
+  the parser's attributes on, because delimiters pair from the left (checked against the old output
+  on 200,000 random headings; the only difference, an address before an escaped `\{`, no longer
+  takes the backslash).
 
 ## Consequences
 - Toggling an option costs dropping the cached decorations and reparsing the visible regions; no
@@ -62,6 +71,9 @@ must stay lazy per block region (ADR 0041) and cost nothing per keystroke.
   that would mean patching the parser, which this decision does not do.
 - `{}` and `{anything}` at the end of a heading line are attributes once Heading IDs is on, as
   pulldown-cmark reads them; that is why it is off by default.
+- A pulldown-cmark upgrade that fixes the panic would let the parser read attributes again; the
+  regression inputs (`tests/markdown.rs`) and the heading property test
+  (`tests/markdown_properties.rs`, 8,192 cases) guard either way.
 - A callout's tag line with text after the tag (`> [!NOTE] Title`) is an ordinary quote, as on
   GitHub.
 - Tests: decoration ranges of each feature and of the options turned off (`tests/markdown.rs`),

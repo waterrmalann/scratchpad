@@ -35,6 +35,9 @@ pub(super) struct Scanner {
     /// A line since the last blank line or region start was a table's delimiter row (ADR 0186), so a table may
     /// be open: it is never cut after [`MAX_REGION_LINES`].
     table: bool,
+    /// A line since the last blank line started a block quote (after any indentation and list markers), so one
+    /// may be open.
+    quote: bool,
 }
 
 /// A construct that continues across blank lines.
@@ -133,8 +136,10 @@ impl Scanner {
             }
         };
         // pulldown-cmark 0.13 continues a GFM alert across a whitespace-only line indented 4 or more columns
-        // (`> [!NOTE]`, `    `, `> x` is one quote), so such a line does not separate regions.
-        self.previous_blank = blank && column < 4;
+        // (`> [!NOTE]`, `    `, `> x` is one quote), so while a quote may be open such a line does not separate
+        // regions.
+        self.previous_blank = blank && (column < 4 || !self.quote);
+        self.quote = !self.previous_blank && (self.quote || starts_quote(line));
         starts && !first && !self.uncertain
     }
 }
@@ -196,16 +201,35 @@ fn opens(line: &str) -> Option<Open> {
     })
 }
 
-/// Whether `line` may be a GFM table delimiter row: after any indentation and quote markers, only `|`, `-`, `:`
-/// and whitespace, with at least one `|` and one `-`. pulldown-cmark accepts more than GFM's `:?-+:?` cells
-/// (`- - -|---` is one), so this errs on the side of a delimiter row, which only keeps a region from starting.
-fn is_delimiter_row(line: &str) -> bool {
-    let row = line.trim_start_matches([' ', '\t', '>']);
-    row.contains('|')
+/// The byte range in `line` of a GFM table delimiter row, if `line` may be one: after any indentation and quote
+/// markers (`>`), only `|`, `-`, `:` and whitespace, with at least one `|` and one `-`; the range runs from
+/// after that prefix to the last non-blank byte. pulldown-cmark accepts more than GFM's `:?-+:?` cells
+/// (`- - -|---` is one), so this errs on the side of a delimiter row, which in the scan only keeps a region from
+/// starting. The table decorations take the row's range from here too (ADR 0186).
+pub(super) fn delimiter_row(line: &str) -> Option<std::ops::Range<usize>> {
+    let unprefixed = line.trim_start_matches([' ', '\t', '>']);
+    let row = unprefixed.trim_end_matches([' ', '\t']);
+    let is_row = row.contains('|')
         && row.contains('-')
         && row
             .bytes()
-            .all(|b| matches!(b, b'|' | b'-' | b':' | b' ' | b'\t'))
+            .all(|b| matches!(b, b'|' | b'-' | b':' | b' ' | b'\t'));
+    let start = line.len() - unprefixed.len();
+    is_row.then(|| start..start + row.len())
+}
+
+fn is_delimiter_row(line: &str) -> bool {
+    delimiter_row(line).is_some()
+}
+
+/// Whether `line` starts a block quote: `>` after any indentation and list markers.
+fn starts_quote(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = indentation(line).0;
+    while let Some(end) = list_marker_end(bytes, i) {
+        i = end + count(bytes, end, b' ');
+    }
+    bytes.get(i) == Some(&b'>')
 }
 
 /// `#` to `######` at the line start, followed by a space, a tab or the line end.
@@ -297,6 +321,10 @@ mod tests {
         assert_eq!(starts("text\nmore\n\npara\n \nx\n\n  indented\n\n"), [3, 5]);
         // A whitespace-only line indented 4 columns does not: pulldown-cmark joins an alert across it.
         assert_eq!(starts("> [!NOTE]\n    \n> [!NOTE]\n\t\nx"), []);
+        assert_eq!(starts("- > [!TIP]\n      \nx"), []);
+        // Without a quote it does, as any blank line.
+        assert_eq!(starts("text\n    \nx\n\t\ny"), [2, 4]);
+        assert_eq!(starts("> q\n\n    \nx"), [3]);
     }
 
     #[test]
