@@ -19,7 +19,8 @@ use gpui::{
 
 use crate::actions::editor::{Copy, Cut, Delete, Paste, Redo, SelectAll, ToggleSourceMode, Undo};
 use crate::actions::view::{
-    ResetZoom, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn, ZoomOut,
+    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn,
+    ZoomOut,
 };
 use crate::actions::{
     NewNote, OpenFile, OpenSettings, Quit, SaveAs, SaveNote, ToggleSidebar, ToggleStatusBar,
@@ -285,6 +286,9 @@ impl MenuBar {
                 item("Autocorrect", ToggleAutocorrect)
                     .checked(self.editor.read(cx).autocorrect())
                     .enabled(spelling::is_available(cx) && self.editor.read(cx).spell_check())
+                    .into(),
+                item("Auto-replace symbols", ToggleAutoReplace)
+                    .checked(self.editor.read(cx).auto_replace())
                     .into(),
                 edit("Source mode", ToggleSourceMode)
                     .checked(self.editor.read(cx).source_mode())

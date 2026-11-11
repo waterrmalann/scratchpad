@@ -77,6 +77,10 @@ pub struct Config {
     /// (View > Autocorrect); `None` is on.
     #[serde(deserialize_with = "or_default")]
     pub autocorrect: Option<bool>,
+    /// Whether sequences such as `->` are replaced by their symbol as they are typed
+    /// (View > Auto-replace symbols); `None` is on.
+    #[serde(deserialize_with = "or_default")]
+    pub auto_replace: Option<bool>,
 }
 
 impl Config {

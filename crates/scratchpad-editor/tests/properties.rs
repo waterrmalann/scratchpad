@@ -35,9 +35,11 @@ const ATOMS: &[&str] = &[
     "(",
 ];
 
-/// Keys whose typing pairs, wraps or steps over a closer, and plain ones.
-const KEYS: [char; 13] = [
-    '(', ')', '[', ']', '"', '\'', '`', '*', '~', '_', 'a', ' ', 'é',
+/// Keys whose typing pairs, wraps or steps over a closer, the ones typed replacements are made of (`->`, `<=>`,
+/// `--`, `...`, `(c)`, ...), and plain ones.
+const KEYS: [char; 20] = [
+    '(', ')', '[', ']', '"', '\'', '`', '*', '~', '_', 'a', ' ', 'é', '-', '>', '<', '=', '.', 'c',
+    '!',
 ];
 
 fn hostile_text() -> impl Strategy<Value = String> {
@@ -89,7 +91,8 @@ enum Op {
     SelectAll,
     /// Edits grouped with `Editor::transact`.
     Transaction(Vec<Op>),
-    /// A key typed with bracket pairing, Backspace that deletes empty pairs, and the Markdown commands.
+    /// A key typed with bracket pairing and replacements, Backspace that deletes empty pairs or takes a
+    /// replacement back, and the Markdown commands.
     TypeKey(char),
     BackspaceTyped,
     Toggle(usize),

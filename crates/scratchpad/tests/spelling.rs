@@ -455,6 +455,28 @@ fn known_typos_are_corrected_as_they_are_typed(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn autocorrect_and_typed_replacements_work_together(cx: &mut TestAppContext) {
+    let (editor, cx) = open(cx, "");
+    // The first `.` corrects the word, the third makes the dots an ellipsis.
+    type_text("teh... ", cx);
+    assert_eq!(text(&editor, cx), "the… ");
+    type_text("teh -- teh, ", cx);
+    assert_eq!(text(&editor, cx), "the… the — the, ");
+
+    // Backspace takes back the ellipsis but not the correction. Each is its own undo step.
+    editor.update(cx, |editor, cx| editor.set_text("", cx));
+    type_text("teh...", cx);
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(text(&editor, cx), "the...");
+    let mut undone = Vec::new();
+    for _ in 0..4 {
+        cx.simulate_keystrokes("ctrl-z");
+        undone.push(text(&editor, cx));
+    }
+    assert_eq!(undone, ["the…", "the...", "the.", "teh."]);
+}
+
+#[gpui::test]
 fn plain_text_files_are_not_checked(cx: &mut TestAppContext) {
     let (editor, cx) = open(cx, "the quikc fox");
     assert_eq!(misspelled(&editor, cx), ["quikc"]);

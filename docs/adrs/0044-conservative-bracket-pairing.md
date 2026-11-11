@@ -1,6 +1,6 @@
 # 0044. Conservative, stateless bracket and quote pairing
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted; amended by 0180
 
 ## Context
 PLAN §50 asks for minimal pairing of `()`, `[]`, `{}`, `""`, `''`, backticks and `**`, removed if it fights
@@ -16,7 +16,8 @@ the user. Prose is full of apostrophes, list bullets start with `*`, and code fe
 - A closer typed before the same closer steps over it only if the cursor's line is balanced for that pair
   (equal counts, or an even number of the quote), i.e. the closer is not needed. This approximates "skip only
   auto-inserted closers" without tracking state that edits, undo and cursor moves would have to invalidate.
-- `backspace_typed` deletes both halves of an empty pair around the cursor.
+- `backspace_typed` deletes both halves of an empty pair around the cursor. (Amended by ADR 0180: right after
+  a typed replacement it first takes that back, and `insert_typed` also replaces sequences such as `->`.)
 - With a selection, an opener, `*` or `~` wraps it and keeps it selected; typing `*` twice makes it bold,
   `~` twice strikes it through (`~~text~~`). Each wrap is one undo step.
 - `_` over a selection wraps it only where that makes emphasis, and otherwise replaces the selection as plain

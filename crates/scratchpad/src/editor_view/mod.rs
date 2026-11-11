@@ -224,7 +224,9 @@ impl EditorView {
     /// Replaces the document (e.g. when another note is opened): fresh history, cursor and scroll
     /// position at the start.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let auto_replace = self.auto_replace();
         (self.editor, self.markdown) = open_document(text);
+        self.editor.set_typed_replacements(auto_replace);
         self.layouts.clear();
         self.synced_version = self.editor.buffer().version();
         self.scroll = ScrollAnchor::top(&viewport(self.bounds));
@@ -367,6 +369,18 @@ impl EditorView {
         let percent = (i32::from(from) + steps) * i32::from(ZOOM_STEP);
         let percent = percent.clamp(MIN_ZOOM.into(), MAX_ZOOM.into());
         self.set_zoom_percent(percent as u16, cx);
+    }
+
+    /// Whether typed sequences such as `->` are replaced by their symbol (ADR 0180).
+    pub fn auto_replace(&self) -> bool {
+        self.editor.typed_replacements()
+    }
+
+    pub fn set_auto_replace(&mut self, on: bool, cx: &mut Context<Self>) {
+        if on != self.auto_replace() {
+            self.editor.set_typed_replacements(on);
+            cx.notify();
+        }
     }
 
     /// Whether long lines wrap at the edge of the text column.

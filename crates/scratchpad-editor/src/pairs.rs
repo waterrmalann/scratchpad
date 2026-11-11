@@ -32,6 +32,8 @@ impl Editor {
     ///   the line end, and (for quotes) the previous one is neither a letter or digit nor the same quote, so
     ///   apostrophes and code fences type normally;
     /// - a closer typed right before the same closer moves over it, if that keeps the line's pairs balanced;
+    /// - with no selection, a sequence such as `->` is replaced by its symbol when its last char is typed (see
+    ///   [`crate::replacements`]), except in code;
     /// - an opener, `*` or `~` typed over a selection wraps it, keeping it selected, so typing `*` or `~`
     ///   twice makes it bold or struck through; `_` wraps only where that makes emphasis (not in code, not
     ///   inside a word, nor over an identifier like `foo_bar` or a space) and otherwise replaces the selection.
@@ -59,7 +61,8 @@ impl Editor {
             return;
         }
 
-        let cursor = selection.head;
+        self.before_typed_replacement(c);
+        let cursor = self.selection().head;
         if c == '`' && self.opens_code_fence(cursor) {
             let buffer = self.buffer();
             let line_start = buffer.line_start(buffer.line_of(cursor));
@@ -76,7 +79,7 @@ impl Editor {
         let (before, after) = self.chars_around(cursor);
         if after == Some(c) && PAIRS.iter().any(|(_, close)| *close == c) && self.line_balanced(c) {
             self.move_cursor(Motion::Right, false);
-            return;
+            return self.after_typed_replacement(c, markdown);
         }
         let next_allows = after.is_none_or(|n| n.is_whitespace() || ")]}.,;:!?".contains(n));
         let previous_allows = !is_quote(c) || before.is_none_or(|p| !p.is_alphanumeric() && p != c);
@@ -85,12 +88,19 @@ impl Editor {
                 editor.replace_range(cursor..cursor, &format!("{c}{close}"));
                 editor.set_selection(Selection::cursor(ByteOffset(cursor.0 + c.len_utf8())));
             }),
-            _ => self.insert_text(text),
+            _ => {
+                self.insert_text(text);
+                self.after_typed_replacement(c, markdown);
+            }
         }
     }
 
-    /// Backspace that also deletes the closer of an empty pair the cursor is in, such as `(|)`.
+    /// Backspace that takes back a typed replacement right before the cursor (`→` becomes `->` again), or else
+    /// also deletes the closer of an empty pair the cursor is in, such as `(|)`.
     pub fn backspace_typed(&mut self) {
+        if self.backspace_replacement() {
+            return;
+        }
         let selection = self.selection();
         if selection.is_empty()
             && let (Some(open), Some(close)) = self.chars_around(selection.head)

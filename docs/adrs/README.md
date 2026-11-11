@@ -28,7 +28,7 @@ with every new ADR.
 | [0041](0041-block-regions-and-incremental-markdown-parsing.md) | Block regions with lazy, incremental Markdown parsing | Accepted |
 | [0042](0042-live-preview-styled-lines-and-marker-reveal.md) | Styled lines and marker reveal for live preview | Accepted |
 | [0043](0043-markdown-editing-commands.md) | Markdown editing commands edit the text | Accepted; amended by 0126 |
-| [0044](0044-conservative-bracket-pairing.md) | Conservative, stateless bracket and quote pairing | Accepted |
+| [0044](0044-conservative-bracket-pairing.md) | Conservative, stateless bracket and quote pairing | Accepted; amended by 0180 |
 | [0050](0050-notes-model-and-new-note-lifecycle.md) | Notes model, background listing and the new-note lifecycle | Accepted |
 | [0051](0051-sidebar-note-list.md) | Sidebar note list: uniform virtual rows and iCloud-style interactions | Accepted; amended by 0135, 0136 |
 | [0052](0052-single-line-text-input.md) | A minimal single-line text input | Accepted |
@@ -75,3 +75,4 @@ with every new ADR.
 | [0160](0160-pinned-notes.md) | Notes can be pinned to a section above the date groups | Accepted |
 | [0170](0170-spell-checking-with-the-system-checker.md) | Spell checking with the system's checker | Accepted; amended by 0175 |
 | [0175](0175-the-notes-context-menu.md) | The note's context menu, with the spelling corrections in it | Accepted |
+| [0180](0180-typed-replacements.md) | Typed sequences become symbols, and Backspace takes them back | Accepted |

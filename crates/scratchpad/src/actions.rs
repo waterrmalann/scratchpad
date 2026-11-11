@@ -128,6 +128,8 @@ pub mod view {
             /// Turns correcting typos from the system's autocorrect list as they are typed
             /// on or off.
             ToggleAutocorrect,
+            /// Turns replacing typed sequences such as `->` by their symbol on or off (ADR 0180).
+            ToggleAutoReplace,
         ]
     );
 

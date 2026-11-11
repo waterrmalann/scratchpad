@@ -7,7 +7,8 @@ use gpui::{
 use scratchpad_core::NoteStore;
 
 use crate::actions::view::{
-    ResetZoom, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn, ZoomOut,
+    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn,
+    ZoomOut,
 };
 use crate::actions::{
     CloseWindow, NewNote, OpenFile, OpenSettings, SaveAs, SaveNote, SearchNotes, ToggleSidebar,
@@ -93,6 +94,7 @@ impl AppWindow {
         let sidebar_collapsed = config.sidebar_collapsed;
         let (zoom, word_wrap) = (config.zoom_percent, config.word_wrap);
         let (spell_check, autocorrect) = (config.spell_check, config.autocorrect);
+        let auto_replace = config.auto_replace;
         let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
         let editor = cx.new(|cx| {
             let mut editor = EditorView::new("", window, cx);
@@ -100,6 +102,7 @@ impl AppWindow {
             editor.set_soft_wrap(word_wrap.unwrap_or(true), cx);
             editor.set_spell_check(spell_check.unwrap_or(true), cx);
             editor.set_autocorrect(autocorrect.unwrap_or(true), cx);
+            editor.set_auto_replace(auto_replace.unwrap_or(true), cx);
             editor
         });
         let session =
@@ -177,17 +180,20 @@ impl AppWindow {
                 let editor = editor.read(cx);
                 let (zoom, wrap) = (editor.zoom_percent(), editor.soft_wrap());
                 let (spell_check, autocorrect) = (editor.spell_check(), editor.autocorrect());
+                let auto_replace = editor.auto_replace();
                 let config = settings::get(cx);
                 if config.zoom_percent.unwrap_or(100) != zoom
                     || config.word_wrap.unwrap_or(true) != wrap
                     || config.spell_check.unwrap_or(true) != spell_check
                     || config.autocorrect.unwrap_or(true) != autocorrect
+                    || config.auto_replace.unwrap_or(true) != auto_replace
                 {
                     settings::update(cx, |config| {
                         config.zoom_percent = Some(zoom);
                         config.word_wrap = Some(wrap);
                         config.spell_check = Some(spell_check);
                         config.autocorrect = Some(autocorrect);
+                        config.auto_replace = Some(auto_replace);
                     });
                 }
             }),
@@ -654,6 +660,11 @@ impl Render for AppWindow {
             .on_action(cx.listener(|this, _: &ToggleAutocorrect, _, cx| {
                 this.update_editor(cx, |editor, cx| {
                     editor.set_autocorrect(!editor.autocorrect(), cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ToggleAutoReplace, _, cx| {
+                this.update_editor(cx, |editor, cx| {
+                    editor.set_auto_replace(!editor.auto_replace(), cx)
                 })
             }))
             .on_action(cx.listener(Self::open_file))

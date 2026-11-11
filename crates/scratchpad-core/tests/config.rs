@@ -46,6 +46,7 @@ fn save_and_load_round_trip_every_field() {
         pinned_notes: vec![dir.path().join("Ideas.md"), dir.path().join("Todo.md")],
         spell_check: Some(false),
         autocorrect: Some(true),
+        auto_replace: Some(false),
     };
 
     config.save(&path).unwrap();
@@ -86,6 +87,7 @@ fn loads_the_documented_file_format() {
             "pinned_notes": ["C:/Notes/Ideas.md"],
             "spell_check": true,
             "autocorrect": false,
+            "auto_replace": false,
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -111,6 +113,7 @@ fn loads_the_documented_file_format() {
             pinned_notes: vec!["C:/Notes/Ideas.md".into()],
             spell_check: Some(true),
             autocorrect: Some(false),
+            auto_replace: Some(false),
         }
     );
 }

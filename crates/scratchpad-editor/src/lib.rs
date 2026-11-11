@@ -8,6 +8,7 @@ mod history;
 pub mod markdown;
 mod motion;
 mod pairs;
+pub mod replacements;
 pub mod search;
 mod selection;
 

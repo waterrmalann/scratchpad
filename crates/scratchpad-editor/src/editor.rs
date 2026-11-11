@@ -4,6 +4,7 @@ use crate::buffer::{Buffer, normalize_line_endings};
 use crate::coords::{Bias, ByteOffset, to_usize_range};
 use crate::history::{Edit, EditKind, History};
 use crate::motion::{self, Motion};
+use crate::replacements::Replacements;
 use crate::search::{self, CaseSensitivity};
 use crate::selection::{Goal, Selection};
 
@@ -20,6 +21,8 @@ pub struct Editor {
     history: History,
     /// Text of an in-progress IME composition.
     marked: Option<Range<ByteOffset>>,
+    /// Typed replacements: on or off, and the last one, which Backspace takes back.
+    replacements: Replacements,
 }
 
 impl Editor {
@@ -113,6 +116,7 @@ impl Editor {
         );
         self.goal = goal;
         self.marked = None;
+        self.replacements.forget();
         self.history.break_group();
     }
 
@@ -380,6 +384,18 @@ impl Editor {
         let result = f(self);
         self.history.end_transaction(self.selection);
         result
+    }
+
+    pub(crate) fn in_transaction(&self) -> bool {
+        self.history.in_transaction()
+    }
+
+    pub(crate) fn replacements(&self) -> &Replacements {
+        &self.replacements
+    }
+
+    pub(crate) fn replacements_mut(&mut self) -> &mut Replacements {
+        &mut self.replacements
     }
 
     /// Makes the next edit start a new undo step even if it would otherwise merge with the previous one.

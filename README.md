@@ -18,6 +18,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 - **Live preview** — Headings, bold, italic, strikethrough, inline code, code blocks, quotes, lists, task boxes, rules and links are drawn as you type. The Markdown markers show only where the cursor is. `Ctrl+/` shows all of them.
 - **Markdown-aware editing** — Enter continues a list or quote, Tab nests a list item, `Ctrl+B`/`I`/`E`/`K` format the selection, and clicking a task box ticks it. `Ctrl`+click opens a link.
 - **Typing helpers** — A new note starts with a `# ` heading for its title (Backspace removes it). Brackets and quotes pair up conservatively. Typing a bracket, quote, `*`, `~` or `_` over a selection wraps it (twice for `**bold**` or `~~strikethrough~~`; `_` only where it makes emphasis, so `foo_bar`, spaces and code are still replaced), and a third backtick alone on a line opens a code block and closes it for you.
+- **Symbols as you type** — `->` becomes →, and likewise `<-` ←, `<->` ↔, `=>` ⇒, `<=` ≤, `<=>` ⇔, `>=` ≥, `!=` ≠, `--` —, `...` …, `(c)` ©, `(r)` ®, `(tm)` ™ and `+-` ±. Backspace right after one (or `Ctrl+Z`) brings back what you typed. Code, front matter, HTML comments, web addresses and paths, and pasted text are left alone; a line of dashes stays a rule, and `--flag` stays a flag. View > Auto-replace symbols turns it off.
 - **Plain text for other files** — Files that are not named `.md` or `.markdown` are edited as plain text, untouched by Markdown rules.
 
 <picture>
@@ -60,7 +61,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 <details>
 <summary><b>Keyboard shortcuts</b></summary>
 
-The menu bar under the title bar has File (new note, open, save, save as, settings, exit), Edit (undo, redo, clipboard, delete, find, find next and previous, replace, go to line, select all) and View (zoom, and ticks for the status bar, word wrap, spell check, autocorrect, source mode and the sidebar). Each command shows its key. Alt+F, Alt+E, Alt+V or F10 open a menu from the keyboard. Right-clicking in the note (or Shift+F10, or the Menu key) opens its own menu, as in Notepad: undo, cut, copy, paste, delete, select all and a Formatting submenu, with the spelling suggestions first on a misspelled word.
+The menu bar under the title bar has File (new note, open, save, save as, settings, exit), Edit (undo, redo, clipboard, delete, find, find next and previous, replace, go to line, select all) and View (zoom, and ticks for the status bar, word wrap, spell check, autocorrect, auto-replace symbols, source mode and the sidebar). Each command shows its key. Alt+F, Alt+E, Alt+V or F10 open a menu from the keyboard. Right-clicking in the note (or Shift+F10, or the Menu key) opens its own menu, as in Notepad: undo, cut, copy, paste, delete, select all and a Formatting submenu, with the spelling suggestions first on a misspelled word.
 
 The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Shift+Delete.
 
@@ -97,7 +98,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 ## Where things live
 
 - **Notes** — `Documents\Scratchpad`. Change the folder in Settings (`Ctrl+,`).
-- **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, spell check, status bar, sidebar, pinned notes and last note are remembered there too.
+- **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, spell check, symbol replacement, status bar, sidebar, pinned notes and last note are remembered there too.
 - **Environment** — `SCRATCHPAD_NOTES_DIR` uses another notes folder (Settings then cannot change it) and `SCRATCHPAD_CONFIG_DIR` another folder for the config, recovery snapshots and log. Set both to try the app on a scratch folder.
 - **Command line** — `scratchpad.exe <file>` opens that file, as File > Open does. The installer registers no file associations yet, so use "Open with" and pick `scratchpad.exe`.
 

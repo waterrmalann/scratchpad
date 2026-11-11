@@ -78,6 +78,43 @@ fn a_keystroke_in_a_10mb_note_and_restyling_its_line() {
 
 #[test]
 #[cfg_attr(debug_assertions, ignore = "timing limits are for release builds")]
+fn a_typed_replacement_in_a_10mb_note() {
+    // Measured 15-45 µs for `-` and `>` typed and `→` replacing them (two keystrokes), and 165-215 µs for a `-` that
+    // replaces nothing in front matter 1,000 lines long, where the most text is read to decide (ADR 0180).
+    for fraction in [0.0, 0.5, 1.0] {
+        let (mut editor, mut markdown) = parsed_10mb_note(fraction);
+        editor.insert_text(" ");
+        let time = median(51, || {
+            editor.insert_typed("-", &mut markdown);
+            editor.insert_typed(">", &mut markdown);
+        });
+        let head = editor.selection().head;
+        let before = editor
+            .buffer()
+            .text_for_range(ByteOffset(head.0 - "→".len())..head);
+        assert_eq!(before, "→", "replaced");
+        assert_under("typing -> and replacing it", time, Duration::from_millis(1));
+    }
+    let front_matter = format!(
+        "---
+{}",
+        "key: value
+"
+        .repeat(999)
+    );
+    let mut editor = Editor::from_text(&format!("{front_matter}{}", markdown(10 * MB)));
+    editor.move_to(ByteOffset(front_matter.len() - 1), false);
+    let mut markdown = MarkdownState::new(editor.buffer());
+    let time = median(51, || editor.insert_typed("-", &mut markdown));
+    assert_under(
+        "typing - in long front matter",
+        time,
+        Duration::from_millis(1),
+    );
+}
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing limits are for release builds")]
 fn styling_a_screen_of_lines() {
     // Measured ~36 µs for 50 lines, which the view does every frame after an edit.
     let (editor, mut markdown) = parsed_10mb_note(0.5);

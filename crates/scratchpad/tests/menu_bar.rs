@@ -113,6 +113,7 @@ fn each_menu_lists_its_commands_with_the_keys_from_the_keymap(cx: &mut TestAppCo
             "Word wrap",
             "Spell check",
             "Autocorrect",
+            "Auto-replace symbols",
             "Source mode Ctrl+/",
             "Sidebar Ctrl+\\"
         ]
