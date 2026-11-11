@@ -22,6 +22,7 @@ pub use table::{Table, TableAlignment, TableRowKind};
 pub use wikilinks::wikilink_page;
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::buffer::{Buffer, TextChange};
 use crate::coords::ByteOffset;
@@ -92,7 +93,7 @@ pub enum DecorationKind {
     /// A GFM table (ADR 0186), from its header row to its last row, with one alignment per column. It has no
     /// markers; its rows have them.
     Table {
-        alignments: Vec<TableAlignment>,
+        alignments: Arc<[TableAlignment]>,
     },
     /// A table's header row; its markers are its pipes (see [`DecorationKind::TableRow`]).
     TableHeader,
@@ -109,6 +110,15 @@ pub enum DecorationKind {
         column: usize,
         alignment: TableAlignment,
     },
+}
+
+/// What a link opens ([`MarkdownState::link_target_at`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LinkTarget {
+    /// A link's or image's destination, as written (or made openable for a bare address).
+    Url(String),
+    /// The page a wikilink names, in the note's folder.
+    Page(String),
 }
 
 /// The kind of a GFM alert ([`DecorationKind::Callout`]).
@@ -202,7 +212,7 @@ pub struct MarkdownState {
     /// from `parsed` because every edit shifts the starts after it, and a dense array shifts fastest.
     starts: Vec<usize>,
     /// Each region's decorations, parsed on first use, with offsets relative to its start.
-    parsed: Vec<Option<Vec<Decoration>>>,
+    parsed: Vec<Option<Parsed>>,
     /// The syntax the regions are parsed with.
     options: MarkdownOptions,
     /// Where the note's closed front matter ends (0 without one), for the buffer version and length given, once
@@ -269,20 +279,20 @@ impl MarkdownState {
     pub fn decorations(&mut self, buffer: &Buffer, range: Range<ByteOffset>) -> Vec<Decoration> {
         self.sync(buffer);
         let mut found = Vec::new();
+        let mut touching = Vec::new();
         let first = self.region_index(range.start.0);
         for index in first..self.starts.len() {
             let start = self.starts[index];
             if start > range.end.0 {
                 break;
             }
-            let touches = |d: &&Decoration| {
-                d.range.start.0 + start <= range.end.0 && range.start.0 <= d.range.end.0 + start
-            };
+            let local = range.start.0.saturating_sub(start)..range.end.0 - start;
+            let parsed = self.region_decorations(buffer, index);
+            parsed.touching(local, &mut touching);
             found.extend(
-                self.region_decorations(buffer, index)
+                touching
                     .iter()
-                    .filter(touches)
-                    .map(|d| d.shifted(start)),
+                    .map(|&i| parsed.decorations[i].shifted(start)),
             );
         }
         self.drop_front_matter_autolinks(buffer, &mut found);
@@ -307,28 +317,40 @@ impl MarkdownState {
         })
     }
 
-    /// The destination of the link (or image) whose text or markers contain the char at `offset`, for opening it
-    /// on Ctrl+click.
-    pub fn link_at(&mut self, buffer: &Buffer, offset: ByteOffset) -> Option<String> {
-        self.decorations(buffer, offset..offset)
-            .into_iter()
-            .find_map(|d| match d.kind {
-                DecorationKind::Link { destination } if offset < d.range.end => Some(destination),
-                _ => None,
-            })
+    /// What the link, image or wikilink whose text or markers contain the char at `offset` opens, for Ctrl+click:
+    /// a link's destination, or a wikilink's page ([`wikilink_page`] of its target). A link wins over a wikilink
+    /// around it.
+    pub fn link_target_at(&mut self, buffer: &Buffer, offset: ByteOffset) -> Option<LinkTarget> {
+        let mut page = None;
+        for d in self.decorations(buffer, offset..offset) {
+            if offset >= d.range.end {
+                continue;
+            }
+            match d.kind {
+                DecorationKind::Link { destination } => return Some(LinkTarget::Url(destination)),
+                DecorationKind::WikiLink { target } if page.is_none() => {
+                    page = wikilink_page(&target).map(|page| LinkTarget::Page(page.to_owned()));
+                }
+                _ => {}
+            }
+        }
+        page
     }
 
-    /// The page of the wikilink whose text or markers contain the char at `offset` ([`wikilink_page`] of its
-    /// target), for opening it on Ctrl+click.
+    /// The destination of the link (or image) at `offset` ([`MarkdownState::link_target_at`]).
+    pub fn link_at(&mut self, buffer: &Buffer, offset: ByteOffset) -> Option<String> {
+        match self.link_target_at(buffer, offset)? {
+            LinkTarget::Url(url) => Some(url),
+            LinkTarget::Page(_) => None,
+        }
+    }
+
+    /// The page of the wikilink at `offset` ([`MarkdownState::link_target_at`]), if no link is there.
     pub fn wikilink_at(&mut self, buffer: &Buffer, offset: ByteOffset) -> Option<String> {
-        self.decorations(buffer, offset..offset)
-            .into_iter()
-            .find_map(|d| match d.kind {
-                DecorationKind::WikiLink { target } if offset < d.range.end => {
-                    wikilink_page(&target).map(str::to_owned)
-                }
-                _ => None,
-            })
+        match self.link_target_at(buffer, offset)? {
+            LinkTarget::Page(page) => Some(page),
+            LinkTarget::Url(_) => None,
+        }
     }
 
     fn rescan_all(&mut self, buffer: &Buffer) {
@@ -385,16 +407,85 @@ impl MarkdownState {
             .saturating_sub(1)
     }
 
-    fn region_decorations(&mut self, buffer: &Buffer, index: usize) -> &[Decoration] {
+    /// The parsed decorations of region `index`, parsing it if needed.
+    fn region_decorations(&mut self, buffer: &Buffer, index: usize) -> &Parsed {
         let start = self.starts[index];
         let end = self.starts.get(index + 1).copied().unwrap_or(self.len);
         let options = self.options;
         self.parsed[index].get_or_insert_with(|| {
-            parse::parse(
+            Parsed::new(parse::parse(
                 &buffer.text_for_range(ByteOffset(start)..ByteOffset(end)),
                 options,
-            )
+            ))
         })
+    }
+}
+
+/// One region's decorations, relative to its start, with what finds those touching a range without looking at
+/// the others: a table is one region however long (ADR 0186), and styling one of its lines must not cost a pass
+/// over all of its rows.
+#[derive(Debug, Clone)]
+struct Parsed {
+    /// Ordered by start, enclosing ones first.
+    decorations: Vec<Decoration>,
+    /// For each decoration, the nearest one before it that encloses it (`usize::MAX` for none); `None` if the
+    /// decorations are not all nested or disjoint (never seen, but then a query checks all of them).
+    parents: Option<Vec<usize>>,
+}
+
+impl Parsed {
+    fn new(decorations: Vec<Decoration>) -> Self {
+        let mut parents = Vec::with_capacity(decorations.len());
+        let mut open: Vec<usize> = Vec::new();
+        let mut nested = true;
+        for (i, d) in decorations.iter().enumerate() {
+            let mut parent = usize::MAX;
+            while let Some(&top) = open.last() {
+                let enclosing = &decorations[top].range;
+                if d.range.end <= enclosing.end {
+                    parent = top;
+                    break;
+                }
+                if enclosing.end > d.range.start {
+                    nested = false;
+                }
+                open.pop();
+            }
+            parents.push(parent);
+            open.push(i);
+        }
+        Self {
+            parents: nested.then_some(parents),
+            decorations,
+        }
+    }
+
+    /// Puts into `out` the indices, in order, of the decorations that intersect or touch `range`.
+    ///
+    /// Those starting in `range` are a slice of the sorted decorations. One starting before it and reaching it
+    /// encloses the start of the last decoration starting before `range` (nested or disjoint ones do), so it
+    /// is that decoration or one of its ancestors: a walk as long as the nesting is deep.
+    fn touching(&self, range: Range<usize>, out: &mut Vec<usize>) {
+        out.clear();
+        let decorations = &self.decorations;
+        let Some(parents) = &self.parents else {
+            out.extend((0..decorations.len()).filter(|&i| {
+                let d = &decorations[i].range;
+                d.start.0 <= range.end && range.start <= d.end.0
+            }));
+            return;
+        };
+        let before = decorations.partition_point(|d| d.range.start.0 < range.start);
+        let starting = decorations[before..].partition_point(|d| d.range.start.0 <= range.end);
+        let mut ancestor = before.checked_sub(1);
+        while let Some(i) = ancestor {
+            if decorations[i].range.end.0 >= range.start {
+                out.push(i);
+            }
+            ancestor = Some(parents[i]).filter(|&p| p != usize::MAX);
+        }
+        out.reverse();
+        out.extend(before..before + starting);
     }
 }
 
@@ -506,7 +597,7 @@ mod tests {
     }
 
     /// Any options, every one on in a third of the cases.
-    fn options() -> impl Strategy<Value = MarkdownOptions> {
+    pub(super) fn options() -> impl Strategy<Value = MarkdownOptions> {
         prop_oneof![
             1 => Just(MarkdownOptions::ALL),
             2 => any::<[bool; 5]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks]| {
@@ -628,14 +719,65 @@ mod tests {
         "  |---|",
         "| ",
     ];
-    /// What follows on the line: text, inline syntax and fragments that open or close blocks.
+    /// What follows on the line: text, inline syntax, fragments that open or close blocks, wikilinks, table
+    /// cells, and addresses with what may stop or end them (ADR 0187).
     const LINE_REST: &[&str] = &[
-        "a", "word", "**", "*", "_", "`", "~~", "-->", "```", "é", "[x](y)", "<b>", " ", "#",
-        "1. ", "- ", "> ", "^", "~", "{#a}", " {.b}", "![x](y)", "[!NOTE]", "[[", "]]", "[[a|b]]",
-        "|", " | ", r"\|", "|---", ":-",
+        "a",
+        "word",
+        "**",
+        "*",
+        "_",
+        "`",
+        "~~",
+        "-->",
+        "```",
+        "é",
+        "日本",
+        "[x](y)",
+        "<b>",
+        " ",
+        "#",
+        "1. ",
+        "- ",
+        "> ",
+        "^",
+        "~",
+        "{#a}",
+        " {.b}",
+        "{",
+        "}",
+        "![x](y)",
+        "[!NOTE]",
+        "[[",
+        "]]",
+        "[[a|b]]",
+        r"[[a\|b]]",
+        "|",
+        " | ",
+        r"\|",
+        "|---",
+        ":-",
+        "(",
+        ")",
+        "<",
+        "&amp;",
+        ";",
+        ".",
+        ",",
+        "'",
+        "https://",
+        "http://a.b",
+        "www.",
+        "www.x.y",
+        "x@y.z",
+        "@",
+        ".com",
+        "/p?q=1",
+        "<https://c.d>",
     ];
 
-    fn line() -> impl Strategy<Value = String> {
+    /// A line of the random documents the region tests split: any of the starts above, then up to four pieces.
+    pub(super) fn line() -> impl Strategy<Value = String> {
         (
             prop::sample::select(LINE_STARTS),
             prop::collection::vec(prop::sample::select(LINE_REST), 0..4),
@@ -647,7 +789,8 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(4096))]
 
         /// Region boundaries never change the meaning of the document: parsing region by region gives the
-        /// decorations of parsing the whole text at once, whatever the options.
+        /// decorations of parsing the whole text at once, whatever the options, bare addresses, wikilinks and
+        /// tables included. Front matter is the note's, so its addresses are dropped from both.
         #[test]
         fn regions_parse_like_the_whole_document(
             lines in prop::collection::vec(line(), 0..14),
@@ -657,8 +800,31 @@ mod tests {
             let buffer = Buffer::from_text(&text);
             let mut markdown = MarkdownState::with_options(&buffer, options);
             let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
-            let whole = parse::parse(&text, options);
+            let mut whole = parse::parse(&text, options);
+            markdown.drop_front_matter_autolinks(&buffer, &mut whole);
             prop_assert_eq!(by_region, whole, "{:?} split at {:?}", text, markdown.starts);
+        }
+
+        /// Every query, of any range, finds exactly the decorations of the whole document that touch it, as the
+        /// bounded search over a region's sorted decorations must.
+        #[test]
+        fn queries_find_every_decoration_touching_their_range(
+            lines in prop::collection::vec(line(), 0..14),
+            options in options(),
+            at in 0..400usize,
+            len in 0..40usize,
+        ) {
+            let text = lines.join("\n");
+            let buffer = Buffer::from_text(&text);
+            let mut markdown = MarkdownState::with_options(&buffer, options);
+            let all = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
+            let start = ByteOffset(at.min(buffer.len()));
+            let end = ByteOffset((at + len).min(buffer.len()));
+            let touching: Vec<Decoration> = all
+                .into_iter()
+                .filter(|d| d.range.start <= end && start <= d.range.end)
+                .collect();
+            prop_assert_eq!(markdown.decorations(&buffer, start..end), touching, "{:?}", text);
         }
     }
 
@@ -680,6 +846,25 @@ mod tests {
                 "{text:?}"
             );
         }
+    }
+
+    /// Found by `regions_parse_like_the_whole_document`: pulldown-cmark splits `[!WARNING]www.x.y` into text
+    /// events differently alone and after another such quote, so where `www.` may start must not depend on
+    /// where a text event starts (ADR 0187).
+    #[test]
+    fn www_after_a_bracket_is_found_alike_in_regions_and_the_whole_document() {
+        let text = ">[!WARNING]:-\n# \n>[!WARNING]www.x.y";
+        let buffer = Buffer::from_text(text);
+        let mut markdown = MarkdownState::with_options(&buffer, MarkdownOptions::ALL);
+        let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
+        assert_eq!(by_region, parse::parse(text, MarkdownOptions::ALL));
+        assert!(markdown.starts.len() > 1);
+    }
+
+    #[test]
+    fn a_setext_attribute_line_keeps_a_crlf_break_out_of_the_content() {
+        let found = parse::parse("a\r\n{#a}\r\n-", MarkdownOptions::ALL);
+        assert_eq!(found[0].content, ByteOffset(0)..ByteOffset(1));
     }
 
     #[test]

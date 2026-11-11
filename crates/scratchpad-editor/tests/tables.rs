@@ -302,7 +302,7 @@ fn the_table_query_finds_the_table_of_a_line_and_whether_the_selection_reveals_i
     let expected = |revealed| Table {
         range: table_start..table_end,
         lines: 2..5,
-        alignments: vec![TableAlignment::Left, TableAlignment::Right],
+        alignments: [TableAlignment::Left, TableAlignment::Right].into(),
         revealed,
     };
     let outside = Some(Selection::cursor(ByteOffset(0)));

@@ -285,10 +285,15 @@ fn markdown_parse_prose(c: &mut Criterion) {
 
 /// A note with a 200-row table of three columns between paragraphs (ADR 0186).
 fn table_note() -> String {
+    table_note_of(200)
+}
+
+/// A note with a table of `rows` rows of three columns between paragraphs.
+fn table_note_of(rows: usize) -> String {
     let mut text = String::from(
         "Some prose before the table.\n\n| Name | **Status** | Notes |\n|:--|:-:|--:|\n",
     );
-    for row in 0..200 {
+    for row in 0..rows {
         text.push_str(&format!(
             "| item {row} | *open* | a `note` with \\| a pipe |\n"
         ));
@@ -334,6 +339,41 @@ fn markdown_table(c: &mut Criterion) {
     });
 }
 
+/// How the cost of a table grows with its length (ADR 0186): a keystroke in its middle (which reparses the
+/// table, one region), then styling 50 of its lines one at a time and looking up their table, as the view does;
+/// and the styling and lookups alone, with the table parsed.
+fn markdown_table_lengths(c: &mut Criterion) {
+    let mut group = c.benchmark_group("markdown_table_rows");
+    group.sample_size(20);
+    for rows in [200, 2_000, 10_000] {
+        let mut editor = Editor::from_text(&table_note_of(rows));
+        let row = 4 + rows / 2;
+        editor.move_to(ByteOffset(editor.buffer().line_start(row).0 + 4), false);
+        let mut markdown = MarkdownState::new(editor.buffer());
+        markdown.decorations(editor.buffer(), ByteOffset(0)..editor.buffer().end());
+        let screen = row - 25..row + 25;
+        let restyle = |editor: &Editor, markdown: &mut MarkdownState| {
+            for line in screen.clone() {
+                let selection = Some(editor.selection());
+                markdown.styled_lines(editor.buffer(), line..line + 1, selection);
+                markdown.table(editor.buffer(), line, selection);
+            }
+        };
+        group.bench_function(format!("keystroke_and_restyle_50_lines_{rows}"), |b| {
+            b.iter(|| {
+                editor.insert_text(black_box("x"));
+                restyle(&editor, &mut markdown);
+                editor.backspace();
+            })
+        });
+        markdown.decorations(editor.buffer(), ByteOffset(0)..editor.buffer().end());
+        group.bench_function(format!("restyle_50_lines_{rows}"), |b| {
+            b.iter(|| restyle(&editor, &mut markdown))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     open,
@@ -348,6 +388,7 @@ criterion_group!(
     markdown_styled_screen,
     markdown_styled_long_line,
     markdown_parse_prose,
-    markdown_table
+    markdown_table,
+    markdown_table_lengths
 );
 criterion_main!(benches);
