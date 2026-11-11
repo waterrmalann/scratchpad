@@ -240,16 +240,28 @@ pub(crate) fn unwrapped_x(glyphs: &[Glyph], column: usize, width: Pixels) -> Pix
 }
 
 /// Makes the glyphs of `columns` take `span_width` by moving every later glyph, e.g. to make room
-/// for a shape drawn in their place. Returns the new line width.
+/// for a shape drawn in their place. The glyphs inside are spread over the new width in proportion,
+/// so x never decreases along the line (hit testing and wrapping search by x), however much the
+/// span shrinks or grows. Returns the new line width.
 pub(crate) fn set_span_width(
     glyphs: &mut [Glyph],
     columns: Range<usize>,
     span_width: Pixels,
     width: Pixels,
 ) -> Pixels {
-    let start = unwrapped_x(glyphs, columns.start, width);
+    let first = glyphs.partition_point(|glyph| glyph.column < columns.start);
     let after = glyphs.partition_point(|glyph| glyph.column < columns.end);
-    let shift = span_width - (unwrapped_x(glyphs, columns.end, width) - start);
+    let start = unwrapped_x(glyphs, columns.start, width);
+    let old_width = unwrapped_x(glyphs, columns.end, width) - start;
+    let shift = span_width - old_width;
+    for glyph in &mut glyphs[first..after] {
+        let offset = glyph.x - start;
+        glyph.x = if old_width > px(0.) {
+            start + span_width * (offset / old_width)
+        } else {
+            start
+        };
+    }
     for glyph in &mut glyphs[after..] {
         glyph.x += shift;
     }
@@ -443,6 +455,33 @@ mod tests {
             .collect()
     }
 
+    /// A span drawn narrower than its text (an emoji for `:smile:`, a short callout label) keeps x
+    /// increasing, so hits after it find their glyph and wrapping breaks after it.
+    #[test]
+    fn a_shrunk_span_keeps_glyph_x_increasing_for_hits_and_wrapping() {
+        let text = ":smile: abc def";
+        let mut glyphs = glyphs(text);
+        let width = set_span_width(&mut glyphs, 0..7, px(20.), px(150.));
+        assert_eq!(width, px(100.));
+        assert!(glyphs.windows(2).all(|pair| pair[0].x <= pair[1].x));
+        assert!(glyphs[..7].iter().all(|g| g.x >= px(0.) && g.x < px(20.)));
+        let line = LineGeometry::new(text, glyphs.clone(), width, px(1000.), Indents::default());
+        // "abc" starts at 30 px: each of its chars is hit, not the shortcode before it.
+        for (i, column) in [8, 9, 10].into_iter().enumerate() {
+            let x = px(30. + i as f32 * ADVANCE + 2.);
+            assert_eq!(line.glyph_at(0, x), Some(column));
+            assert_eq!(line.column_at(0, x), column);
+        }
+        // Wrapped at 60 px, the break comes after "abc ", measured with the emoji's width.
+        let wrapped = LineGeometry::new(text, glyphs, width, px(60.), Indents::default());
+        assert_eq!(rows_of(&wrapped, text), [":smile: abc ", "def"]);
+        // Growing a span spreads its glyphs too.
+        let mut glyphs = self::glyphs("ab cd");
+        set_span_width(&mut glyphs, 0..2, px(40.), px(50.));
+        assert!(glyphs.windows(2).all(|pair| pair[0].x <= pair[1].x));
+        assert_eq!(glyphs[3].x, px(50.));
+    }
+
     #[test]
     fn wraps_after_spaces_and_lets_trailing_spaces_hang() {
         assert_eq!(rows("hello world foo", 80.), ["hello ", "world ", "foo"]);
@@ -599,7 +638,8 @@ mod tests {
         let mut glyphs = glyphs("- ab");
         let width = set_span_width(&mut glyphs, 0..2, px(35.), px(40.));
         let xs: Vec<f32> = glyphs.iter().map(|glyph| glyph.x.into()).collect();
-        assert_eq!(xs, [0., 10., 35., 45.]);
+        // The span's own glyphs are spread over its new width.
+        assert_eq!(xs, [0., 17.5, 35., 45.]);
         assert_eq!(width, px(55.));
         let width = set_span_width(&mut glyphs, 2..4, px(5.), width);
         assert_eq!(width, px(40.), "the last span ends the line");

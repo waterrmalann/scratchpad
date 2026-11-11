@@ -937,3 +937,45 @@ fn highlight_and_math_markers_hide_away_from_the_cursor(cx: &mut TestAppContext)
         "on the highlight its markers show"
     );
 }
+
+/// Clicks on the text after something drawn narrower than its source (an emoji for `:smile:`, the
+/// label `Tip` for `[!TIP]`) land on the char under the pointer, also on a wrapped row.
+#[gpui::test]
+fn clicks_after_emoji_and_short_callout_labels_hit_the_text_under_them(cx: &mut TestAppContext) {
+    let wrapped = ":smile: a ".repeat(30);
+    let (editor, cx) = open_editor(
+        cx,
+        &format!(":smile: abc\n> [!TIP]\n> body\n{wrapped}\nnext"),
+    );
+    cx.simulate_keystrokes("ctrl-end");
+    let click_on = |offset: usize, cx: &mut VisualTestContext| {
+        let at = bounds(&editor, offset..offset + 1, cx);
+        click(
+            point(at.left() + px(2.), at.center().y),
+            Modifiers::none(),
+            cx,
+        );
+        cursor(&editor, cx)
+    };
+    // "abc" after the emoji: each char is hit, the shortcode stays an emoji.
+    for offset in [8, 9, 10] {
+        assert_eq!(click_on(offset, cx), offset);
+        cx.simulate_keystrokes("ctrl-end");
+    }
+    // Right of the short label, the click goes to the end of the tag's line.
+    let label_line = bounds(&editor, 12..12, cx);
+    click(
+        point(label_line.left() + px(80.), label_line.center().y),
+        Modifiers::none(),
+        cx,
+    );
+    assert_eq!(cursor(&editor, cx), 20);
+    cx.simulate_keystrokes("ctrl-end");
+    // The 18th "a" of the wrapped line is on its second row, and a click on it lands on it.
+    let line_start = 28;
+    let a = line_start + 17 * 10 + 8;
+    assert!(
+        bounds(&editor, a..a + 1, cx).top() > bounds(&editor, line_start..line_start, cx).top()
+    );
+    assert_eq!(click_on(a, cx), a);
+}
