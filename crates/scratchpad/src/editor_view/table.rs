@@ -25,6 +25,9 @@ use crate::theme::Theme;
 const CELL_PADDING: f32 = 0.6;
 /// Height of the delimiter row drawn as a rule, in multiples of the font size.
 pub(super) const DELIMITER_ROW_HEIGHT: f32 = 0.5;
+/// Tables longer than this, in lines, are shown as typed: measuring shapes every row on the UI thread, and
+/// 500 rows take a few milliseconds where a pasted 5,000-row table would stall a frame (ADR 0186).
+pub(super) const MAX_GRID_LINES: usize = 500;
 /// Tables whose column widths are kept; a screen rarely shows more than a few.
 const KEEP_TABLES: usize = 16;
 /// Lines styled at once while measuring a table, so that each query copies only the decorations of those
@@ -89,7 +92,8 @@ pub(crate) struct GridKey {
 /// How a line of a table the selection is off is laid out.
 pub(crate) enum TableLayout {
     Grid(GridKey),
-    /// As typed, markers shown: a grid that would not fit the text column with word wrap on.
+    /// As typed, markers shown: a table longer than [`MAX_GRID_LINES`], or a grid that would not fit the text
+    /// column with word wrap on.
     AsTyped,
 }
 
@@ -126,6 +130,9 @@ impl TableCache {
         let table = markdown.table(cx.buffer, line, cx.selection)?;
         if table.revealed {
             return None;
+        }
+        if table.lines.len() > MAX_GRID_LINES {
+            return Some(TableLayout::AsTyped);
         }
         let columns = self.columns(&table, options, base, cx);
         if base.soft_wrap && columns.reach > base.wrap_width {

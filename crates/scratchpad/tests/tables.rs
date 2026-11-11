@@ -243,6 +243,25 @@ fn resizing_the_window_keeps_the_widths_and_zooming_measures_again(cx: &mut Test
     assert_eq!(measured(&editor, cx), 2);
 }
 
+#[gpui::test]
+fn a_table_too_long_for_a_grid_is_shown_as_typed_without_measuring(cx: &mut TestAppContext) {
+    // 500 lines is the most a grid has (`MAX_GRID_LINES`): header, delimiter and 498 rows.
+    let text = big_table(498);
+    let (editor, cx) = open_editor(cx, &text);
+    assert_eq!(measured(&editor, cx), 1);
+    assert_eq!(x_of(&editor, at(&text, "row 0"), cx), PADDING, "a grid");
+    let text = big_table(499);
+    editor.update(cx, |editor, cx| editor.set_text(&text, cx));
+    cx.run_until_parked();
+    assert_eq!(measured(&editor, cx), 1, "not measured");
+    let row = at(&text, "| row 0");
+    assert_eq!(
+        x_of(&editor, at(&text, "row 0"), cx),
+        (at(&text, "row 0") - row) as f32 * ADVANCE,
+        "as typed, pipes shown"
+    );
+}
+
 fn editor_text(editor: &Entity<EditorView>, cx: &mut VisualTestContext) -> String {
     editor.read_with(cx, |editor, _| editor.editor().buffer().normalized_text())
 }
