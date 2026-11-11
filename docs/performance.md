@@ -118,4 +118,5 @@ whether the text is code (parsing the edited region, which the next frame needs 
 
 ## Binary
 
-`target/release/scratchpad.exe` is 7.8 MB (icon and version resource ~12 KB); the MSI is ~2.5 MB.
+`target/release/scratchpad.exe` is 8.0 MB (icon and version resource ~12 KB); the MSI is ~2.9 MB
+(release 1.0.0, measured 2026-11-11).

@@ -17,7 +17,7 @@
       <a href="#top" class="logo"><img src="favicon.svg" alt="" width="22" height="22">Scratchpad</a>
       <div class="nav-links">
         <a href="#features">Features</a>
-        <a href="#install">Install</a>
+        <a href="#install">Download</a>
         <a href="https://github.com/waterrmalann/scratchpad">GitHub</a>
       </div>
     </nav>
@@ -31,7 +31,7 @@
         a folder you own; headings, lists and links take shape as you type, and every note saves itself.
       </p>
       <div class="actions">
-        <a href="#install" class="btn primary">Get started</a>
+        <a href="https://github.com/waterrmalann/scratchpad/releases/latest" class="btn primary">Download for Windows</a>
         <a href="https://github.com/waterrmalann/scratchpad" class="btn secondary">View on GitHub</a>
       </div>
       <figure class="screenshot">
@@ -68,7 +68,7 @@
         </div>
         <div class="feature">
           <h3>Notepad habits</h3>
-          <p>File, Edit and View menus, a status bar, word wrap with a horizontal scrollbar, pinned notes, zoom from 50% to 400%, a source mode, and the Windows editing keys you already know.</p>
+          <p>File, Edit and View menus, a right-click menu with cut, copy, paste and formatting (<kbd>Shift</kbd>+<kbd>F10</kbd> too), a status bar, word wrap with a horizontal scrollbar, pinned notes, zoom from 50% to 400%, a source mode, and the Windows editing keys you already know.</p>
         </div>
         <div class="feature">
           <h3>Opens any text file</h3>
@@ -76,7 +76,15 @@
         </div>
         <div class="feature">
           <h3>Markdown shortcuts</h3>
-          <p>Bold, italic and links on <kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>I</kbd> / <kbd>K</kbd>. Lists and quotes continue on <kbd>Enter</kbd>; <kbd>Tab</kbd> nests a list item. A third backtick opens a code block and closes it for you.</p>
+          <p>Bold, italic and links on <kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>I</kbd> / <kbd>K</kbd>. Lists and quotes continue on <kbd>Enter</kbd>; <kbd>Tab</kbd> nests a list item. Type <kbd>~</kbd> over a selection to wrap it (twice for <code>~~strikethrough~~</code>). A third backtick opens a code block and closes it for you.</p>
+        </div>
+        <div class="feature">
+          <h3>Spell check</h3>
+          <p>Windows' own spell checker draws a wavy line under misspelled words. Right-click for suggestions, Add to dictionary or Ignore; its autocorrect fixes "teh" as you finish the word. Code, links, web addresses and front matter are left alone.</p>
+        </div>
+        <div class="feature">
+          <h3>Symbols as you type</h3>
+          <p><code>-&gt;</code> becomes →, <code>!=</code> ≠, <code>--</code> —, <code>...</code> … and more. <kbd>Backspace</kbd> right after brings back what you typed, and nothing changes inside code. Turn it off in the View menu.</p>
         </div>
       </div>
       <figure class="screenshot">
@@ -117,19 +125,28 @@
     <section class="tech">
       <h2>Under the hood</h2>
       <ul>
-        <li><strong>Native, no browser.</strong> Rust and <a href="https://www.gpui.rs/">GPUI</a>, drawn on the GPU. A 7.8 MB executable and a 2.5 MB installer.</li>
+        <li><strong>Native, no browser.</strong> Rust and <a href="https://www.gpui.rs/">GPUI</a>, drawn on the GPU. An 8 MB executable and a 3 MB installer.</li>
         <li><strong>Rope buffer.</strong> A keystroke in a 10 MB note takes microseconds, undo included.</li>
         <li><strong>Incremental Markdown parsing.</strong> An edit re-parses only the blocks around it.</li>
         <li><strong>Virtualised rendering.</strong> Only visible lines are laid out, so text appears about 4.5 ms after a keystroke (median), even in a 10 MB note.</li>
         <li><strong>Atomic saves.</strong> Each save writes a temporary file, flushes it and renames it over the note, so a crash never leaves a half-written file.</li>
-        <li><strong>Tested and written down.</strong> Over 600 automated tests, including end-to-end tests that drive the real UI headlessly, and <a href="https://github.com/waterrmalann/scratchpad/tree/main/docs/adrs">66 decision records</a> explaining why it works the way it does.</li>
+        <li><strong>Tested and written down.</strong> Over 700 automated tests, including end-to-end tests that drive the real UI headlessly, and <a href="https://github.com/waterrmalann/scratchpad/tree/main/docs/adrs">70 decision records</a> explaining why it works the way it does.</li>
       </ul>
     </section>
 
     <section id="install">
       <h2>Get Scratchpad</h2>
+      <p class="install-lead">
+        Download the installer (<code>Scratchpad-&lt;version&gt;-x64.msi</code>) or the portable zip
+        (<code>Scratchpad-&lt;version&gt;-x64-portable.zip</code>) from the latest release, with
+        <code>SHA256SUMS.txt</code> to check them against.
+      </p>
+      <div class="actions">
+        <a href="https://github.com/waterrmalann/scratchpad/releases/latest" class="btn primary">Download the latest release</a>
+        <a href="https://github.com/waterrmalann/scratchpad/releases" class="btn secondary">All releases</a>
+      </div>
       <div class="install-card">
-        <pre><code><span class="cmd-comment"># Build and run from source</span>
+        <pre><code><span class="cmd-comment"># Or build and run from source</span>
 <span class="cmd-prompt">&gt;</span> git clone https://github.com/waterrmalann/scratchpad.git
 <span class="cmd-prompt">&gt;</span> cd scratchpad
 <span class="cmd-prompt">&gt;</span> cargo build --release -p scratchpad
@@ -138,9 +155,9 @@
 <span class="cmd-comment"># Or build the installer (needs the .NET SDK)</span>
 <span class="cmd-prompt">&gt;</span> powershell -File packaging/build-installer.ps1</code></pre>
         <p class="install-note">
-          Requires Windows 10 or 11, the Rust toolchain (MSVC) and the Windows SDK. The MSI installs for
-          your user only, without administrator rights, and uninstalling leaves your notes and settings alone.
-          There is no prebuilt download yet.
+          Runs on Windows 10 or 11 (x64). The MSI installs for your user only, without administrator
+          rights, and uninstalling leaves your notes and settings alone. The portable zip holds
+          <code>scratchpad.exe</code> and its licence: unzip and run. Building needs the Rust toolchain (MSVC) and the Windows SDK.
         </p>
       </div>
     </section>

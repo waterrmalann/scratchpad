@@ -276,6 +276,10 @@ code, kbd {
 
 /* ── Install ── */
 
+.install-lead { margin-top: 0.5rem; }
+
+#install .actions { margin: 1.5rem 0 2rem; }
+
 .install-card {
   background: var(--surface);
   border: 1px solid var(--border);

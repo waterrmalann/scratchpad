@@ -4,7 +4,7 @@
 
 A Windows notes app for people who want Notepad's speed and simplicity, with Markdown that looks like Markdown while you type. Notes are plain `.md` files in a folder you own, saved as you write. It is written in Rust on [GPUI](https://www.gpui.rs/): one small native executable, no browser, no Electron, no account.
 
-[Website](https://waterrmalann.github.io/scratchpad/)
+[Download](https://github.com/waterrmalann/scratchpad/releases/latest) · [Website](https://waterrmalann.github.io/scratchpad/)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/landing/screenshots/hero-dark.png">
@@ -19,6 +19,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 - **Markdown-aware editing** — Enter continues a list or quote, Tab nests a list item, `Ctrl+B`/`I`/`E`/`K` format the selection, and clicking a task box ticks it. `Ctrl`+click opens a link.
 - **Typing helpers** — A new note starts with a `# ` heading for its title (Backspace removes it). Brackets and quotes pair up conservatively. Typing a bracket, quote, `*`, `~` or `_` over a selection wraps it (twice for `**bold**` or `~~strikethrough~~`; `_` only where it makes emphasis, so `foo_bar`, spaces and code are still replaced), and a third backtick alone on a line opens a code block and closes it for you.
 - **Symbols as you type** — `->` becomes →, and likewise `<-` ←, `<->` ↔, `=>` ⇒, `<=` ≤, `<=>` ⇔, `>=` ≥, `!=` ≠, `--` —, `...` …, `(c)` ©, `(r)` ®, `(tm)` ™ and `+-` ±. Backspace right after one (or `Ctrl+Z`) brings back what you typed. Code, front matter, HTML comments, link addresses, web addresses and paths, and pasted text are left alone; a line of dashes stays a rule (`- --` becomes `- —` once text follows), table delimiter rows keep their dashes, and `--flag` and `C++-style` stay as typed. View > Auto-replace symbols turns it off.
+- **Right-click menu** — As in Notepad: Undo, Cut, Copy, Paste, Delete, Select all and a Formatting submenu (bold, italic, strikethrough, inline code, link). On a misspelled word its suggestions come first. `Shift+F10` or the Menu key opens it from the keyboard.
 - **Plain text for other files** — Files that are not named `.md` or `.markdown` are edited as plain text, untouched by Markdown rules.
 
 <picture>
@@ -44,7 +45,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 
 - **Find and replace** — In the open note, with match case, replace all and go to line.
 - **Zoom and wrap** — Text size from 50 % to 400 % (`Ctrl+=`, `Ctrl+-`, `Ctrl`+wheel), word wrap on or off (with a horizontal scrollbar when it is off), a Notepad-style status bar with line, column, character count, zoom, line ending and encoding.
-- **Spelling** — Misspelled words are underlined by Windows' own spell checker, with its suggestions, your dictionary and its autocorrect list ("teh" becomes "the" as you type; `Ctrl+Z` undoes it). It checks in the first of your Windows languages that has a dictionary. Code, links, web and e-mail addresses, paths and front matter are left alone. Both can be turned off in the View menu.
+- **Spelling** — Misspelled words get a wavy underline from Windows' own spell checker. Right-click one for its suggestions, Add to dictionary or Ignore. Windows' autocorrect list applies when a word ends ("teh" becomes "the" as you type; `Ctrl+Z` undoes it). It checks in the first of your Windows languages that has a dictionary. Code, links, web and e-mail addresses, paths and front matter are left alone. Both can be turned off in the View menu.
 - **Themes and narrow windows** — System, Light or Dark. The note list collapses (`Ctrl+\`) and floats over the note in a narrow window.
 
 <p>
@@ -95,10 +96,19 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 
 </details>
 
+## Download
+
+Get the latest release from [GitHub Releases](https://github.com/waterrmalann/scratchpad/releases/latest). It needs Windows 10 or 11 (x64).
+
+- **Installer** — `Scratchpad-<version>-x64.msi`. A per-user install: no administrator rights, installs to `%LOCALAPPDATA%\Programs\Scratchpad`, adds a Start Menu shortcut and an uninstall entry, and a newer MSI upgrades in place. Uninstalling leaves your notes and settings alone.
+- **Portable** — `Scratchpad-<version>-x64-portable.zip`: `scratchpad.exe` with the licence and this readme. Unzip it anywhere and run it. Notes and settings still live in the usual folders (below), not next to the exe.
+
+`SHA256SUMS.txt` lists the checksums of both: compare with `Get-FileHash <file>`.
+
 ## Where things live
 
 - **Notes** — `Documents\Scratchpad`. Change the folder in Settings (`Ctrl+,`).
-- **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, spell check, symbol replacement, status bar, sidebar, pinned notes and last note are remembered there too.
+- **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, spell check, autocorrect, symbol replacement, status bar, sidebar, pinned notes and last note are remembered there too.
 - **Environment** — `SCRATCHPAD_NOTES_DIR` uses another notes folder (Settings then cannot change it) and `SCRATCHPAD_CONFIG_DIR` another folder for the config, recovery snapshots and log. Set both to try the app on a scratch folder.
 - **Command line** — `scratchpad.exe <file>` opens that file, as File > Open does. The installer registers no file associations yet, so use "Open with" and pick `scratchpad.exe`.
 
@@ -119,7 +129,7 @@ scratchpad/
 
 ## Build
 
-There is no download yet, so build it yourself. Requires Windows 10/11, [Rust](https://www.rust-lang.org/tools/install) (MSVC toolchain) and the Windows SDK.
+To build it yourself you need Windows 10/11, [Rust](https://www.rust-lang.org/tools/install) (MSVC toolchain) and the Windows SDK.
 
 ```powershell
 git clone https://github.com/waterrmalann/scratchpad.git
@@ -141,15 +151,15 @@ $env:SCRATCHPAD_NOTES_DIR = "$env:TEMP\scratchpad-try\notes"
 $env:SCRATCHPAD_CONFIG_DIR = "$env:TEMP\scratchpad-try\config"
 ```
 
-## Install
+## Build the installer
 
-Build the per-user MSI (needs the .NET SDK too; WiX is restored as a repo-local tool):
+Build the per-user MSI described under [Download](#download) (needs the .NET SDK too; WiX is restored as a repo-local tool):
 
 ```powershell
 powershell -File packaging/build-installer.ps1   # -> target/installer/Scratchpad-<version>-x64.msi
 ```
 
-It needs no administrator rights, installs to `%LOCALAPPDATA%\Programs\Scratchpad`, adds a Start Menu shortcut and an uninstall entry, and a newer MSI upgrades in place. Uninstalling leaves your notes and settings alone.
+Releases are built by GitHub Actions (`.github/workflows`): pushing a `v<version>` tag that matches the workspace version tests the app, builds the MSI and the portable zip, and publishes them with `SHA256SUMS.txt`.
 
 ## Test
 
