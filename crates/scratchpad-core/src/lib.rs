@@ -17,7 +17,7 @@ pub use error::{Error, Result};
 pub use grouping::{DateGroup, NaiveDate, local_date};
 pub use naming::{UNTITLED, sanitize_file_stem, title_from_content};
 pub use note::{Note, is_note_path};
-pub use pages::{PAGE_EXTENSIONS, PageIndex, is_page_path, is_plain_stem};
+pub use pages::{PAGE_EXTENSIONS, PageIndex, fold_case, is_page_path};
 pub use recovery::{RecoveryStore, Snapshot};
 pub use search::{NoteSearch, SearchHit};
 pub use store::{NoteStore, NoteText};

@@ -5,6 +5,7 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use common::{days_ago, editor_text, write_note};
 use gpui::{
@@ -13,10 +14,11 @@ use gpui::{
 };
 use scratchpad::AppWindow;
 use scratchpad::actions::view::ToggleWikilinks;
-use scratchpad::editor_view::EditorView;
+use scratchpad::editor_view::{EditorView, OpenPage};
 use scratchpad::notes::Selection;
 use scratchpad::settings::SAVE_DELAY;
-use scratchpad_core::Config;
+use scratchpad_core::{Config, sanitize_file_stem};
+use scratchpad_editor::markdown::wikilink_page;
 
 /// The test platform shapes every BMP char 0.6 em wide: 9 px at the 15 px body size.
 const ADVANCE: f32 = 9.;
@@ -254,9 +256,7 @@ fn a_file_from_another_folder_links_to_pages_in_its_own_folder(cx: &mut TestAppC
     cx.run_until_parked();
     let editor = common::editor(&root, cx);
     let known = editor.read_with(cx, |editor, _| {
-        editor
-            .pages()
-            .and_then(|p| p.resolve("other").map(Path::to_owned))
+        editor.pages().and_then(|p| p.resolve("other"))
     });
     assert_eq!(known, Some(elsewhere.path().join("Other.txt")));
     ctrl_click(&root, 10., cx);
@@ -295,4 +295,108 @@ fn the_wikilinks_feature_is_ticked_toggles_and_is_remembered(cx: &mut TestAppCon
     assert!(editor.read_with(cx, |e, _| e.markdown_options().wikilinks));
     common::close(cx);
     assert_eq!(Config::load(&config_path).markdown_wikilinks, Some(true));
+}
+
+#[gpui::test]
+fn a_second_ctrl_click_before_the_page_is_created_does_not_create_it_twice(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    write_note(dir.path(), "Home", "[[Twice]]\nnext", days_ago(0, 9));
+    let (root, cx) = open(dir.path(), cx);
+    let editor = common::editor(&root, cx);
+    // Both clicks arrive before the folder is looked at, as on a slow disk.
+    editor.update(cx, |_, cx| {
+        cx.emit(OpenPage("Twice".into()));
+        cx.emit(OpenPage("twice".into()));
+    });
+    assert!(root.read_with(cx, |root, _| root.is_opening_page()));
+    cx.run_until_parked();
+    assert!(!root.read_with(cx, |root, _| root.is_opening_page()));
+    let created = dir.path().join("Twice.md");
+    assert_eq!(names_in(dir.path()), ["Home.md", "Twice.md"]);
+    assert_eq!(selection(&root, cx), Selection::Note(created));
+}
+
+#[gpui::test]
+fn pages_of_another_folder_are_read_again_when_the_window_is_activated(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    write_note(dir.path(), "Home", "home", days_ago(0, 9));
+    let file = elsewhere.path().join("readme.md");
+    fs::write(&file, "[[Other]]\nnext").unwrap();
+    let (root, cx) = open(dir.path(), cx);
+    common::notes(&root, cx).update(cx, |notes, cx| notes.open_file(&file, cx));
+    cx.run_until_parked();
+    let editor = common::editor(&root, cx);
+    let known = |cx: &mut VisualTestContext| {
+        editor.read_with(cx, |editor, _| {
+            editor.pages().map(|pages| pages.resolve("other"))
+        })
+    };
+    assert_eq!(known(cx), Some(None));
+
+    // Another program adds the page; coming back to the window soon after does not read again.
+    fs::write(elsewhere.path().join("Other.txt"), "other").unwrap();
+    let switch_back = |cx: &mut VisualTestContext| {
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+    };
+    switch_back(cx);
+    assert_eq!(known(cx), Some(None));
+    common::wait(Duration::from_secs(2), cx);
+    switch_back(cx);
+    assert_eq!(known(cx), Some(Some(elsewhere.path().join("Other.txt"))));
+}
+
+#[gpui::test]
+fn with_wikilinks_off_the_folder_pages_are_not_kept(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("plain.txt"), "text").unwrap();
+    write_note(dir.path(), "Home", "[[plain]]\nnext", days_ago(0, 9));
+    let (root, cx) = open(dir.path(), cx);
+    let notes = common::notes(&root, cx);
+    let editor = common::editor(&root, cx);
+    let kept = |cx: &mut VisualTestContext| notes.read_with(cx, |notes, _| notes.pages().len());
+    assert_eq!(kept(cx), 2);
+
+    cx.dispatch_action(ToggleWikilinks);
+    cx.run_until_parked();
+    assert_eq!(kept(cx), 0);
+    assert!(editor.read_with(cx, |editor, _| editor.pages().is_none()));
+    notes.update(cx, |notes, cx| notes.refresh(cx));
+    cx.run_until_parked();
+    assert_eq!(kept(cx), 0, "a listing skips them");
+
+    cx.dispatch_action(ToggleWikilinks);
+    cx.run_until_parked();
+    assert_eq!(kept(cx), 2, "turned on, the folder is listed again");
+    assert!(editor.read_with(cx, |editor, _| {
+        editor.pages().is_some_and(|pages| pages.has_page("PLAIN"))
+    }));
+}
+
+/// The editor decides which targets are links and the store names the pages it creates; they
+/// must agree, or a link would be drawn but create a differently named page (ADR 0188).
+#[test]
+fn link_targets_are_exactly_the_stems_the_store_keeps() {
+    let pieces = [
+        "a", "Z", "é", "日", " ", "  ", ".", "..", "/", "\\", ":", "*", "?", "\"", "<", ">", "|",
+        "\t", "\u{0}", "\u{a0}", "\u{2028}", "CON", "nul", "com0", "COM1", "lpt9", "LPT¹",
+        "CONIN$", "aux ", "x.txt", "-",
+    ];
+    let mut names = vec![String::new(), "x".repeat(100), "x".repeat(101)];
+    for a in pieces {
+        for b in pieces {
+            for c in ["", "a", ".", " ", ".md"] {
+                names.push(format!("{a}{b}{c}"));
+            }
+        }
+    }
+    for name in names {
+        let link = wikilink_page(&name) == Some(name.as_str());
+        let kept = !name.contains("..") && sanitize_file_stem(&name).as_deref() == Some(&*name);
+        assert_eq!(link, kept, "{name:?}");
+    }
 }

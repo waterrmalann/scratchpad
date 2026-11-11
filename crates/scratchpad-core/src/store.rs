@@ -8,6 +8,7 @@ use crate::atomic::{remove_stale_temp_files, write_atomic};
 use crate::error::{Result, io_context};
 use crate::naming::{UNTITLED, sanitize_file_stem, unique_file_name};
 use crate::note::{NOTE_EXTENSION, Note, is_note_path};
+use crate::pages::{PageIndex, fold_case, is_page_path};
 
 /// How often `create` retries when another process grabs the chosen name first.
 const CREATE_ATTEMPTS: usize = 5;
@@ -60,38 +61,13 @@ impl NoteStore {
     /// Only `*.md` files directly in the folder are listed; hidden files and our own temporary
     /// files are skipped. Entries that cannot be inspected are skipped with a warning.
     pub fn list(&self) -> Result<Vec<Note>> {
-        let entries = fs::read_dir(&self.dir).map_err(io_context("list notes in", &self.dir))?;
-        let mut notes = Vec::new();
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    tracing::warn!(%error, "skipping unreadable directory entry");
-                    continue;
-                }
-            };
-            let path = entry.path();
-            if !is_note_path(&path) {
-                continue;
-            }
-            match entry.metadata() {
-                Ok(metadata) if metadata.is_file() && !is_hidden(&metadata) => {
-                    notes.push(Note::new(path, &metadata));
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(path = %path.display(), %error, "skipping note without metadata");
-                }
-            }
-        }
-        notes.sort_by(|a, b| {
-            b.modified_at
-                .cmp(&a.modified_at)
-                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-                .then_with(|| a.path.cmp(&b.path))
-        });
-        tracing::debug!(count = notes.len(), dir = %self.dir.display(), "listed notes");
-        Ok(notes)
+        list_folder(&self.dir, Listing::Notes).map(|(notes, _)| notes)
+    }
+
+    /// [`list`](Self::list) and the folder's pages for wikilinks ([`PageIndex::read`], ADR 0188),
+    /// from the same pass over the folder.
+    pub fn list_with_pages(&self) -> Result<(Vec<Note>, PageIndex)> {
+        list_folder(&self.dir, Listing::NotesAndPages)
     }
 
     /// Metadata of a single note, e.g. to refresh its modification time after a save.
@@ -186,16 +162,74 @@ impl NoteStore {
         Ok(())
     }
 
-    /// Lower-cased names of everything in the folder except `except`.
+    /// Case-folded ([`fold_case`]) names of everything in the folder except `except`.
     fn taken_names(&self, except: Option<&OsStr>) -> Result<HashSet<String>> {
         let entries = fs::read_dir(&self.dir).map_err(io_context("list notes in", &self.dir))?;
         Ok(entries
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.file_name())
             .filter(|name| Some(name.as_os_str()) != except)
-            .map(|name| name.to_string_lossy().to_lowercase())
+            .map(|name| fold_case(&name.to_string_lossy()))
             .collect())
     }
+}
+
+/// What [`list_folder`] collects.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Listing {
+    Notes,
+    Pages,
+    NotesAndPages,
+}
+
+/// The notes of `dir`, newest first, and its pages, as `listing` asks for (the other is left
+/// empty), from one pass over its entries. Reads metadata only.
+pub(crate) fn list_folder(dir: &Path, listing: Listing) -> Result<(Vec<Note>, PageIndex)> {
+    let action = match listing {
+        Listing::Pages => "list pages in",
+        _ => "list notes in",
+    };
+    let entries = fs::read_dir(dir).map_err(io_context(action, dir))?;
+    let (want_notes, want_pages) = (listing != Listing::Pages, listing != Listing::Notes);
+    let mut notes = Vec::new();
+    let mut pages = PageIndex::new(dir);
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::warn!(%error, "skipping unreadable directory entry");
+                continue;
+            }
+        };
+        let path = entry.path();
+        let note = want_notes && is_note_path(&path);
+        let page = want_pages && is_page_path(&path);
+        if !(note || page) {
+            continue;
+        }
+        match entry.metadata() {
+            Ok(metadata) if metadata.is_file() && !is_hidden(&metadata) => {
+                if page {
+                    pages.insert(&path);
+                }
+                if note {
+                    notes.push(Note::new(path, &metadata));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "skipping file without metadata");
+            }
+        }
+    }
+    notes.sort_by(|a, b| {
+        b.modified_at
+            .cmp(&a.modified_at)
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    tracing::debug!(notes = notes.len(), pages = pages.len(), dir = %dir.display(), "listed folder");
+    Ok((notes, pages))
 }
 
 /// Reads and decodes a note file as [`NoteStore::read`] does, without logging.

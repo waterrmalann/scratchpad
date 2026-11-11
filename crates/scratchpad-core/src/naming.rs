@@ -5,6 +5,8 @@
 
 use std::collections::HashSet;
 
+use crate::pages::fold_case;
+
 /// Title (and file stem) used when nothing meaningful is available.
 pub const UNTITLED: &str = "Untitled";
 
@@ -138,14 +140,15 @@ fn is_reserved_device_name(name: &str) -> bool {
     else {
         return false;
     };
-    // Windows 10+ also reserves the superscript digits.
+    // Windows documents `COM0` and `LPT0` as reserved too, and Windows 10+ the superscript
+    // digits. `scratchpad_editor::markdown::wikilink_page` follows the same rule (ADR 0188).
     let mut chars = suffix.chars();
-    matches!(chars.next(), Some('1'..='9' | '¹' | '²' | '³')) && chars.next().is_none()
+    matches!(chars.next(), Some('0'..='9' | '¹' | '²' | '³')) && chars.next().is_none()
 }
 
 /// Picks `stem`, `stem 2`, `stem 3`, ... followed by `extension`, the first whose file name is
-/// not in `taken`. `taken` holds lower-cased file names: the comparison is case-insensitive on
-/// every platform so notes stay portable between Windows, macOS and Linux.
+/// not in `taken`. `taken` holds file names folded by [`fold_case`]: the comparison ignores case
+/// as NTFS does, on every platform, so notes stay portable between Windows, macOS and Linux.
 pub(crate) fn unique_file_name(stem: &str, extension: &str, taken: &HashSet<String>) -> String {
     let mut n = 1u32;
     loop {
@@ -154,7 +157,7 @@ pub(crate) fn unique_file_name(stem: &str, extension: &str, taken: &HashSet<Stri
         } else {
             format!("{stem} {n}{extension}")
         };
-        if !taken.contains(&name.to_lowercase()) {
+        if !taken.contains(&fold_case(&name)) {
             return name;
         }
         n += 1;

@@ -119,6 +119,8 @@ fn sanitize_defuses_reserved_device_names() {
     assert_eq!(sanitize_file_stem("LPT9.txt").as_deref(), Some("LPT9_.txt"));
     assert_eq!(sanitize_file_stem("aux .md").as_deref(), Some("aux_.md"));
     assert_eq!(sanitize_file_stem("COM¹").as_deref(), Some("COM¹_"));
+    assert_eq!(sanitize_file_stem("com0").as_deref(), Some("com0_"));
+    assert_eq!(sanitize_file_stem("LPT0.md").as_deref(), Some("LPT0_.md"));
     // Names that merely start with a reserved word are fine.
     assert_eq!(sanitize_file_stem("Console").as_deref(), Some("Console"));
     assert_eq!(sanitize_file_stem("COM10").as_deref(), Some("COM10"));
@@ -141,7 +143,7 @@ fn is_valid_windows_stem(stem: &str) -> bool {
     let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&head.as_str())
         || ((head.starts_with("COM") || head.starts_with("LPT"))
             && head.len() == 4
-            && head.ends_with(|c: char| ('1'..='9').contains(&c)));
+            && head.ends_with(|c: char| c.is_ascii_digit()));
     !stem.is_empty()
         && !stem.starts_with('.')
         && !stem.ends_with(['.', ' '])

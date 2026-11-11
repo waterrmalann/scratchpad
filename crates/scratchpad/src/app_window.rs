@@ -1,13 +1,15 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseDownEvent, Pixels,
     Subscription, Task, Window, div, prelude::*, px,
 };
-use scratchpad_core::NoteStore;
-use scratchpad_core::{PageIndex, is_plain_stem};
-use scratchpad_editor::markdown::MarkdownOptions;
+use scratchpad_core::{NoteStore, PAGE_EXTENSIONS, PageIndex, fold_case};
+use scratchpad_editor::markdown::{MarkdownOptions, wikilink_page};
 
 use crate::actions::view::ToggleWikilinks;
 use crate::actions::view::{
@@ -40,6 +42,31 @@ fn outside_folder(notes: &Notes) -> Option<(PathBuf, PathBuf)> {
     let dir = path.parent()?;
     (!same_file(dir, &notes.location().dir)).then(|| (path.clone(), dir.to_owned()))
 }
+
+/// The file of `page` in `dir` if there is one, `.md` first, found by asking for each name
+/// rather than listing the folder: on a case-insensitive file system (NTFS) that also finds it
+/// spelled otherwise, and the name is then spelled as on disk. Blocks on the disk.
+fn existing_page(dir: &Path, page: &str) -> Option<PathBuf> {
+    let path = PAGE_EXTENSIONS
+        .iter()
+        .map(|extension| dir.join(format!("{page}.{extension}")))
+        .find(|path| path.is_file())?;
+    let name = path.file_name()?.to_string_lossy();
+    let on_disk = fs::canonicalize(&path)
+        .ok()
+        .and_then(|real| {
+            real.file_name()
+                .map(|real| real.to_string_lossy().into_owned())
+        })
+        // A link's target, say, has another name: keep the one asked for.
+        .filter(|real| fold_case(real) == fold_case(&name));
+    Some(on_disk.map_or_else(|| path.clone(), |real| dir.join(real)))
+}
+
+/// How long the pages of another folder's file are trusted before the window becoming active
+/// again reads them anew (ADR 0188): that folder is not watched, but going to another program
+/// and back is when its files are likely to have changed.
+const OUTSIDE_PAGES_MAX_AGE: Duration = Duration::from_secs(2);
 
 /// Narrower windows do not dock the sidebar, so the note keeps a comfortable width: at this
 /// width a sidebar of the default 260 px leaves
@@ -81,11 +108,16 @@ pub struct AppWindow {
     window_title: String,
     _subscriptions: Vec<Subscription>,
     /// The file from outside the notes folder whose folder's pages the editor's wikilinks
-    /// resolve against, while it is open, and the reading of those pages (ADR 0188).
+    /// resolve against, while it is open, when those pages were last read, and their reading
+    /// (ADR 0188).
     pages_file: Option<PathBuf>,
+    pages_read_at: Option<Instant>,
     pages_task: Option<Task<()>>,
-    /// Finding or creating the page of a wikilink that was Ctrl+clicked.
-    open_page_task: Option<Task<()>>,
+    /// The pages of Ctrl+clicked wikilinks being found or created, by [`fold_case`]d name: a
+    /// second click on one before it is done is ignored, so it is never created twice.
+    pending_pages: HashSet<String>,
+    /// Counts Ctrl+clicks on wikilinks; only the page of the latest one opens.
+    page_requests: u64,
 }
 
 /// The settings panel while it is shown.
@@ -116,7 +148,12 @@ impl AppWindow {
         let (spell_check, autocorrect) = (config.spell_check, config.autocorrect);
         let auto_replace = config.auto_replace;
         let markdown_options = settings::markdown_options(config);
-        let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
+        let notes = cx.new(|cx| {
+            let mut notes = Notes::new(storage.notes.clone(), reopen, cx);
+            // Before the folder is opened and listed: off, the listing skips the pages.
+            notes.set_wikilinks(markdown_options.wikilinks, cx);
+            notes
+        });
         let editor = cx.new(|cx| {
             let mut editor = EditorView::new("", window, cx);
             editor.set_zoom_percent(zoom.unwrap_or(100), cx);
@@ -174,11 +211,17 @@ impl AppWindow {
                     window.focus(&this.editor_pane.focus_handle(cx))
                 })
             }),
+            // Another program may have changed the pages of a file's folder, which is not watched.
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.update_pages(true, cx);
+                }
+            }),
             cx.subscribe(&editor, |this, _, OpenPage(page), cx| {
                 this.open_page(page.clone(), cx)
             }),
             cx.observe_in(&notes, window, |this, notes, window, cx| {
-                this.update_pages(cx);
+                this.update_pages(false, cx);
                 this.remember_pins(cx);
                 let selection = notes.read(cx).selection().clone();
                 this.show_file_name(&selection, window);
@@ -202,12 +245,16 @@ impl AppWindow {
             }),
             // Zoom, word wrap, spelling and Markdown options belong to the editor; checked on each
             // of its updates, written only when they change.
-            cx.observe(&editor, |_, editor, cx| {
+            cx.observe(&editor, |this, editor, cx| {
                 let editor = editor.read(cx);
                 let (zoom, wrap) = (editor.zoom_percent(), editor.soft_wrap());
                 let (spell_check, autocorrect) = (editor.spell_check(), editor.autocorrect());
                 let auto_replace = editor.auto_replace();
                 let markdown_options = editor.markdown_options();
+                // The notes model keeps the folder's pages only while wikilinks are on.
+                this.notes.update(cx, |notes, cx| {
+                    notes.set_wikilinks(markdown_options.wikilinks, cx)
+                });
                 let config = settings::get(cx);
                 if config.zoom_percent.unwrap_or(100) != zoom
                     || config.word_wrap.unwrap_or(true) != wrap
@@ -263,30 +310,45 @@ impl AppWindow {
             window_title: WINDOW_TITLE.to_owned(),
             _subscriptions: subscriptions,
             pages_file: None,
+            pages_read_at: None,
             pages_task: None,
-            open_page_task: None,
+            pending_pages: HashSet::new(),
+            page_requests: 0,
         }
     }
 
     /// Gives the editor the pages its wikilinks resolve against (ADR 0188): the notes model's
     /// index of the notes folder, kept in step with the note list, or for a file from another
-    /// folder that folder's pages, read in the background each time a file from it opens.
-    fn update_pages(&mut self, cx: &mut Context<Self>) {
+    /// folder that folder's pages, read in the background when a file from it opens and, with
+    /// `reread`, again if they are older than [`OUTSIDE_PAGES_MAX_AGE`] (the window became
+    /// active). With wikilinks off, none.
+    fn update_pages(&mut self, reread: bool, cx: &mut Context<Self>) {
         let editor = self.editor_pane.read(cx).editor().clone();
         let notes = self.notes.read(cx);
-        let Some((file, dir)) = outside_folder(notes) else {
+        let outside = outside_folder(notes).filter(|_| notes.wikilinks());
+        let Some((file, dir)) = outside else {
             self.pages_file = None;
+            self.pages_read_at = None;
             self.pages_task = None;
             // Until the folder is listed every page would look missing.
-            let pages = notes.is_loaded().then(|| notes.pages().clone());
+            let pages = (notes.wikilinks() && notes.is_loaded()).then(|| notes.pages().clone());
             editor.update(cx, |editor, cx| editor.set_pages(pages, cx));
             return;
         };
-        if self.pages_file.as_ref() == Some(&file) {
+        let same_file = self.pages_file.as_ref() == Some(&file);
+        // The executor's clock, which tests can advance.
+        let now = cx.background_executor().now();
+        let stale = self
+            .pages_read_at
+            .is_none_or(|read_at| now.duration_since(read_at) >= OUTSIDE_PAGES_MAX_AGE);
+        if same_file && !(reread && stale) {
             return;
         }
-        self.pages_file = Some(file);
-        editor.update(cx, |editor, cx| editor.set_pages(None, cx));
+        if !same_file {
+            self.pages_file = Some(file);
+            editor.update(cx, |editor, cx| editor.set_pages(None, cx));
+        }
+        self.pages_read_at = Some(now);
         let reading = cx.background_spawn(async move { PageIndex::read(&dir) });
         self.pages_task = Some(cx.spawn(async move |_, cx| match reading.await {
             Ok(pages) => {
@@ -300,9 +362,11 @@ impl AppWindow {
 
     /// Ctrl+click on a wikilink: opens the page in the folder of the open document as choosing
     /// it in the sidebar or with File > Open would; a page that does not exist is created there
-    /// first, as a note named after it starting with it as its heading.
+    /// first, as a note named after it starting with it as its heading. A page still being
+    /// found or created is not asked for again; of several pages, the last one asked for opens.
     fn open_page(&mut self, page: String, cx: &mut Context<Self>) {
-        if !is_plain_stem(&page) {
+        // Only what the editor draws as a link: anything else could name a file elsewhere.
+        if wikilink_page(&page) != Some(page.as_str()) {
             return;
         }
         let notes = self.notes.read(cx);
@@ -312,11 +376,16 @@ impl AppWindow {
             Some(_) => self.editor_pane.read(cx).editor().read(cx).pages().cloned(),
         };
         if let Some(path) = known.as_ref().and_then(|pages| pages.resolve(&page)) {
-            let path = path.to_owned();
+            self.page_requests += 1;
             self.notes
                 .update(cx, |notes, cx| notes.open_file(&path, cx));
             return;
         }
+        let pending = fold_case(&page);
+        if !self.pending_pages.insert(pending.clone()) {
+            return;
+        }
+        self.page_requests += 1;
         // Not known to exist: look on the disk, which may have changed since it was listed, and
         // create the note only if it is still missing there.
         let dir = outside
@@ -325,8 +394,8 @@ impl AppWindow {
         let store = outside.is_none().then(|| notes.store().cloned()).flatten();
         let name = page.clone();
         let finding = cx.background_spawn(async move {
-            if let Some(path) = PageIndex::read(&dir)?.resolve(&name) {
-                return Ok((path.to_owned(), None));
+            if let Some(path) = existing_page(&dir, &name) {
+                return Ok((path, None));
             }
             let store = match store {
                 Some(store) => store,
@@ -337,22 +406,34 @@ impl AppWindow {
             let note = store.note(&note.path)?;
             scratchpad_core::Result::Ok((note.path.clone(), Some(note)))
         });
-        self.open_page_task = Some(cx.spawn(async move |this, cx| {
+        let request = self.page_requests;
+        // Not cancelled by a later click: a note it creates is listed either way.
+        cx.spawn(async move |this, cx| {
             let found = finding.await;
-            this.update(cx, |this, cx| match found {
-                Ok((path, created)) => {
-                    this.notes.update(cx, |notes, cx| {
+            this.update(cx, |this, cx| {
+                this.pending_pages.remove(&pending);
+                let latest = this.page_requests == request;
+                match found {
+                    Ok((path, created)) => this.notes.update(cx, |notes, cx| {
                         if let Some(note) = created {
                             // Lists a note of the notes folder; ignores any other file.
                             notes.note_saved(note, cx);
                         }
-                        notes.open_file(&path, cx);
-                    });
+                        if latest {
+                            notes.open_file(&path, cx);
+                        }
+                    }),
+                    Err(error) => toast::show_file_error(&page, &error, cx),
                 }
-                Err(error) => toast::show_file_error(&page, &error, cx),
             })
             .ok();
-        }));
+        })
+        .detach();
+    }
+
+    /// Whether the page of a Ctrl+clicked wikilink is still being found or created.
+    pub fn is_opening_page(&self) -> bool {
+        !self.pending_pages.is_empty()
     }
 
     /// Writes the pinned notes to the settings, keeping the pins of other folders.
