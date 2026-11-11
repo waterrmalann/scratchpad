@@ -1,6 +1,6 @@
 # 0180. Typed sequences become symbols, and Backspace takes them back
 Date: 2026-11-11
-Status: Accepted
+Status: Accepted; amends ADR 0044, 0150 and 0170
 
 ## Context
 Issue #4 asks for `->` to become → as it is typed, with a dozen more sequences, the way Notion and
@@ -61,8 +61,9 @@ must keep working.
     underline) or a table's delimiter row. Once a char other than a dash or whitespace follows a held
     `--` and a space on a line of dashes and spaces, the line can no longer be a rule, and the `--`
     becomes a dash then, as its own undo step: `- -- item` and `-- signed` give `- — item` and
-    `— signed`. Lines with `|` are table rows and keep their dashes (`| -- |`), as do cells of
-    dashes only in a delimiter row.
+    `— signed`. So a held `--` on a line of only `-`, `|`, `:` and whitespace stays as typed (a
+    table's delimiter row, `| -- |`), but after text in a table row, `--` becomes a dash
+    (`| a | --` gives `| a | —`).
   - `--flag`: a `--` that starts a word (after nothing, whitespace or an opening bracket or quote)
     is taken back when a letter or digit is typed right after it, so `--verbose` and `--2` type as
     they are while `well--yes` and ` -- ` become dashes.
@@ -84,7 +85,7 @@ must keep working.
 - The state is small and checked against the buffer version, so undo, redo, other edits and cursor
   moves cannot leave a stale replacement for Backspace to "take back".
 - A keystroke that can end a rule reads a few hundred bytes around the cursor and asks the Markdown
-  structure about code (last, as the dearest check): 20-45 µs for typing `->` and replacing it in a
+  structure about code (last, as the dearest check): 15-45 µs for typing `->` and replacing it in a
   10 MB note, ~35 µs in front matter 1,000 lines long (docs/performance.md). Other keystrokes are
   unchanged.
 - The comment check looks back 4 KB only, and does not know about code: a `<!--` in a code span

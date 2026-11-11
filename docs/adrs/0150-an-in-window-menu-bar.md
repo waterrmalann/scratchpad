@@ -1,6 +1,6 @@
 # 0150. An in-window menu bar whose keys come from the keymap
 Date: 2026-10-09
-Status: Accepted
+Status: Accepted; amended by 0170, 0175, 0180
 
 ## Context
 Notepad users look for File, Edit and View menus, with each command's key beside it. GPUI 0.2.2
@@ -10,7 +10,10 @@ menu bar is not available.
 ## Decision
 - `MenuBar` draws a 30 px row under the title bar with File, Edit and View, in Windows 11
   Notepad's style and theme tokens only. A menu is a small list built when it is shown: label,
-  action, enabled, tick, or a submenu (only View > Zoom). No general menu framework.
+  action, enabled, tick, or a submenu (only View > Zoom). No general menu framework. (Amended by
+  ADR 0175: the note's context menu has a Formatting submenu too, and a shared `menu` module,
+  `crates/scratchpad/src/menu.rs`, draws both menus' box, rows and separators and holds their
+  arrow, Enter, Space and Escape actions; each menu keeps its own items and state.)
 - Every command is an existing action. Choosing one puts focus back where it was before the menu
   opened, then dispatches the action there (`window.dispatch_action`), exactly as its key would.
   If that element is gone (Go to line closes when the menu takes focus; the sidebar shown over a
@@ -31,6 +34,8 @@ menu bar is not available.
   Left/Right (neighbouring menu, into and out of Zoom), Enter/Space and Escape work; Escape and
   closing put focus back. Alt+F, Alt+E, Alt+V and F10 open a menu with its first item highlighted.
 - View ticks show live state: the status bar, word wrap, source mode (Ctrl+/) and the sidebar (Ctrl+\).
+  (Amended by ADR 0170 and 0180: also Spell check and Autocorrect, greyed without a checker and
+  Autocorrect while Spell check is off, and Auto-replace symbols.)
 
 ## Consequences
 - The bar takes 30 px of height in every window size; it cannot be hidden.

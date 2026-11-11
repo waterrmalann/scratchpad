@@ -1,6 +1,6 @@
 # 0170. Spell checking with the system's checker
 Date: 2026-11-06
-Status: Accepted; amended by 0175, 0180
+Status: Accepted; amends ADR 0001 and 0150; amended by 0175, 0180
 
 ## Context
 Notes are prose, and typos in them go unnoticed. Every Windows app that checks spelling (Edge,
@@ -53,8 +53,9 @@ miss the user's words.
 - Shown as a wavy underline in the new `misspelling` theme token, red in both themes, below the
   baseline and as thick as the zoom makes the text.
 - A right-click on an underlined word opens a menu: the suggestions (or the autocorrect
-  replacement, or "Delete repeated word"), then Add to dictionary and Ignore (until the app
-  quits). A correction is one undo step. A read-only note offers only Add and Ignore.
+  replacement), then Add to dictionary and Ignore (until the app quits); a repeated word offers
+  "Delete repeated word", then Ignore, and no Add. A correction is one undo step. A read-only
+  note offers only Add and Ignore, or only Ignore for a repeated word.
   Right-clicks elsewhere still do nothing. (Amended by ADR 0175: these are now the first
   section of the note's context menu, which every right-click, Shift+F10 and the Menu key open.)
 - Autocorrect: typing a space or `.,;:!?` after a prose word asks the checker about it, and

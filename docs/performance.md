@@ -90,7 +90,7 @@ every 500 ms (recovery snapshots) and every 2 s (saves); they were not re-measur
 ## Spell checking (ADR 0170)
 
 The checker runs on its own thread; what the UI thread does for it (release build, timed in a loop,
-2026-11-11):
+2026-11-11). These were measured once by hand; no test guards them:
 
 | Work on the UI thread | When | Time |
 | --- | --- | --- |
@@ -104,11 +104,11 @@ Autocorrect no longer waits for the checker: the correction is applied when its 
 ## Typed replacements (ADR 0180)
 
 Only a keystroke that can end a rule (`>`, `-`, `=`, `.`, `)`) does more than before; the rest
-cost one scan of a 14-entry table. Release build, `tests/perf.rs`, 2026-11-11:
+cost one scan of a 14-entry table. Release build, `crates/scratchpad-editor/tests/perf.rs`, 2026-11-11:
 
 | Work on the UI thread | When | Time |
 | --- | --- | --- |
-| Type `-` and `>` in a 10 MB note, and replace them with `→` (two keystrokes, one replacement) | a rule's last char | 20-45 µs |
+| Type `-` and `>` in a 10 MB note, and replace them with `→` (two keystrokes, one replacement) | a rule's last char | 15-45 µs |
 | Type `-` after `-` in front matter 1,000 lines long (no replacement) | as above, the most text read | ~35 µs |
 
 Deciding reads at most 512 bytes of the two lines before the cursor, up to 16 KB of its line for

@@ -1,6 +1,6 @@
 # 0175. The note's context menu, with the spelling corrections in it
 Date: 2026-11-11
-Status: Accepted
+Status: Accepted; amends ADR 0150 and 0170
 
 ## Context
 Right-clicking in the note did nothing unless the word was misspelled, when it opened a small menu
@@ -16,10 +16,11 @@ look.
   applies highlighted, as the menu bar does from the keyboard. On a misspelled word (at the
   pointer, or at the cursor from the keyboard) its corrections are the first section: the
   suggestions in semibold ("Looking for suggestions…" until the checker answers), then Add to
-  dictionary and Ignore. Then Undo; Cut, Copy, Paste, Delete; Select all; and a Formatting
-  submenu (Bold, Italic, Strikethrough, Inline code, Link). The separate spelling menu is gone:
-  its state is now a `SpellingSection` of the context menu, made by the spelling code, which
-  still decides what it offers and applies the choice.
+  dictionary and Ignore (a repeated word has Delete repeated word and Ignore, no Add; a read-only
+  note drops the corrections and Delete repeated word). Then Undo; Cut, Copy, Paste, Delete;
+  Select all; and a Formatting submenu (Bold, Italic, Strikethrough, Inline code, Link). The
+  separate spelling menu is gone: its state is now a `SpellingSection` of the context menu, made
+  by the spelling code, which still decides what it offers and applies the choice.
 - **The cursor.** A right-click outside the selection moves the cursor there first, so Paste
   goes where the pointer was; inside the selection, the selection stays for Cut and Copy.
 - **Same as the Edit menu.** Undo needs a writable note with history; Cut and Delete a writable
