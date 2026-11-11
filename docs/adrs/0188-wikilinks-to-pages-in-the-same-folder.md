@@ -1,6 +1,6 @@
 # 0188. Wikilinks to pages in the same folder
 Date: 2026-11-11
-Status: Accepted; amends ADR 0072 and 0185
+Status: Accepted; amends ADR 0072 and 0185; amended by 0190
 
 ## Context
 Notes written in Obsidian link to each other with `[[Page]]`, `[[Page|label]]` and
@@ -64,7 +64,7 @@ away, as in Obsidian.
   created, further clicks on it (by folded name) are ignored, so a slow folder never gets both
   `Page.md` and `Page 2.md`; of several different pages, only the last one clicked opens, and
   any created is listed.
-- **Setting.** View > Markdown features > Wikilinks (`ToggleWikilinks`), remembered as
+- **Setting.** View > Markdown Extensions > Wikilinks (`ToggleWikilinks`), remembered as
   `markdown_wikilinks` like the other options (ADR 0185).
 
 ## Consequences

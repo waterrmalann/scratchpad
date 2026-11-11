@@ -1,6 +1,6 @@
 # 0150. An in-window menu bar whose keys come from the keymap
 Date: 2026-10-09
-Status: Accepted; amended by 0170, 0175, 0180, 0185
+Status: Accepted; amended by 0170, 0175, 0180, 0185, 0190
 
 ## Context
 Notepad users look for File, Edit and View menus, with each command's key beside it. GPUI 0.2.2

@@ -1,6 +1,6 @@
 # 0180. Typed sequences become symbols, and Backspace takes them back
 Date: 2026-11-11
-Status: Accepted; amends ADR 0044, 0150 and 0170
+Status: Accepted; amends ADR 0044, 0150 and 0170; amended by 0190
 
 ## Context
 Issue #4 asks for `->` to become → as it is typed, with a dozen more sequences, the way Notion and

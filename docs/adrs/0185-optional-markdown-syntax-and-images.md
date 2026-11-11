@@ -1,6 +1,6 @@
 # 0185. Optional Markdown syntax: callouts, superscript, subscript, heading IDs; images styled as links
 Date: 2026-11-11
-Status: Accepted; amends ADR 0040 and 0150; amended by 0188
+Status: Accepted; amends ADR 0040 and 0150; amended by 0188, 0190
 
 ## Context
 Notes copied from GitHub and Obsidian use GFM alerts (`> [!NOTE]`), `^sup^`, `~sub~` and heading
@@ -20,7 +20,7 @@ must stay lazy per block region (ADR 0041) and cost nothing per keystroke.
   the view is the visible lines. Region boundaries do not depend on the options; the region and
   incremental property tests run with random options, all on in a third of the cases, including
   option changes between edits.
-- **Setting.** View > Markdown features, a submenu of ticked items: Callouts, Superscript,
+- **Setting.** View > Markdown features (renamed Markdown Extensions by ADR 0190), a submenu of ticked items: Callouts, Superscript,
   Subscript, Heading IDs (actions `ToggleCallouts`, `ToggleSuperscript`, `ToggleSubscript`,
   `ToggleHeadingIds`, no keys). The editor view holds the options (`EditorView::markdown_options`,
   `set_markdown_options`), carries them to every note it opens, and on a change re-checks the

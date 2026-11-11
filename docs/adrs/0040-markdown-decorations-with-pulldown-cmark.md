@@ -1,6 +1,6 @@
 # 0040. Markdown decorations parsed with pulldown-cmark
 Date: 2026-10-08
-Status: Accepted; amended by 0185, 0186, 0187
+Status: Accepted; amended by 0185, 0186, 0187, 0190
 
 ## Context
 PLAN §17/§19 asks for Markdown parsed into decorations over buffer ranges, never replacing the text. Live

@@ -1,6 +1,6 @@
 # 0170. Spell checking with the system's checker
 Date: 2026-11-06
-Status: Accepted; amends ADR 0001 and 0150; amended by 0175, 0180
+Status: Accepted; amends ADR 0001 and 0150; amended by 0175, 0180, 0190
 
 ## Context
 Notes are prose, and typos in them go unnoticed. Every Windows app that checks spelling (Edge,

@@ -1,6 +1,6 @@
 # 0187. Bare web and e-mail addresses are links, found in text without changing it
 Date: 2026-11-11
-Status: Accepted; amends ADR 0040 and 0041
+Status: Accepted; amends ADR 0040 and 0041; amended by 0190
 
 ## Context
 Notes are full of pasted addresses (`https://...`, `www.example.com`, `name@example.com`) that nobody wraps
