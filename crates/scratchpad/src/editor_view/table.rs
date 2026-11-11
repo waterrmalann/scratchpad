@@ -168,14 +168,15 @@ impl TableCache {
         columns
     }
 
-    /// Drops the widths of tables on or next to the lines `change` touched (a line added right after a table
-    /// may be a row of it) and renumbers the lines of those after it.
+    /// Drops the widths of tables on the lines `change` touched and renumbers the lines of those after it. A
+    /// change next to a table keeps its widths: if it makes the line a row of the table, or stops the table
+    /// there, the table's lines change and lookups, which match them exactly, measure it again.
     pub fn apply_change(&mut self, change: &TextChange) {
         let first = change.start_point.line;
         let old_last = change.old_end_point.line;
         let new_last = change.new_end_point.line;
         self.entries.retain_mut(|entry| {
-            if entry.lines.end < first || entry.lines.start > old_last + 1 {
+            if entry.lines.end <= first || entry.lines.start > old_last {
                 if entry.lines.start > old_last {
                     entry.lines.start = entry.lines.start - old_last + new_last;
                     entry.lines.end = entry.lines.end - old_last + new_last;

@@ -52,9 +52,13 @@ impl LayoutCache {
 
     pub fn set_style(&mut self, style: BaseStyle) {
         if style != self.style {
+            // Column widths depend only on how wide text is: resizing the window or changing the
+            // theme keeps them (`TableCache` compares a grid's reach with the wrap width itself).
+            if !style.same_text_widths(&self.style) {
+                self.tables.clear();
+            }
             self.style = style;
             self.lines.clear();
-            self.tables.clear();
         }
     }
 

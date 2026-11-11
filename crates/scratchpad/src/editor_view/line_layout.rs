@@ -87,6 +87,14 @@ impl BaseStyle {
         (pixels * (self.font_size / typography::BODY_FONT_SIZE)).round()
     }
 
+    /// Whether text shaped with `other` is as wide as with this style: the same fonts and size. Only the
+    /// wrap width, the colours and the margin may differ.
+    pub(super) fn same_text_widths(&self, other: &BaseStyle) -> bool {
+        self.font == other.font
+            && self.mono_family == other.mono_family
+            && self.font_size == other.font_size
+    }
+
     /// How far quote text sits right of the text column's left edge.
     pub(super) fn quote_indent(&self) -> Pixels {
         self.scaled(QUOTE_INDENT)
