@@ -29,10 +29,17 @@ pub(super) fn parse(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
         items: Vec::new(),
         links: Vec::new(),
         table: TableState::default(),
+        heading: None,
     };
     let mut autolinks = Autolinks::default();
     for (event, range) in Parser::new_ext(text, pulldown_options(options)).into_offset_iter() {
-        autolinks.event(&event, &range, text);
+        // A heading's attribute block is a marker, not text, so no address is found in it. The heading's start
+        // event comes before its text, so the builder knows the block by then.
+        let text_end = builder
+            .heading
+            .as_ref()
+            .map(|heading| heading.attributes.start);
+        autolinks.event(&event, &range, text, text_end);
         builder.event(event, range);
     }
     // Events come in document order except a task box, which follows the start of the item's first block, e.g.
@@ -51,7 +58,8 @@ fn pulldown_options(options: MarkdownOptions) -> Options {
     pulldown.set(Options::ENABLE_GFM, options.callouts);
     pulldown.set(Options::ENABLE_SUPERSCRIPT, options.superscript);
     pulldown.set(Options::ENABLE_SUBSCRIPT, options.subscript);
-    pulldown.set(Options::ENABLE_HEADING_ATTRIBUTES, options.heading_ids);
+    // Never `ENABLE_HEADING_ATTRIBUTES`: pulldown-cmark 0.13.4 and 0.13.6 panic on some input with it
+    // (`- a\n    {#a}\n  - `), which would abort the app. The builder finds attribute blocks itself (ADR 0185).
     pulldown.set(Options::ENABLE_WIKILINKS, options.wikilinks);
     // GFM tables are always on (ADR 0186).
     pulldown |= Options::ENABLE_TABLES;
@@ -71,6 +79,17 @@ struct Builder<'a> {
     links: Vec<(Option<usize>, usize)>,
     /// The open table's row and cells.
     table: TableState,
+    /// The open heading, if it has an attribute block (with [`MarkdownOptions::heading_ids`]).
+    heading: Option<OpenHeading>,
+}
+
+/// A heading being parsed that ends in an attribute block, which pulldown-cmark reads as text since the parser
+/// does not handle attributes itself.
+struct OpenHeading {
+    /// The index of the first decoration after the heading's own.
+    first_inline: usize,
+    /// Where the attribute block starts (after the whitespace before it) and ends.
+    attributes: Range<usize>,
 }
 
 impl Builder<'_> {
@@ -89,6 +108,7 @@ impl Builder<'_> {
             Event::End(TagEnd::Item) => {
                 self.items.pop();
             }
+            Event::End(TagEnd::Heading(_)) => self.end_heading(),
             _ if link_end => self.end_link(),
             Event::Code(_) => {
                 let ticks = self.run_len(range.start, b'`');
@@ -186,8 +206,8 @@ impl Builder<'_> {
         self.links.push((index, range.start + opener));
     }
 
-    /// `[[target]]` or `[[target|label]]` (ADR 0188). pulldown-cmark reports the whole of it as the range and
-    /// the text before the first `|` as the target. Embeds (`![[x]]`), targets that are not plain page names and
+    /// `[[target]]` or `[[target|label]]`, also `[[target\|label]]` (ADR 0188). pulldown-cmark reports the whole
+    /// of it as the range and the text before the first `|` as the target. Embeds (`![[x]]`), targets that are not plain page names and
     /// targets that are not the text as typed (pulldown-cmark drops an escaping backslash) stay text.
     fn wikilink(&mut self, target: &str, has_pothole: bool, range: Range<usize>, opener: usize) {
         let text = &self.text[range.clone()];
@@ -200,6 +220,12 @@ impl Builder<'_> {
             .flatten()
             .map(|i| open.end + i);
         let typed = well_formed && self.text[open.end..pipe.unwrap_or(close.start)] == *target;
+        // In a table, `|` splits cells, so Obsidian writes the alias separator as `\|` there; pulldown-cmark
+        // leaves the backslash in the target. It is accepted anywhere, as Obsidian does, and is part of the marker.
+        let target = match pipe {
+            Some(_) => target.strip_suffix('\\').unwrap_or(target),
+            None => target,
+        };
         if typed && wikilink_page(target).is_some() {
             let (content_start, markers) = match pipe {
                 Some(pipe) => (
@@ -224,13 +250,7 @@ impl Builder<'_> {
         content: Range<usize>,
         markers: Vec<Range<usize>>,
     ) -> usize {
-        self.decorations.push(Decoration {
-            kind,
-            range: offsets(range),
-            content: offsets(content),
-            markers: markers.into_iter().map(offsets).collect(),
-        });
-        self.decorations.len() - 1
+        push(&mut self.decorations, kind, range, content, markers)
     }
 
     /// Emphasis, strikethrough and code spans: `len` marker bytes at each end.
@@ -261,7 +281,10 @@ impl Builder<'_> {
             let mut markers = vec![underline..range.end];
             if let Some(attributes) = self.attributes(content.clone()) {
                 markers.insert(0, attributes.start..content.end);
-                content.end = attributes.start;
+                self.open_heading(attributes.clone());
+                // An attribute block on a line of its own leaves the text's line break (`\n` or `\r\n`).
+                content.end = self.skip_back(attributes.start, content.start, b"\n");
+                content.end = self.skip_back(content.end, content.start, b"\r");
             }
             self.push(kind, range.clone(), content, markers);
             return;
@@ -286,8 +309,36 @@ impl Builder<'_> {
         } else {
             trimmed_end
         };
-        markers.extend(attributes.map(|a| a.start..range.end));
+        if let Some(attributes) = attributes {
+            markers.push(attributes.start..range.end);
+            self.open_heading(attributes);
+        }
         self.push(kind, range, open_end..content_end, markers);
+    }
+
+    /// Starts collecting the inline decorations of a heading with `attributes`, whose decoration is pushed next.
+    fn open_heading(&mut self, attributes: Range<usize>) {
+        let open = self.skip(attributes.start, attributes.end, b" \t");
+        self.heading = Some(OpenHeading {
+            first_inline: self.decorations.len() + 1,
+            attributes: open..attributes.end,
+        });
+    }
+
+    /// Drops the inline decorations of the heading that ends which reach into its attribute block: pulldown-cmark
+    /// parsed the block as text, while it is a marker (`# *a {*}` has no emphasis). Links and other spans that
+    /// close before it are as they would be without the block, since delimiters pair from the left.
+    fn end_heading(&mut self) {
+        let Some(heading) = self.heading.take() else {
+            return;
+        };
+        let first = heading.first_inline.min(self.decorations.len());
+        let inline = self.decorations.split_off(first);
+        self.decorations.extend(inline.into_iter().filter(|d| {
+            // A task box comes after the start of the heading it is the first block of.
+            matches!(d.kind, DecorationKind::Task { .. })
+                || d.range.end.0 <= heading.attributes.start
+        }));
     }
 
     /// With [`MarkdownOptions::heading_ids`], the trailing attribute block (`{#id .class}`) of the heading text
@@ -502,11 +553,7 @@ impl Builder<'_> {
     /// Drops the line breaks and blank lines pulldown-cmark includes at the end of some block ranges (which
     /// depends on what follows the block), so that a block ends at the end of its last non-blank line.
     fn trim(&self, range: Range<usize>) -> Range<usize> {
-        let last_text = self.skip_back(range.end, range.start, b" \t\n");
-        let line_end = self.text[last_text..range.end]
-            .find('\n')
-            .map_or(range.end, |i| last_text + i);
-        range.start..line_end
+        trim(self.text, range)
     }
 
     fn byte(&self, i: usize) -> Option<u8> {
@@ -518,16 +565,12 @@ impl Builder<'_> {
         self.skip(i, self.text.len(), &[byte]) - i
     }
 
-    /// The first position in `from..to` whose byte is not in `set`, or `to`.
     fn skip(&self, from: usize, to: usize, set: &[u8]) -> usize {
-        let bytes = &self.text.as_bytes()[from.min(to)..to];
-        from + bytes.iter().take_while(|b| set.contains(b)).count()
+        skip(self.text, from, to, set)
     }
 
-    /// Moves back from `from` over bytes in `set`, stopping at `limit`.
     fn skip_back(&self, from: usize, limit: usize, set: &[u8]) -> usize {
-        let bytes = &self.text.as_bytes()[limit.min(from)..from];
-        from - bytes.iter().rev().take_while(|b| set.contains(b)).count()
+        skip_back(self.text, from, limit, set)
     }
 
     fn table_start(&mut self, range: Range<usize>, start: table::Start) {
@@ -536,6 +579,45 @@ impl Builder<'_> {
     }
 }
 
-fn offsets(range: Range<usize>) -> Range<ByteOffset> {
+/// Adds a decoration with these offsets into the region text to `decorations` and returns its index.
+pub(super) fn push(
+    decorations: &mut Vec<Decoration>,
+    kind: DecorationKind,
+    range: Range<usize>,
+    content: Range<usize>,
+    markers: Vec<Range<usize>>,
+) -> usize {
+    decorations.push(Decoration {
+        kind,
+        range: offsets(range),
+        content: offsets(content),
+        markers: markers.into_iter().map(offsets).collect(),
+    });
+    decorations.len() - 1
+}
+
+pub(super) fn offsets(range: Range<usize>) -> Range<ByteOffset> {
     ByteOffset(range.start)..ByteOffset(range.end)
+}
+
+/// Drops the line breaks and blank lines pulldown-cmark includes at the end of some block ranges (which
+/// depends on what follows the block), so that a block ends at the end of its last non-blank line.
+pub(super) fn trim(text: &str, range: Range<usize>) -> Range<usize> {
+    let last_text = skip_back(text, range.end, range.start, b" \t\n");
+    let line_end = text[last_text..range.end]
+        .find('\n')
+        .map_or(range.end, |i| last_text + i);
+    range.start..line_end
+}
+
+/// The first position in `from..to` of `text` whose byte is not in `set`, or `to`.
+pub(super) fn skip(text: &str, from: usize, to: usize, set: &[u8]) -> usize {
+    let bytes = &text.as_bytes()[from.min(to)..to];
+    from + bytes.iter().take_while(|b| set.contains(b)).count()
+}
+
+/// Moves back in `text` from `from` over bytes in `set`, stopping at `limit`.
+pub(super) fn skip_back(text: &str, from: usize, limit: usize, set: &[u8]) -> usize {
+    let bytes = &text.as_bytes()[limit.min(from)..from];
+    from - bytes.iter().rev().take_while(|b| set.contains(b)).count()
 }

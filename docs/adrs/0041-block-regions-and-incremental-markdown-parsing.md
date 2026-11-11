@@ -1,6 +1,6 @@
 # 0041. Block regions with lazy, incremental Markdown parsing
 Date: 2026-10-08
-Status: Accepted; amended by 0186
+Status: Accepted; amended by 0186, 0187
 
 ## Context
 Typing in a 10 MB note must stay well under the 16 ms frame budget (PLAN §21, §37, rules 5 and 8), so a

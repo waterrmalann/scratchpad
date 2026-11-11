@@ -130,6 +130,12 @@ fn links_mark_brackets_and_destination() {
 #[test]
 fn reference_links_stay_plain_text_even_when_defined() {
     assert_eq!(describe("[ref]\n\n[ref]: http://x"), []);
+    // A definition cannot interrupt a paragraph, so here it is text: `[ref]` stays plain and the address in it
+    // is a bare link (ADR 0187).
+    assert_eq!(
+        describe("[ref]\n[ref]: http://x"),
+        [d("Link http://x", "http://x", "http://x", &[])]
+    );
 }
 
 #[test]
@@ -525,6 +531,90 @@ fn heading_attribute_blocks_are_markers_with_heading_ids() {
     );
 }
 
+/// pulldown-cmark 0.13 panics on these with its heading attributes on, which the parser therefore never turns on
+/// (ADR 0185): they must parse, and the attribute block is still found.
+#[test]
+fn heading_attribute_blocks_never_reach_pulldown_cmark() {
+    for text in [
+        "- a\n    {#a}\n  - ",
+        "- a\n    {#a}\n  - b",
+        "- a\n    {#a}\n  -",
+        "1. a\n    {#a}\n   1. ",
+        "> - a\n>     {#a}\n>   - ",
+        "- a\n    {.b}\n  - \n  - ",
+        "- a\n    {}\n  * ",
+    ] {
+        let found = describe_with(text, MarkdownOptions::ALL);
+        assert!(!found.is_empty(), "{text:?}");
+    }
+    assert_eq!(
+        describe_with("- a\n    {#a}\n  - ", MarkdownOptions::ALL),
+        [
+            d(
+                "Bullet",
+                "- a\n    {#a}\n  - ",
+                "a\n    {#a}\n  - ",
+                &["- "]
+            ),
+            d("H2", "a\n    {#a}\n  - ", "a", &["    {#a}", "- "]),
+        ]
+    );
+}
+
+/// The block is a marker, not text: nothing in it is decorated, and nothing reaching into it either, while what
+/// ends before it is as without the block.
+#[test]
+fn heading_attribute_blocks_hold_no_inline_syntax() {
+    let ids = MarkdownOptions {
+        heading_ids: true,
+        ..MarkdownOptions::default()
+    };
+    assert_eq!(
+        describe_with("# *a {*}", ids),
+        [d("H1", "# *a {*}", "*a", &["# ", " {*}"])]
+    );
+    assert_eq!(
+        describe_with("# a {[[b]] `c` http://d}", ids),
+        [d(
+            "H1",
+            "# a {[[b]] `c` http://d}",
+            "a",
+            &["# ", " {[[b]] `c` http://d}"]
+        )]
+    );
+    assert_eq!(
+        describe_with("# *a* http://x{#a}", ids),
+        [
+            d("H1", "# *a* http://x{#a}", "*a* http://x", &["# ", "{#a}"]),
+            d("Emphasis", "*a*", "a", &["*", "*"]),
+            d("Link http://x", "http://x", "http://x", &[]),
+        ]
+    );
+    // A task box is the first block's, which may be a heading with a block.
+    assert_eq!(
+        describe_with("- [ ] a {#b}\n  ---", ids)
+            .into_iter()
+            .map(|d| d.0)
+            .collect::<Vec<_>>(),
+        ["Bullet", "Task false", "H2"]
+    );
+}
+
+/// An attribute block on a line of its own under setext text leaves the text without its line break.
+#[test]
+fn a_setext_heading_with_an_attribute_line_has_its_text_as_content() {
+    let ids = MarkdownOptions {
+        heading_ids: true,
+        ..MarkdownOptions::default()
+    };
+    for text in ["a\n{#a}\n-", "a\r\n{#a}\r\n-", "a\n{#a}\n==="] {
+        let found = describe_with(text, ids);
+        assert_eq!(found.len(), 1, "{text:?}");
+        assert_eq!(found[0].2, "a", "{text:?}");
+        assert_eq!(found[0].3[0], "{#a}", "{text:?}");
+    }
+}
+
 #[test]
 fn changing_the_options_reparses_lazily() {
     let buffer = Buffer::from_text("^a^\n\n~b~");
@@ -577,6 +667,32 @@ fn wikilinks_mark_their_brackets_and_the_target_before_a_label() {
             ),
         ]
     );
+}
+
+/// Obsidian writes the alias separator as `\|` in tables, where `|` splits cells; it is accepted anywhere.
+#[test]
+fn an_escaped_pipe_separates_a_wikilink_label_in_and_out_of_tables() {
+    let table = describe("| [[a\\|b]] | c |\n|---|---|");
+    assert!(
+        table.contains(&d(
+            "WikiLink { target: \"a\" }",
+            "[[a\\|b]]",
+            "b",
+            &["[[", "a\\|", "]]"]
+        )),
+        "{table:?}"
+    );
+    assert_eq!(
+        describe("[[Page#H\\|the label]]"),
+        [d(
+            "WikiLink { target: \"Page#H\" }",
+            "[[Page#H\\|the label]]",
+            "the label",
+            &["[[", "Page#H\\|", "]]"]
+        )]
+    );
+    // Without a label a trailing backslash is part of the target, which then names no page.
+    assert_eq!(describe("[[a\\]]"), []);
 }
 
 #[test]

@@ -169,6 +169,19 @@ fn domains_must_be_valid() {
         ),
         ("WWW.EXAMPLE.COM", &[]),
         ("'www.example.com'", &[]),
+        // The start of a text node counts as a start of line, as in cmark-gfm: a table cell, after a wikilink.
+        ("|www.x.com|\n|---|", &[("www.x.com", "https://www.x.com")]),
+        (
+            "| a |www.x.com|\n|---|---|\n|www.y.com| b |",
+            &[
+                ("www.x.com", "https://www.x.com"),
+                ("www.y.com", "https://www.y.com"),
+            ],
+        ),
+        ("[[a]]www.x.com", &[("www.x.com", "https://www.x.com")]),
+        // After `*`, as anywhere; after `]` or a link only at a wikilink's end.
+        ("**b**www.x.com", &[("www.x.com", "https://www.x.com")]),
+        ("[l](u)www.x.com", &[]),
         // A `<` that opens no autolink is text, and so is a definition that cannot interrupt a paragraph.
         (
             "<http://unclosed",
