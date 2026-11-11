@@ -3,11 +3,14 @@
 mod common;
 
 use common::{editor, state};
-use scratchpad_editor::Editor;
+use scratchpad_editor::markdown::MarkdownState;
+use scratchpad_editor::{ByteOffset, Editor};
 
+/// Types `keys` one at a time, as the keyboard delivers them, with one Markdown state that follows the edits.
 fn type_keys(editor: &mut Editor, keys: &str) {
+    let mut markdown = MarkdownState::new(editor.buffer());
     for c in keys.chars() {
-        editor.insert_typed(c.encode_utf8(&mut [0; 4]));
+        editor.insert_typed(c.encode_utf8(&mut [0; 4]), &mut markdown);
     }
 }
 
@@ -141,6 +144,7 @@ fn tilde_without_a_selection_is_typed_as_it_is() {
     assert_eq!(typed("|", "~"), "~|");
     assert_eq!(typed("a |b", "~~"), "a ~~|b");
     assert_eq!(typed("|", "~~struck~~"), "~~struck~~|");
+    assert_eq!(typed("a|", "~"), "a~|");
 }
 
 #[test]
@@ -166,17 +170,88 @@ fn underscore_replaces_identifiers_spaces_and_parts_of_words() {
 }
 
 #[test]
-fn wrapping_ignores_code_spans_and_blocks_like_star() {
-    // No Markdown context is consulted: in code, `~` and `_` wrap as `*` does.
-    for key in ["*", "~", "_"] {
-        assert_eq!(typed("`a ^b| c`", key), format!("`a {key}^b|{key} c`"));
+fn underscore_needs_the_same_underscores_on_both_sides_and_no_word_past_them() {
+    // Stacking: `__strong__`, then `___both___`.
+    assert_eq!(typed("__^text|__", "_"), "___^text|___");
+    // Between two `_` inside an identifier, `_` would not be emphasis.
+    assert_eq!(typed("foo_^bar|_baz", "_"), "foo__|_baz");
+    assert_eq!(typed("x__^bar|__", "_"), "x___|__");
+    assert_eq!(typed("_^bar|__", "_"), "__|__");
+}
+
+#[test]
+fn underscore_replaces_a_selection_with_whitespace_at_either_end() {
+    assert_eq!(typed("^text |now", "_"), "_|now");
+    assert_eq!(typed("a^ text| b", "_"), "a_| b");
+    // A whole line selected with its line break, as a triple click does.
+    assert_eq!(typed("^line\n|next", "_"), "_|next");
+    // `~` and `*` still wrap such selections, as before.
+    assert_eq!(typed("^text |now", "~"), "~^text |~now");
+}
+
+#[test]
+fn underscore_reads_multibyte_and_combining_neighbours_as_letters() {
+    assert_eq!(typed("é^x|", "_"), "é_|");
+    assert_eq!(typed("^x|é", "_"), "_|é");
+    // `e` and a combining acute accent (U+0301) are one letter.
+    assert_eq!(typed("e\u{301}^x|", "_"), "e\u{301}_|");
+    assert_eq!(typed("ñ ^x| ü", "_"), "ñ _^x|_ ü");
+}
+
+#[test]
+fn underscore_wraps_multi_line_and_backward_selections() {
+    assert_eq!(
+        typed("one ^two\nthree| four", "_"),
+        "one _^two\nthree|_ four"
+    );
+    assert_eq!(typed("|text^", "_"), "_|text^_");
+    assert_eq!(typed("say |text^ now", "__"), "say __|text^__ now");
+}
+
+#[test]
+fn in_code_underscore_replaces_while_brackets_star_and_tilde_still_wrap() {
+    assert_eq!(
+        typed("```\nfor ^i| in x\n```", "_"),
+        "```\nfor _| in x\n```"
+    );
+    assert_eq!(typed("`a ^b| c`", "_"), "`a _| c`");
+    assert_eq!(typed("    ^x| = 1", "_"), "    _| = 1");
+    // An unclosed fence runs to the end of the note.
+    assert_eq!(typed("```\n^x|", "_"), "```\n_|");
+    // Outside the span, and in prose, the same selection wraps.
+    assert_eq!(typed("`a` ^b| c", "_"), "`a` _^b|_ c");
+    assert_eq!(typed("for ^i| in x", "_"), "for _^i|_ in x");
+    for key in ["*", "~", "("] {
+        let close = if key == "(" { ")" } else { key };
+        assert_eq!(typed("`a ^b| c`", key), format!("`a {key}^b|{close} c`"));
         assert_eq!(
             typed("```\n^x|\n```", key),
-            format!("```\n{key}^x|{key}\n```")
+            format!("```\n{key}^x|{close}\n```")
         );
     }
-    // ...and the identifier rule for `_` is the same in code as in prose.
-    assert_eq!(typed("`^foo_bar|`", "_"), "`_|`");
+}
+
+#[test]
+fn in_code_covers_the_text_between_the_markers() {
+    let text = "a `code` b\n```\nblock\n```\nc";
+    let ed = Editor::from_text(text);
+    let mut markdown = MarkdownState::new(ed.buffer());
+    let at = |offset: usize| ByteOffset(offset)..ByteOffset(offset);
+    let mut in_code = |range| markdown.in_code(ed.buffer(), range);
+    // Just inside each backtick is in code; just outside is not.
+    assert!(!in_code(at(2)));
+    assert!(in_code(at(3)));
+    assert!(in_code(at(7)));
+    assert!(!in_code(at(8)));
+    // A selection that reaches into the span is in code.
+    assert!(in_code(ByteOffset(0)..ByteOffset(4)));
+    assert!(!in_code(ByteOffset(0)..ByteOffset(3)));
+    // The block's text is in code, its fence lines and the lines around it are not.
+    let block = text.find("block").unwrap();
+    assert!(in_code(at(block)));
+    assert!(in_code(at(block + "block".len())));
+    assert!(!in_code(at(block - 1)));
+    assert!(!in_code(at(text.len())));
 }
 
 #[test]
@@ -202,11 +277,13 @@ fn pairing_undoes_in_one_step_and_plain_typing_still_groups() {
 #[test]
 fn multi_char_text_and_compositions_are_inserted_verbatim() {
     let mut ed = editor("|");
-    ed.insert_typed("(x");
+    let mut markdown = MarkdownState::new(ed.buffer());
+    ed.insert_typed("(x", &mut markdown);
     assert_eq!(state(&ed), "(x|");
 
     let mut ed = editor("|");
+    let mut markdown = MarkdownState::new(ed.buffer());
     ed.replace_and_mark(None, "か", None);
-    ed.insert_typed("(");
+    ed.insert_typed("(", &mut markdown);
     assert_eq!(state(&ed), "(|");
 }

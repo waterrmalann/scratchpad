@@ -474,6 +474,33 @@ fn typed_tildes_and_underscores_wrap_the_selection(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_typed_underscore_replaces_the_selection_in_code(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "```\nfor i in x\n```\nuse `a b` here");
+    let selected = |cx: &mut VisualTestContext| {
+        editor.read_with(cx, |editor, _| {
+            let selection = editor.editor().selection();
+            (selection.start().0, selection.end().0)
+        })
+    };
+
+    // `i` in the code block.
+    cx.simulate_keystrokes("ctrl-home down ctrl-right ctrl-right ctrl-shift-left");
+    assert_eq!(selected(cx), (8, 9));
+    cx.simulate_input("_");
+    assert_eq!(text(&editor, cx), "```\nfor _ in x\n```\nuse `a b` here");
+
+    // `b` in the inline code span is replaced too, while `~` still wraps there.
+    let b = "```\nfor _ in x\n```\nuse `a ".len();
+    cx.simulate_keystrokes("ctrl-end ctrl-left left left shift-left");
+    assert_eq!(selected(cx), (b, b + 1));
+    cx.simulate_input("_");
+    assert_eq!(text(&editor, cx), "```\nfor _ in x\n```\nuse `a _` here");
+    cx.simulate_keystrokes("shift-left");
+    cx.simulate_input("~");
+    assert_eq!(text(&editor, cx), "```\nfor _ in x\n```\nuse `a ~_~` here");
+}
+
+#[gpui::test]
 fn clicking_a_task_box_toggles_it_without_moving_the_cursor(cx: &mut TestAppContext) {
     let (editor, cx) = open_editor(cx, "- [ ] task\n- [x] done\nnext");
     cx.simulate_keystrokes("ctrl-end");

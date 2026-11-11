@@ -148,6 +148,24 @@ impl MarkdownState {
         found
     }
 
+    /// Whether `range` is in code: it overlaps the text of an inline code span or a code block, or, if empty,
+    /// lies within that text or at either end of it (between a span's backticks, not outside them). Typing rules
+    /// that write Markdown or rewrite what is typed ask this to leave code as it is typed.
+    pub fn in_code(&mut self, buffer: &Buffer, range: Range<ByteOffset>) -> bool {
+        self.decorations(buffer, range.clone()).iter().any(|d| {
+            let code = matches!(
+                d.kind,
+                DecorationKind::InlineCode | DecorationKind::CodeBlock { .. }
+            );
+            let content = &d.content;
+            code && if range.is_empty() {
+                content.start <= range.start && range.start <= content.end
+            } else {
+                range.start < content.end && content.start < range.end
+            }
+        })
+    }
+
     /// The destination of the link whose text or markers contain the char at `offset`, for opening it on
     /// Ctrl+click.
     pub fn link_at(&mut self, buffer: &Buffer, offset: ByteOffset) -> Option<String> {

@@ -2,6 +2,7 @@
 
 use crate::coords::ByteOffset;
 use crate::editor::Editor;
+use crate::markdown::MarkdownState;
 use crate::motion::Motion;
 use crate::selection::Selection;
 
@@ -13,6 +14,9 @@ const PAIRS: [(char, char); 6] = [
     ('\'', '\''),
     ('`', '`'),
 ];
+
+/// `_` runs around a selection are only counted this far; longer ones are not emphasis anyone types.
+const MAX_UNDERSCORES: usize = 16;
 
 fn closer_of(open: char) -> Option<char> {
     PAIRS.iter().find(|(o, _)| *o == open).map(|(_, c)| *c)
@@ -29,11 +33,12 @@ impl Editor {
     ///   apostrophes and code fences type normally;
     /// - a closer typed right before the same closer moves over it, if that keeps the line's pairs balanced;
     /// - an opener, `*` or `~` typed over a selection wraps it, keeping it selected, so typing `*` or `~`
-    ///   twice makes it bold or struck through; `_` wraps only where that makes emphasis (not inside a word,
-    ///   nor over an identifier like `foo_bar` or a space) and otherwise replaces the selection.
+    ///   twice makes it bold or struck through; `_` wraps only where that makes emphasis (not in code, not
+    ///   inside a word, nor over an identifier like `foo_bar` or a space) and otherwise replaces the selection.
     ///
-    /// Paste, IME commits and programmatic text use [`Editor::insert_text`].
-    pub fn insert_typed(&mut self, text: &str) {
+    /// `markdown` says whether the selection is in code ([`MarkdownState::in_code`]), for the rules that do not
+    /// apply there. Paste, IME commits, programmatic text and plain text files use [`Editor::insert_text`].
+    pub fn insert_typed(&mut self, text: &str, markdown: &mut MarkdownState) {
         let mut chars = text.chars();
         let (Some(c), None) = (chars.next(), chars.next()) else {
             return self.insert_text(text);
@@ -45,7 +50,7 @@ impl Editor {
         if !selection.is_empty() {
             let wraps = closer_of(c).is_some()
                 || matches!(c, '*' | '~')
-                || (c == '_' && self.underscore_wraps(selection));
+                || (c == '_' && self.underscore_wraps(selection, markdown));
             if wraps {
                 self.wrap_selection(c, closer_of(c).unwrap_or(c));
             } else {
@@ -121,20 +126,51 @@ impl Editor {
         });
     }
 
-    /// Whether `_` typed over `selection` wraps it rather than replacing it: the selection holds a letter or
-    /// digit and no `_`, and either sits between two `_` (wrapping again makes `__strong__`) or has no
-    /// letter, digit or `_` right before or after it. Inside a word `_` is not emphasis (CommonMark), and
-    /// selecting a space, a `-` or an identifier such as `foo_bar` and typing `_` is meant as a replacement.
-    fn underscore_wraps(&self, selection: Selection) -> bool {
+    /// Whether `_` typed over `selection` wraps it rather than replacing it, i.e. whether the result would be
+    /// emphasis. The selection must hold a letter or digit, no `_` and no whitespace at either end, and must not
+    /// be in code. Outside it, past any `_` already wrapped around it (as many on each side, so typing `_` again
+    /// makes `__strong__`), there must be no letter or digit: inside a word `_` is not emphasis (CommonMark).
+    /// Selecting a space, a `-`, part of a word or an identifier such as `foo_bar`, and typing `_`, means to
+    /// replace it, and in code `_` is a name more often than a marker.
+    fn underscore_wraps(&self, selection: Selection, markdown: &mut MarkdownState) -> bool {
         let (start, end) = (selection.start(), selection.end());
         let selected = self.buffer().text_for_range(start..end);
-        if selected.contains('_') || !selected.chars().any(char::is_alphanumeric) {
+        if selected.contains('_')
+            || !selected.chars().any(char::is_alphanumeric)
+            || selected.starts_with(char::is_whitespace)
+            || selected.ends_with(char::is_whitespace)
+        {
             return false;
         }
-        let (before, _) = self.chars_around(start);
-        let (_, after) = self.chars_around(end);
-        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-        (before == Some('_') && after == Some('_')) || !(word(before) || word(after))
+        let runs = (self.underscores_before(start), self.underscores_after(end));
+        if runs.0 != runs.1 || markdown.in_code(self.buffer(), start..end) {
+            return false;
+        }
+        let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+        !word(self.base_before(ByteOffset(start.0 - runs.0)))
+            && !word(self.chars_around(ByteOffset(end.0 + runs.1)).1)
+    }
+
+    /// The number of `_` just before `offset` (up to [`MAX_UNDERSCORES`]).
+    fn underscores_before(&self, offset: ByteOffset) -> usize {
+        let start = ByteOffset(offset.0.saturating_sub(MAX_UNDERSCORES));
+        let text = self.buffer().text_for_range(start..offset);
+        text.bytes().rev().take_while(|&b| b == b'_').count()
+    }
+
+    /// The number of `_` just after `offset` (up to [`MAX_UNDERSCORES`]).
+    fn underscores_after(&self, offset: ByteOffset) -> usize {
+        let end = ByteOffset((offset.0 + MAX_UNDERSCORES).min(self.buffer().len()));
+        let text = self.buffer().text_for_range(offset..end);
+        text.bytes().take_while(|&b| b == b'_').count()
+    }
+
+    /// The first char of the grapheme that ends at `offset`, so that a letter followed by combining marks (`é`
+    /// written as `e` and U+0301) counts as the letter.
+    fn base_before(&self, offset: ByteOffset) -> Option<char> {
+        let buffer = self.buffer();
+        let start = buffer.prev_grapheme_boundary(offset);
+        buffer.text_for_range(start..offset).chars().next()
     }
 
     /// The chars just before and after `offset`.

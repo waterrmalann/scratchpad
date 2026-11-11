@@ -1269,14 +1269,14 @@ impl EntityInputHandler for EditorView {
         let range = range_utf16.map(|range| self.range_from_utf16(&range));
         let plain = self.plain;
         let keystroke = range.is_none() && marked.is_none() && !plain;
-        self.edit(cx, |editor| match range {
+        self.edit_markdown(cx, |editor, markdown| match range {
             Some(range) if marked.as_ref() != Some(&range) => {
                 editor.unmark();
                 editor.replace_range(range, text);
             }
             _ if plain => editor.insert_text(text),
             // Keystrokes pair brackets; IME commits (with marked text) are inserted as they are.
-            _ => editor.insert_typed(text),
+            _ => editor.insert_typed(text, markdown),
         });
         if keystroke && !self.read_only {
             self.after_typing(text, cx);

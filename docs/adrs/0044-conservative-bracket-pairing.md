@@ -7,8 +7,9 @@ PLAN §50 asks for minimal pairing of `()`, `[]`, `{}`, `""`, `''`, backticks an
 the user. Prose is full of apostrophes, list bullets start with `*`, and code fences are three backticks.
 
 ## Decision
-- `Editor::insert_typed(text)` is the entry point for keystrokes; `insert_text` stays raw for paste, IME and
-  programmatic text. Multi-char text and input during IME composition are inserted verbatim.
+- `Editor::insert_typed(text, markdown)` is the entry point for keystrokes in Markdown; `insert_text` stays
+  raw for paste, IME, programmatic text and plain text files. Multi-char text and input during IME
+  composition are inserted verbatim.
 - Auto-close an opener only when the next char is whitespace, a closing bracket, `.,;:!?` or the line end; for
   quotes and backticks also only when the previous char is not alphanumeric and not the same quote (so `don't`,
   `it's`, `say"` and ```` ``` ```` type normally). The pair is one undo step; plain typing keeps grouping.
@@ -18,13 +19,20 @@ the user. Prose is full of apostrophes, list bullets start with `*`, and code fe
 - `backspace_typed` deletes both halves of an empty pair around the cursor.
 - With a selection, an opener, `*` or `~` wraps it and keeps it selected; typing `*` twice makes it bold,
   `~` twice strikes it through (`~~text~~`). Each wrap is one undo step.
-- `_` over a selection wraps it only where that makes emphasis: the selection holds a letter or digit and no
-  `_`, and has no letter, digit or `_` right outside it, or sits between two `_` (so `_` twice makes
-  `__strong__`). Otherwise `_` replaces the selection as plain typing does. `_` inside a word is not emphasis
-  in CommonMark, and selecting a space, a `-` or an identifier such as `foo_bar` and typing `_` is usually
-  meant as a replacement (`foo bar` to `foo_bar`).
-- Wrapping does not look at the Markdown around the selection: in code spans and code blocks `*`, `~` and `_`
-  wrap the same way as in prose. Plain text files (ADR 0147) do not pair or wrap at all.
+- `_` over a selection wraps it only where that makes emphasis, and otherwise replaces the selection as plain
+  typing does. It wraps when the selection holds a letter or digit, no `_` and no whitespace at either end, is
+  not in code, and has as many `_` right before it as right after (none, or the ones a previous `_` added, so
+  `_` twice makes `__strong__`), with no letter or digit beyond them. A letter followed by combining marks
+  counts as a letter. `_` inside a word is not emphasis in CommonMark, and selecting a space, a `-`, part of a
+  word or an identifier such as `foo_bar` and typing `_` is usually meant as a replacement (`foo bar` to
+  `foo_bar`, `for i in` to `for _ in`).
+- "In code" is `MarkdownState::in_code(buffer, range)`: the range overlaps the text of an inline code span
+  or a code block, or, if empty, lies in that text or at either end of it (between a span's backticks). So
+  `insert_typed` takes the document's `MarkdownState`, as `insert_markdown_newline` does. Typing rules that
+  write Markdown or rewrite what is typed (such as typed replacements) use it to leave code alone.
+- Brackets, quotes, `*` and `~` still wrap in code: wrapping `x` in parentheses or quotes is as useful in code
+  as in prose, and `*` or `~` typed over a selection in code is rarely meant as a replacement, unlike `_`
+  over a name. Plain text files (ADR 0147) do not pair or wrap at all.
 - `*`, `~` and `_` are not auto-paired without a selection: `*` starts bullets and appears in arithmetic, `~`
   means "about" and `_` joins words, so pairing them would fight the user.
 

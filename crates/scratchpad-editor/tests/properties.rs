@@ -165,7 +165,10 @@ fn apply(editor: &mut Editor, op: &Op) {
         Op::SelectWordAt(offset) => editor.select_word_at(ByteOffset(*offset)),
         Op::SelectLineAt(offset) => editor.select_line_at(ByteOffset(*offset)),
         Op::SelectAll => editor.select_all(),
-        Op::TypeKey(c) => editor.insert_typed(c.encode_utf8(&mut [0; 4])),
+        Op::TypeKey(c) => {
+            let mut markdown = MarkdownState::new(editor.buffer());
+            editor.insert_typed(c.encode_utf8(&mut [0; 4]), &mut markdown);
+        }
         Op::BackspaceTyped => editor.backspace_typed(),
         Op::Toggle(i) => [
             Editor::toggle_bold,
