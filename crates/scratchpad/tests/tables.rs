@@ -262,6 +262,22 @@ fn a_table_too_long_for_a_grid_is_shown_as_typed_without_measuring(cx: &mut Test
     );
 }
 
+#[gpui::test]
+fn cells_past_the_headers_count_are_hidden_inside_the_grid(cx: &mut TestAppContext) {
+    let text = "x\n\n| a | b |\n|---|---|\n| 1 | 2 | 3 | 4\n\nafter";
+    let (editor, cx) = open_editor(cx, text);
+    // Two one-char columns with 9 px of padding each side: the grid is 54 px wide.
+    let grid_right = 2. * (ADVANCE + 2. * PADDING);
+    assert_eq!(x_of(&editor, at(text, "2 |"), cx), grid_right / 2. + PADDING);
+    // `3` and `4` belong to the hidden trailing marker, as GitHub drops them: nothing is drawn past
+    // the grid's right edge, where the row ends.
+    for extra in [at(text, "3"), at(text, "4")] {
+        let extra = bounds(&editor, extra, cx);
+        assert_eq!(extra.size.width, px(0.), "hidden");
+        assert_eq!(extra.left() - bounds(&editor, 0, cx).left(), px(grid_right));
+    }
+}
+
 fn editor_text(editor: &Entity<EditorView>, cx: &mut VisualTestContext) -> String {
     editor.read_with(cx, |editor, _| editor.editor().buffer().normalized_text())
 }

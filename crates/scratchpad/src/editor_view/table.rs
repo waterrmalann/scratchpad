@@ -292,6 +292,8 @@ pub(super) fn position(
     let left = unwrapped_x(glyphs, start, width);
     let mut at = start;
     for (column, text) in cells(styled, display) {
+        // Cells past the header's count are hidden with the trailing pipe (ADR 0186), so `cells` never
+        // returns them; this only guards the indexing below.
         if column >= columns.widths.len() {
             break;
         }
