@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc c27fd17e2323e90a1ce6bfd3306de108a52a2b2d3c57ae0306f4bc49f83f8203 # shrinks to text = "-->[[Page|label]][[---(---~_word]]", options = MarkdownOptions { callouts: true, superscript: true, subscript: true, heading_ids: true, wikilinks: true }
