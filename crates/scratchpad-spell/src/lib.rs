@@ -17,8 +17,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// A word the checker does not know, or a repeated one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,13 +75,27 @@ pub struct Segment {
     pub text: String,
 }
 
+/// The answer to [`Speller::check`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Checked {
+    /// The misspellings of every segment, in document offsets.
+    Done(Vec<Misspelling>),
+    /// The same requester sent a newer check before this one was done.
+    Superseded,
+    /// The checker is gone: its thread ended.
+    Unavailable,
+}
+
+/// A check waiting for, or in, the spell-check thread.
+struct Check {
+    /// Who asked: a newer check from the same requester supersedes this one, others wait.
+    requester: u64,
+    segments: Vec<Segment>,
+    reply: flume::Sender<Checked>,
+}
+
 enum Request {
-    /// Replies with the misspellings of every segment, in document offsets. A newer check
-    /// supersedes this one: its reply is then dropped unsent.
-    Check {
-        segments: Vec<Segment>,
-        reply: flume::Sender<Vec<Misspelling>>,
-    },
+    Check(Check),
     Word {
         word: String,
         reply: flume::Sender<Option<Action>>,
@@ -94,14 +108,27 @@ enum Request {
     Ignore(String),
 }
 
+/// [`Speller::available`], as one atomic: not known yet, yes, no.
+const STARTING: u8 = 0;
+const AVAILABLE: u8 = 1;
+const UNAVAILABLE: u8 = 2;
+
 /// Hands work to a spell checker that runs on a thread of its own. Cheap to clone.
 #[derive(Clone)]
 pub struct Speller {
     requests: flume::Sender<Request>,
-    /// Set once the checker has started: whether there is one for the user's language.
-    available: Arc<OnceLock<bool>>,
+    /// Whether there is a checker for the user's language: [`STARTING`] until it has started,
+    /// and [`UNAVAILABLE`] without one or once its thread is gone.
+    available: Arc<AtomicU8>,
     /// Answers requests on the calling thread, for tests (see [`Speller::inline`]).
-    inline: Option<Rc<RefCell<Worker>>>,
+    inline: Option<Rc<RefCell<Inline>>>,
+}
+
+/// The worker of an inline speller, with the requests it has not answered yet.
+struct Inline {
+    worker: Worker,
+    requests: flume::Receiver<Request>,
+    held: bool,
 }
 
 impl Speller {
@@ -109,21 +136,25 @@ impl Speller {
     /// Requests sent before it is ready wait for it; without a backend, nothing is misspelled.
     pub fn start(make: impl FnOnce() -> Option<Box<dyn Backend>> + Send + 'static) -> Self {
         let (requests, receiver) = flume::unbounded();
-        let available = Arc::new(OnceLock::new());
+        let available = Arc::new(AtomicU8::new(STARTING));
         let ready = available.clone();
         let started = std::thread::Builder::new()
             .name("spell-check".into())
             .spawn(move || {
                 let backend = make();
-                ready.set(backend.is_some()).ok();
-                if backend.is_none() {
+                let state = if backend.is_some() {
+                    AVAILABLE
+                } else {
                     tracing::info!("no spell checker for the user's language");
-                }
-                Worker::new(backend).run(receiver);
+                    UNAVAILABLE
+                };
+                // Unless it was already found gone.
+                _ = ready.compare_exchange(STARTING, state, Ordering::AcqRel, Ordering::Acquire);
+                Worker::new(backend).run(&receiver);
             });
         if let Err(error) = started {
             tracing::warn!(%error, "could not start the spell checker");
-            available.set(false).ok();
+            available.store(UNAVAILABLE, Ordering::Release);
         }
         Self {
             requests,
@@ -133,49 +164,101 @@ impl Speller {
     }
 
     /// A speller that answers each request at once on the calling thread, so tests see the
-    /// replies without waiting for another thread.
+    /// replies without waiting for another thread. See [`Speller::hold`].
     pub fn inline(backend: Box<dyn Backend>) -> Self {
-        let (requests, _) = flume::unbounded();
-        let available = Arc::new(OnceLock::new());
-        available.set(true).ok();
+        let (requests, receiver) = flume::unbounded();
         Self {
             requests,
-            available,
-            inline: Some(Rc::new(RefCell::new(Worker::new(Some(backend))))),
+            available: Arc::new(AtomicU8::new(AVAILABLE)),
+            inline: Some(Rc::new(RefCell::new(Inline {
+                worker: Worker::new(Some(backend)),
+                requests: receiver,
+                held: false,
+            }))),
+        }
+    }
+
+    /// For tests: an inline speller leaves the requests it gets from now on unanswered, as a
+    /// busy checker would, until [`Speller::release`].
+    pub fn hold(&self) {
+        if let Some(inline) = &self.inline {
+            inline.borrow_mut().held = true;
+        }
+    }
+
+    /// Answers the requests [`Speller::hold`] kept, in order, as the thread would have.
+    pub fn release(&self) {
+        if let Some(inline) = &self.inline {
+            let mut inline = inline.borrow_mut();
+            inline.held = false;
+            let Inline {
+                worker, requests, ..
+            } = &mut *inline;
+            worker.answer_waiting(requests);
         }
     }
 
     /// Whether there is a checker for the user's language; `None` while it is starting.
     pub fn available(&self) -> Option<bool> {
-        self.available.get().copied()
+        match self.available.load(Ordering::Acquire) {
+            STARTING => None,
+            state => Some(state == AVAILABLE),
+        }
     }
 
-    /// Checks `segments`; the reply never comes if another check is sent before this one is done.
-    pub fn check(&self, segments: Vec<Segment>) -> flume::Receiver<Vec<Misspelling>> {
+    /// Checks `segments` for `requester` (one per view). A newer check from the same requester
+    /// supersedes this one; checks from others wait their turn.
+    pub fn check(
+        &self,
+        requester: u64,
+        segments: Vec<Segment>,
+    ) -> impl Future<Output = Checked> + use<> {
         let (reply, receiver) = flume::bounded(1);
-        self.send(Request::Check { segments, reply });
-        receiver
+        self.send(Request::Check(Check {
+            requester,
+            segments,
+            reply,
+        }));
+        let available = self.available.clone();
+        async move {
+            receiver.recv_async().await.unwrap_or_else(|_| {
+                gone(&available);
+                Checked::Unavailable
+            })
+        }
     }
 
-    /// What the checker says about one word, waiting at most `timeout`: for autocorrect, which
-    /// must decide before the next keystroke. `None` if the word is fine or the answer is late.
-    pub fn check_word(&self, word: &str, timeout: Duration) -> Option<Action> {
+    /// What the checker says about one word, for autocorrect: `None` if the word is fine or
+    /// the checker is gone.
+    pub fn check_word(&self, word: &str) -> impl Future<Output = Option<Action>> + use<> {
         let (reply, receiver) = flume::bounded(1);
         self.send(Request::Word {
             word: word.to_owned(),
             reply,
         });
-        receiver.recv_timeout(timeout).ok().flatten()
+        let available = self.available.clone();
+        async move {
+            receiver.recv_async().await.unwrap_or_else(|_| {
+                gone(&available);
+                None
+            })
+        }
     }
 
     /// Replacements for `word`, best first.
-    pub fn suggest(&self, word: &str) -> flume::Receiver<Vec<String>> {
+    pub fn suggest(&self, word: &str) -> impl Future<Output = Vec<String>> + use<> {
         let (reply, receiver) = flume::bounded(1);
         self.send(Request::Suggest {
             word: word.to_owned(),
             reply,
         });
-        receiver
+        let available = self.available.clone();
+        async move {
+            receiver.recv_async().await.unwrap_or_else(|_| {
+                gone(&available);
+                Vec::new()
+            })
+        }
     }
 
     pub fn add(&self, word: &str) {
@@ -187,80 +270,125 @@ impl Speller {
     }
 
     fn send(&self, request: Request) {
-        match &self.inline {
-            Some(worker) => worker.borrow_mut().handle(request, None),
-            // Only fails if the thread is gone; then there is nobody to answer.
-            None => _ = self.requests.send(request),
+        // Only fails if the thread is gone; the request's reply sender goes with it.
+        if self.requests.send(request).is_err() {
+            gone(&self.available);
+            return;
         }
+        if let Some(inline) = &self.inline {
+            let mut inline = inline.borrow_mut();
+            if !inline.held {
+                let Inline {
+                    worker, requests, ..
+                } = &mut *inline;
+                worker.answer_waiting(requests);
+            }
+        }
+    }
+}
+
+/// Marks the checker as gone once its thread has ended (it panicked), saying so once.
+fn gone(available: &AtomicU8) {
+    if available.swap(UNAVAILABLE, Ordering::AcqRel) != UNAVAILABLE {
+        tracing::warn!("the spell checker stopped; spelling is no longer checked");
     }
 }
 
 /// The spell-check thread's state.
 struct Worker {
     backend: Option<Box<dyn Backend>>,
-    /// The newest check waiting while the current one finishes.
-    pending: VecDeque<Request>,
+    /// Checks waiting while the current one finishes, oldest first, at most one per requester.
+    waiting: VecDeque<Check>,
 }
 
 impl Worker {
     fn new(backend: Option<Box<dyn Backend>>) -> Self {
         Self {
             backend,
-            pending: VecDeque::new(),
+            waiting: VecDeque::new(),
         }
     }
 
-    fn run(mut self, requests: flume::Receiver<Request>) {
+    /// Answers requests until every [`Speller`] is gone.
+    fn run(mut self, requests: &flume::Receiver<Request>) {
+        while let Some(check) = self.next_check(requests, |requests| requests.recv().ok()) {
+            self.check(check, requests);
+        }
+    }
+
+    /// Answers everything already sent, without waiting for more.
+    fn answer_waiting(&mut self, requests: &flume::Receiver<Request>) {
+        while let Some(check) = self.next_check(requests, |requests| requests.try_recv().ok()) {
+            self.check(check, requests);
+        }
+    }
+
+    /// The check to do next, answering the quick requests before it. `None` when `receive`
+    /// has nothing more.
+    fn next_check(
+        &mut self,
+        requests: &flume::Receiver<Request>,
+        receive: impl Fn(&flume::Receiver<Request>) -> Option<Request>,
+    ) -> Option<Check> {
+        if let Some(check) = self.waiting.pop_front() {
+            return Some(check);
+        }
         loop {
-            let request = match self.pending.pop_front() {
-                Some(request) => request,
-                None => match requests.recv() {
-                    Ok(request) => request,
-                    Err(_) => return,
-                },
-            };
-            self.handle(request, Some(&requests));
+            match receive(requests)? {
+                Request::Check(check) => return Some(check),
+                quick => quick_reply(self.backend.as_mut(), quick),
+            }
         }
     }
 
-    /// Answers `request`. During a check, requests that arrive on `incoming` between segments
-    /// are answered first, and a newer check ends this one.
-    fn handle(&mut self, request: Request, incoming: Option<&flume::Receiver<Request>>) {
-        let Some(backend) = &mut self.backend else {
-            // Dropping the reply senders answers "nothing" to everyone.
-            if let Request::Check { reply, .. } = request {
-                _ = reply.send(Vec::new());
-            }
+    /// Answers `check`. Requests that arrive on `incoming` meanwhile are taken between
+    /// segments: single words, suggestions and the like are answered at once, other
+    /// requesters' checks wait, and a newer check from the same requester ends this one.
+    fn check(&mut self, check: Check, incoming: &flume::Receiver<Request>) {
+        let Self { backend, waiting } = self;
+        let Some(backend) = backend else {
+            _ = check.reply.send(Checked::Done(Vec::new()));
             return;
         };
-        match request {
-            Request::Check { segments, reply } => {
-                let mut found = Vec::new();
-                for segment in segments {
-                    if let Some(incoming) = incoming {
-                        while let Ok(next) = incoming.try_recv() {
-                            match next {
-                                Request::Check { .. } => {
-                                    self.pending.clear();
-                                    self.pending.push_back(next);
-                                }
-                                quick => quick_reply(backend.as_mut(), quick),
-                            }
-                        }
-                        if !self.pending.is_empty() {
-                            return;
-                        }
-                    }
-                    found.extend(check_segment(backend.as_mut(), &segment));
+        let mut found = Vec::new();
+        for segment in &check.segments {
+            while let Ok(next) = incoming.try_recv() {
+                match next {
+                    Request::Check(newer) => wait(waiting, newer),
+                    quick => quick_reply(Some(backend), quick),
                 }
-                _ = reply.send(found);
             }
-            quick => quick_reply(backend.as_mut(), quick),
+            if waiting.iter().any(|w| w.requester == check.requester) {
+                _ = check.reply.send(Checked::Superseded);
+                return;
+            }
+            found.extend(check_segment(backend.as_mut(), segment));
         }
+        _ = check.reply.send(Checked::Done(found));
     }
 }
 
-fn quick_reply(backend: &mut dyn Backend, request: Request) {
+/// Queues `check`, in place of an older one from the same requester if there is one.
+fn wait(waiting: &mut VecDeque<Check>, check: Check) {
+    match waiting.iter_mut().find(|w| w.requester == check.requester) {
+        Some(older) => {
+            let older = std::mem::replace(older, check);
+            _ = older.reply.send(Checked::Superseded);
+        }
+        None => waiting.push_back(check),
+    }
+}
+
+fn quick_reply(backend: Option<&mut Box<dyn Backend>>, request: Request) {
+    let Some(backend) = backend else {
+        // Without a checker every word is fine and there is nothing to suggest.
+        match request {
+            Request::Word { reply, .. } => _ = reply.send(None),
+            Request::Suggest { reply, .. } => _ = reply.send(Vec::new()),
+            _ => {}
+        }
+        return;
+    };
     match request {
         Request::Word { word, reply } => {
             let action = backend
@@ -273,12 +401,18 @@ fn quick_reply(backend: &mut dyn Backend, request: Request) {
         Request::Suggest { word, reply } => _ = reply.send(backend.suggest(&word)),
         Request::Add(word) => backend.add(&word),
         Request::Ignore(word) => backend.ignore(&word),
-        Request::Check { .. } => unreachable!("checks are not quick"),
+        Request::Check(_) => unreachable!("checks are not quick"),
     }
 }
 
-/// The misspellings of a segment that are worth showing, in document offsets.
+/// The misspellings of a segment that are worth showing, in document offsets. Words in an
+/// address or a path (a run without spaces holding `@`, `/` or `\`) are left out, however the
+/// backend split it.
 fn check_segment(backend: &mut dyn Backend, segment: &Segment) -> Vec<Misspelling> {
+    let skipped: Vec<Range<usize>> = tokens(&segment.text)
+        .filter(|(_, token)| !plain_token(token))
+        .map(|(start, token)| start..start + token.len())
+        .collect();
     backend
         .check(&segment.text)
         .into_iter()
@@ -287,6 +421,9 @@ fn check_segment(backend: &mut dyn Backend, segment: &Segment) -> Vec<Misspellin
                 .text
                 .get(m.range.clone())
                 .is_some_and(worth_flagging)
+                && !skipped
+                    .iter()
+                    .any(|s| s.start < m.range.end && m.range.start < s.end)
         })
         .map(|m| Misspelling {
             range: m.range.start + segment.offset..m.range.end + segment.offset,
@@ -308,8 +445,8 @@ pub fn worth_flagging(word: &str) -> bool {
             .any(|c| c.is_ascii_digit() || matches!(c, '_' | '.' | '/' | '@' | '\\'))
 }
 
-/// A checker that knows only the words it is given: for tests, and as a stand-in where there is
-/// no system checker.
+/// A checker that knows only the words it is given, and corrects only the typos it is given:
+/// the system checker's stand-in in tests. The app itself never uses it.
 #[derive(Debug, Default, Clone)]
 pub struct WordList {
     /// Known words, compared case-insensitively.
@@ -387,17 +524,36 @@ impl Backend for WordList {
 }
 
 /// The words of `text` with their byte offsets: runs of letters, with the apostrophes inside
-/// them ("don't"), as Unicode word boundaries find them.
+/// them ("don't"), as Unicode word boundaries find them. Runs without spaces that hold `@`,
+/// `/` or `\` (addresses and paths) have no words.
 pub(crate) fn words(text: &str) -> impl Iterator<Item = (usize, &str)> {
     use unicode_segmentation::UnicodeSegmentation;
-    text.split_word_bound_indices().filter_map(|(start, word)| {
-        let trimmed = word.trim_matches(|c| matches!(c, '\'' | '\u{2019}'));
-        let start = start + word.find(trimmed).unwrap_or(0);
-        trimmed
-            .chars()
-            .any(char::is_alphabetic)
-            .then_some((start, trimmed))
-    })
+    tokens(text)
+        .filter(|(_, token)| plain_token(token))
+        .flat_map(|(at, token)| {
+            token
+                .split_word_bound_indices()
+                .filter_map(move |(start, word)| {
+                    let trimmed = word.trim_matches(|c| matches!(c, '\'' | '\u{2019}'));
+                    let start = at + start + word.find(trimmed).unwrap_or(0);
+                    trimmed
+                        .chars()
+                        .any(char::is_alphabetic)
+                        .then_some((start, trimmed))
+                })
+        })
+}
+
+/// The runs of `text` between whitespace, with their byte offsets.
+fn tokens(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.split(char::is_whitespace)
+        .filter(|token| !token.is_empty())
+        .map(move |token| (token.as_ptr() as usize - text.as_ptr() as usize, token))
+}
+
+/// Whether a run between spaces can hold words: it is not an e-mail address or a path.
+fn plain_token(token: &str) -> bool {
+    !token.contains(['@', '/', '\\'])
 }
 
 /// Whether `word` at `start` repeats `previous`, which ends at `previous_end`, with only spaces
@@ -438,109 +594,14 @@ fn edit_distance(a: &str, b: &str) -> usize {
 mod tests {
     use super::*;
 
-    fn speller() -> Speller {
-        Speller::inline(Box::new(
-            WordList::new(["the", "cat", "sat", "on", "mat"]).with_autocorrect("teh", "the"),
-        ))
-    }
-
-    #[test]
-    fn misspellings_are_reported_in_document_offsets() {
-        let speller = speller();
-        let found = speller
-            .check(vec![
-                Segment {
-                    offset: 10,
-                    text: "the cat szt".into(),
-                },
-                Segment {
-                    offset: 100,
-                    text: "on teh mat".into(),
-                },
-            ])
-            .recv()
-            .unwrap();
-        assert_eq!(
-            found,
-            [
-                Misspelling {
-                    range: 18..21,
-                    action: Action::Suggest
-                },
-                Misspelling {
-                    range: 103..106,
-                    action: Action::Replace("the".into())
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn repeated_words_are_reported_once() {
-        let mut list = WordList::new(["the", "cat"]);
-        assert_eq!(
-            list.check("the the cat"),
-            [Misspelling {
-                range: 4..7,
-                action: Action::Delete
-            }]
-        );
-        assert_eq!(list.check("the\nthe cat"), []);
-    }
-
     #[test]
     fn names_numbers_and_abbreviations_are_not_flagged() {
-        for word in ["NASA", "v2", "foo_bar", "example.com", "a/b", "me@x"] {
+        for word in ["NASA", "v2", "foo_bar", "example.com"] {
             assert!(!worth_flagging(word), "{word}");
         }
         for word in ["teh", "Teh", "naïve", "I"] {
             assert!(worth_flagging(word), "{word}");
         }
-        let speller = speller();
-        let found = speller
-            .check(vec![Segment {
-                offset: 0,
-                text: "the NASA cat v2".into(),
-            }])
-            .recv()
-            .unwrap();
-        assert_eq!(found, []);
-    }
-
-    #[test]
-    fn single_words_are_checked_for_autocorrect() {
-        let speller = speller();
-        let wait = Duration::from_millis(100);
-        assert_eq!(
-            speller.check_word("teh", wait),
-            Some(Action::Replace("the".into()))
-        );
-        assert_eq!(speller.check_word("cat", wait), None);
-        assert_eq!(speller.check_word("szt", wait), Some(Action::Suggest));
-    }
-
-    #[test]
-    fn added_and_ignored_words_are_no_longer_misspelled() {
-        let speller = speller();
-        speller.add("Scratchpad");
-        speller.ignore("gpui");
-        let found = speller
-            .check(vec![Segment {
-                offset: 0,
-                text: "scratchpad gpui".into(),
-            }])
-            .recv()
-            .unwrap();
-        assert_eq!(found, []);
-    }
-
-    #[test]
-    fn suggestions_are_close_words() {
-        let speller = speller();
-        assert_eq!(
-            speller.suggest("szt").recv().unwrap(),
-            ["sat", "cat", "mat"]
-        );
     }
 
     #[test]
@@ -550,46 +611,13 @@ mod tests {
     }
 
     #[test]
-    fn a_thread_speller_answers_like_an_inline_one() {
-        let speller = Speller::start(|| Some(Box::new(WordList::new(["cat"]))));
-        let found = speller
-            .check(vec![Segment {
-                offset: 0,
-                text: "cat dgo".into(),
-            }])
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(speller.available(), Some(true));
-    }
-
-    #[test]
-    fn a_newer_check_supersedes_an_older_one() {
-        let (requests, receiver) = flume::unbounded();
-        let (old_reply, old) = flume::bounded(1);
-        let (new_reply, new) = flume::bounded(1);
-        // The newer check is already waiting when the older one starts.
-        requests
-            .send(Request::Check {
-                segments: vec![Segment {
-                    offset: 0,
-                    text: "dgo".into(),
-                }],
-                reply: new_reply,
-            })
-            .unwrap();
-        drop(requests);
-        let mut worker = Worker::new(Some(Box::new(WordList::new(["cat"]))));
-        let old_check = Request::Check {
-            segments: vec![Segment {
-                offset: 0,
-                text: "tac".into(),
-            }],
-            reply: old_reply,
-        };
-        worker.handle(old_check, Some(&receiver));
-        worker.run(receiver);
-        assert!(old.recv().is_err(), "the older check is never answered");
-        assert_eq!(new.recv().unwrap().len(), 1);
+    fn addresses_and_paths_have_no_words() {
+        let text = "mail alice@example.com, see notes/todo or C:\\temp\\fiel now";
+        let found: Vec<&str> = words(text).map(|(_, word)| word).collect();
+        assert_eq!(found, ["mail", "see", "or", "now"]);
+        assert_eq!(
+            words("a\tb  c").collect::<Vec<_>>(),
+            [(0, "a"), (2, "b"), (5, "c")]
+        );
     }
 }

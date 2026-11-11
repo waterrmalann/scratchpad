@@ -13,7 +13,11 @@ unicode-segmentation.workspace = true
 # The Windows Spell Checking API (Windows 8 and later). GPUI depends on the same version of
 # `windows`, so these features add bindings, not crates.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Globalization", "Win32_System_Com"] }
+windows = { version = "0.61", features = [
+    "System_UserProfile",
+    "Win32_Globalization",
+    "Win32_System_Com",
+] }
 
 # Hunspell dictionaries, read in pure Rust: no C library to build or ship (ADR 0170).
 [target.'cfg(not(windows))'.dependencies]

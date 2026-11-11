@@ -87,6 +87,20 @@ visible lines are shaped and an edit re-shapes only the lines whose style change
 These numbers predate this pass, which removed the 17 ms UI-thread copies that non-stop typing caused
 every 500 ms (recovery snapshots) and every 2 s (saves); they were not re-measured with the driver.
 
+## Spell checking (ADR 0170)
+
+The checker runs on its own thread; what the UI thread does for it (release build, timed in a loop,
+2026-11-11):
+
+| Work on the UI thread | When | Time |
+| --- | --- | --- |
+| Pick the prose of 250 lines of Markdown (`prose_segments`) | a check: 300 ms after typing stops, or on scrolling to lines not checked | ~0.45 ms |
+| The same for one 5 MB line, read up to the 256 KB limit | as above | ~2.3 ms |
+| Autocorrect: find the word just ended and whether it is prose | a typed space or `.,;:!?` | ~2-3 µs + one channel send |
+
+Autocorrect no longer waits for the checker: the correction is applied when its answer arrives
+(normally within the same frame), only if the note is unchanged.
+
 ## Binary
 
 `target/release/scratchpad.exe` is 7.8 MB (icon and version resource ~12 KB); the MSI is ~2.5 MB.

@@ -6,6 +6,7 @@
 //! apartment once and for good.
 #![allow(unsafe_code)]
 
+use windows::System::UserProfile::GlobalizationPreferences;
 use windows::Win32::Globalization::{
     CORRECTIVE_ACTION_DELETE, CORRECTIVE_ACTION_GET_SUGGESTIONS, CORRECTIVE_ACTION_REPLACE,
     GetUserDefaultLocaleName, ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory,
@@ -17,7 +18,7 @@ use windows::core::{HSTRING, PCWSTR, PWSTR};
 
 use crate::{Action, Backend, Misspelling};
 
-/// Used when the user's own language has no dictionary installed.
+/// Used when none of the user's languages has a dictionary installed.
 const FALLBACK_LANGUAGE: &str = "en-US";
 /// Suggestions offered for a word; Windows lists about this many itself.
 const MAX_SUGGESTIONS: usize = 6;
@@ -42,9 +43,10 @@ impl WindowsChecker {
                     return None;
                 }
             };
-        let language = [user_language(), Some(FALLBACK_LANGUAGE.to_owned())]
+        let language = user_languages()
             .into_iter()
-            .flatten()
+            .chain(user_locale())
+            .chain([FALLBACK_LANGUAGE.to_owned()])
             .find(|language| {
                 let tag = HSTRING::from(language.as_str());
                 unsafe { factory.IsSupported(PCWSTR(tag.as_ptr())) }
@@ -135,8 +137,19 @@ impl Backend for WindowsChecker {
     }
 }
 
-/// The user's locale as a BCP 47 tag, e.g. `en-GB`.
-fn user_language() -> Option<String> {
+/// The user's languages, most preferred first, as BCP 47 tags (`en-IN`): the list in Settings >
+/// Time & language > Language & region, which Windows' own apps check spelling in. It is not
+/// the display language (`GetUserPreferredUILanguages`), which is often only US English.
+fn user_languages() -> Vec<String> {
+    GlobalizationPreferences::Languages()
+        .map(|languages| languages.into_iter().map(|tag| tag.to_string()).collect())
+        .inspect_err(|error| tracing::warn!(%error, "could not read the user's languages"))
+        .unwrap_or_default()
+}
+
+/// The locale of the user's regional format, e.g. `en-GB`: a guess at their language when
+/// none of their languages has a checker.
+fn user_locale() -> Option<String> {
     // LOCALE_NAME_MAX_LENGTH
     let mut name = [0u16; 85];
     let length = unsafe { GetUserDefaultLocaleName(&mut name) };
@@ -187,13 +200,15 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].range, 5..13);
         assert!(checker.suggest("sentance").iter().any(|s| s == "sentence"));
-        // The autocorrect list and repeated words, as the app's word list for tests has them.
-        assert_eq!(
-            checker.check("recieve"),
-            [Misspelling {
-                range: 0..7,
-                action: Action::Replace("receive".into())
-            }]
+        // The autocorrect list, where the language has one (US English, for one, has none),
+        // and repeated words, as the app's word list for tests has them.
+        let found = checker.check("recieve");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].range, 0..7);
+        assert!(
+            matches!(&found[0].action, Action::Suggest)
+                || found[0].action == Action::Replace("receive".into()),
+            "{found:?}"
         );
         assert_eq!(
             checker.check("the the cat"),

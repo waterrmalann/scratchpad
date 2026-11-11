@@ -19,6 +19,7 @@ const MAX_SUGGESTIONS: usize = 6;
 
 pub struct HunspellChecker {
     dictionary: Dictionary,
+    /// In lower case: ignoring is case-insensitive, as in Windows' checker.
     ignored: HashSet<String>,
     /// Where added words are kept; `None` keeps them for this run only.
     personal: Option<PathBuf>,
@@ -70,7 +71,7 @@ impl HunspellChecker {
     fn knows(&self, word: &str) -> bool {
         // Dictionaries spell "it's" with a straight apostrophe; typography often curls it.
         let word = word.replace('\u{2019}', "'");
-        self.ignored.contains(&word) || self.dictionary.check(&word)
+        self.ignored.contains(&word.to_lowercase()) || self.dictionary.check(&word)
     }
 }
 
@@ -122,7 +123,8 @@ impl Backend for HunspellChecker {
     }
 
     fn ignore(&mut self, word: &str) {
-        self.ignored.insert(word.replace('\u{2019}', "'"));
+        self.ignored
+            .insert(word.replace('\u{2019}', "'").to_lowercase());
     }
 }
 
@@ -213,9 +215,12 @@ mod tests {
         );
         assert!(checker.suggest("teh").iter().any(|s| s == "the"));
 
+        // Addresses and paths are not split into words.
+        assert_eq!(checker.check("the qx@cat.com qx/cat C:\\qx"), []);
+
         checker.add("teh");
-        checker.ignore("zzz");
-        assert_eq!(checker.check("teh zzz"), []);
+        checker.ignore("Zzz");
+        assert_eq!(checker.check("zzz teh Zzz"), []);
         // Added words are there again next time; ignored ones are not.
         let mut again = self::checker(&dir);
         assert_eq!(again.check("teh zzz").len(), 1);

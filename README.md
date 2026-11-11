@@ -43,7 +43,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 
 - **Find and replace** — In the open note, with match case, replace all and go to line.
 - **Zoom and wrap** — Text size from 50 % to 400 % (`Ctrl+=`, `Ctrl+-`, `Ctrl`+wheel), word wrap on or off (with a horizontal scrollbar when it is off), a Notepad-style status bar with line, column, character count, zoom, line ending and encoding.
-- **Spelling** — Misspelled words are underlined by Windows' own spell checker, with its suggestions, your dictionary and its autocorrect list ("teh" becomes "the" as you type; `Ctrl+Z` undoes it). Code and links are left alone. Both can be turned off in the View menu.
+- **Spelling** — Misspelled words are underlined by Windows' own spell checker, with its suggestions, your dictionary and its autocorrect list ("teh" becomes "the" as you type; `Ctrl+Z` undoes it). It checks in the first of your Windows languages that has a dictionary. Code, links, web and e-mail addresses, paths and front matter are left alone. Both can be turned off in the View menu.
 - **Themes and narrow windows** — System, Light or Dark. The note list collapses (`Ctrl+\`) and floats over the note in a narrow window.
 
 <p>

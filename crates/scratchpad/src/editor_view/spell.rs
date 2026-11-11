@@ -2,19 +2,20 @@
 //! to date with the text, the menu of corrections on right-click, and autocorrect as the user
 //! types.
 //!
-//! Only prose is checked: code blocks, inline code, link addresses and other Markdown markers,
-//! and web addresses are left out. Plain text files (logs, settings files) are not checked.
+//! Only prose is checked: front matter, code blocks, inline code, link addresses and other
+//! Markdown markers, and web addresses are left out. Plain text files (logs, settings files)
+//! are not checked.
 
 use std::ops::Range;
 use std::time::Duration;
 
 use gpui::{
-    ClickEvent, Context, FocusHandle, KeyDownEvent, MouseDownEvent, Pixels, Point, Subscription,
-    Task, Window, anchored, deferred, div, prelude::*, px,
+    AnyWindowHandle, ClickEvent, Context, FocusHandle, KeyDownEvent, MouseDownEvent, Pixels, Point,
+    Subscription, Task, Window, anchored, deferred, div, prelude::*, px,
 };
 use scratchpad_editor::markdown::{DecorationKind, MarkdownState};
 use scratchpad_editor::{Bias, Buffer, ByteOffset, TextChange};
-use scratchpad_spell::{Action, Segment};
+use scratchpad_spell::{Action, Checked, Segment};
 
 use super::EditorView;
 use crate::spelling;
@@ -25,11 +26,16 @@ use crate::theme::ActiveTheme;
 const CHECK_DEBOUNCE: Duration = Duration::from_millis(300);
 /// Lines checked above and below the ones on screen, so short scrolls show underlines at once.
 const MARGIN_LINES: usize = 100;
-/// At most this much text is checked at a time, around the screen of a note with long lines.
+/// At most this much text is checked at a time, around the screen of a note with long lines,
+/// even when a single line on screen is longer.
 const MAX_CHECK_BYTES: usize = 256 * 1024;
-/// How long a typed space waits for the checker's verdict on the word before it. The checker
-/// answers single words in well under a millisecond; a late answer only skips the correction.
-const AUTOCORRECT_WAIT: Duration = Duration::from_millis(40);
+/// Runs of prose longer than this go to the checker in pieces, cut at a space at least
+/// [`MIN_SEGMENT_BYTES`] in, so that one call never keeps the checker (and another window's
+/// check, or a word for autocorrect) waiting long.
+const MAX_SEGMENT_BYTES: usize = 16 * 1024;
+const MIN_SEGMENT_BYTES: usize = 4 * 1024;
+/// Front matter is looked for this far down the note at most.
+const MAX_FRONT_MATTER_LINES: usize = 1000;
 
 /// A misspelled or repeated word in the note.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +56,8 @@ pub(super) struct Spell {
     checked: Range<usize>,
     /// The pending check; replacing it cancels the previous one.
     task: Option<Task<()>>,
+    /// Waits for the checker's verdict on the word just ended, to correct it.
+    autocorrect_task: Option<Task<()>>,
     /// The cursor after the last typed character. The word there is still being typed and is
     /// not underlined while the cursor stays there.
     pub(super) typed_at: Option<ByteOffset>,
@@ -65,6 +73,7 @@ impl Default for Spell {
             version: 0,
             checked: 0..0,
             task: None,
+            autocorrect_task: None,
             typed_at: None,
             menu: None,
         }
@@ -80,6 +89,8 @@ pub(super) struct SpellMenu {
     /// `None` until the checker has answered.
     suggestions: Option<Vec<String>>,
     position: Point<Pixels>,
+    /// The menu's window and focus, to give the focus back to the note when it closes.
+    window: AnyWindowHandle,
     focus: FocusHandle,
     _blur: Subscription,
     _suggest: Option<Task<()>>,
@@ -107,7 +118,7 @@ impl EditorView {
         self.spell.found.clear();
         self.spell.checked = 0..0;
         self.spell.task = None;
-        self.spell.menu = None;
+        self.close_spelling_menu(cx);
         if enabled {
             self.schedule_spell_check(false, cx);
         }
@@ -131,9 +142,7 @@ impl EditorView {
     #[doc(hidden)]
     pub fn misspelled_words(&self) -> Vec<String> {
         let buffer = self.editor.buffer();
-        self.spell
-            .found
-            .iter()
+        self.visible_misspellings()
             .map(|found| buffer.text_for_range(found.range.clone()).into_owned())
             .collect()
     }
@@ -169,20 +178,20 @@ impl EditorView {
         }
     }
 
-    /// Spell checking applies: on, in Markdown, with a checker.
+    /// Spell checking applies: on, in Markdown, with a checker (or one starting).
     fn spell_active(&self, cx: &Context<Self>) -> bool {
-        self.spell.enabled && !self.plain && spelling::speller(cx).is_some()
+        self.spell.enabled && !self.plain && spelling::is_available(cx)
     }
 
     /// Called after every change to the text: moves the misspellings along with it and checks
     /// again once typing pauses. A `new_document` has nothing in common with the old ones.
     pub(super) fn spell_text_changed(&mut self, new_document: bool, cx: &mut Context<Self>) {
+        // Its word may have changed or moved.
+        self.close_spelling_menu(cx);
         let spell = &mut self.spell;
         if new_document {
             spell.typed_at = None;
         }
-        // Its word may have changed or moved.
-        spell.menu = None;
         let buffer = self.editor.buffer();
         match buffer
             .changes_since(spell.version)
@@ -222,6 +231,7 @@ impl EditorView {
             }
             return;
         }
+        let requester = cx.entity_id().as_u64();
         self.spell.task = Some(cx.spawn(async move |this, cx| {
             if debounce {
                 cx.background_executor().timer(CHECK_DEBOUNCE).await;
@@ -231,20 +241,26 @@ impl EditorView {
                 let buffer = this.editor.buffer();
                 let lines = lines_to_check(buffer, this.visible_lines.clone());
                 let segments = prose_segments(buffer, &mut this.markdown, lines.clone());
-                Some((speller.check(segments), buffer.version(), lines))
+                Some((speller.check(requester, segments), buffer.version(), lines))
             });
             let Ok(Some((reply, version, lines))) = request else {
                 return;
             };
-            // No reply: a newer check of another window's note took its place (this view's
-            // own newer checks drop this task). Try again once that one is done.
-            let Ok(found) = reply.recv_async().await else {
-                this.update(cx, |this, cx| this.schedule_spell_check(true, cx))
-                    .ok();
-                return;
-            };
+            let checked = reply.await;
             this.update(cx, |this, cx| {
                 this.spell.task = None;
+                let found = match checked {
+                    Checked::Done(found) => found,
+                    // A newer check of this view's took its place, in a task of its own.
+                    Checked::Superseded => return,
+                    // The checker stopped: there is nothing to check with any more.
+                    Checked::Unavailable => {
+                        this.spell.found.clear();
+                        this.spell.checked = 0..0;
+                        cx.notify();
+                        return;
+                    }
+                };
                 // An edit since then has scheduled another check.
                 if this.editor.buffer().version() != version || !this.spell_active(cx) {
                     return;
@@ -279,11 +295,13 @@ impl EditorView {
     // --- Autocorrect ---
 
     /// After a keystroke inserted `text`: remembers where typing is, and if it ended a word with
-    /// a space or punctuation, corrects that word when the checker is sure of the correction.
-    /// The correction is its own undo step, so Ctrl+Z brings back what was typed.
+    /// a space or punctuation, asks the checker about that word. Typing goes on meanwhile; the
+    /// word is corrected when the answer comes, if the checker is sure of the correction and
+    /// nothing changed since.
     pub(super) fn after_typing(&mut self, text: &str, cx: &mut Context<Self>) {
         let head = self.editor.selection().head;
         self.spell.typed_at = Some(head);
+        self.spell.autocorrect_task = None;
         let mut chars = text.chars();
         let (Some(typed), None) = (chars.next(), chars.next()) else {
             return;
@@ -292,33 +310,62 @@ impl EditorView {
         if !ends_word || !self.spell.autocorrect || !self.spell_active(cx) {
             return;
         }
-        let Some(speller) = spelling::speller(cx) else {
+        // Not while the checker is starting: the answer would come too late to be of use.
+        let Some(speller) = spelling::speller(cx).filter(|s| s.available() == Some(true)) else {
             return;
         };
         let Some((range, word)) = self.word_before(head, typed) else {
             return;
         };
-        let Some(Action::Replace(correction)) = speller.check_word(&word, AUTOCORRECT_WAIT) else {
-            return;
-        };
-        if correction == word || correction.is_empty() {
+        let version = self.editor.buffer().version();
+        let verdict = speller.check_word(&word);
+        self.spell.autocorrect_task = Some(cx.spawn(async move |this, cx| {
+            let Some(Action::Replace(correction)) = verdict.await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.autocorrect_word(range, &word, &correction, version, cx)
+            })
+            .ok();
+        }));
+    }
+
+    /// Replaces `word` at `range` with `correction` if the text is still as it was at
+    /// `version`, as its own undo step, so Ctrl+Z brings back what was typed.
+    fn autocorrect_word(
+        &mut self,
+        range: Range<ByteOffset>,
+        word: &str,
+        correction: &str,
+        version: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.spell.autocorrect_task = None;
+        let buffer = self.editor.buffer();
+        let unchanged = buffer.version() == version && buffer.text_for_range(range.clone()) == word;
+        if !unchanged || !self.spell.autocorrect || correction == word || correction.is_empty() {
             return;
         }
-        let shift = correction.len() as isize - word.len() as isize;
+        // The cursor (and where typing is) stay after the word, or before it.
+        let moved = |offset: ByteOffset| {
+            if offset >= range.end {
+                ByteOffset(offset.0 - range.end.0 + range.start.0 + correction.len())
+            } else {
+                offset.min(range.start)
+            }
+        };
         let selection = self.editor.selection();
         self.edit(cx, |editor| {
             editor.break_undo_group();
             editor.transact(|editor| {
-                editor.replace_range(range, &correction);
-                let shifted =
-                    |offset: ByteOffset| ByteOffset(offset.0.saturating_add_signed(shift));
+                editor.replace_range(range.clone(), correction);
                 editor.set_selection(scratchpad_editor::Selection::new(
-                    shifted(selection.anchor),
-                    shifted(selection.head),
+                    moved(selection.anchor),
+                    moved(selection.head),
                 ));
             });
         });
-        self.spell.typed_at = Some(self.editor.selection().head);
+        self.spell.typed_at = self.spell.typed_at.map(moved);
     }
 
     /// The prose word that ends right before `typed`, which was just typed before `head`.
@@ -381,7 +428,7 @@ impl EditorView {
             Action::Suggest => {
                 let reply = speller.suggest(&word);
                 let task = cx.spawn(async move |this, cx| {
-                    let suggestions = reply.recv_async().await.unwrap_or_default();
+                    let suggestions = reply.await;
                     this.update(cx, |this, cx| {
                         if let Some(menu) = &mut this.spell.menu {
                             menu.suggestions = Some(suggestions);
@@ -403,9 +450,8 @@ impl EditorView {
             version: self.editor.buffer().version(),
             suggestions,
             position: event.position,
-            _blur: cx.on_blur(&focus, window, |this, window, cx| {
-                this.close_spelling_menu(window, cx)
-            }),
+            window: window.window_handle(),
+            _blur: cx.on_blur(&focus, window, |this, _, cx| this.close_spelling_menu(cx)),
             focus,
             _suggest: task,
         });
@@ -413,13 +459,24 @@ impl EditorView {
         true
     }
 
-    fn close_spelling_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(menu) = self.spell.menu.take() {
-            if menu.focus.is_focused(window) {
-                window.focus(&self.focus_handle);
-            }
-            cx.notify();
-        }
+    /// Closes the spelling menu. If it had the focus, the note gets it back once the current
+    /// update is done, so this works where the window is not at hand (an edit, a setting).
+    fn close_spelling_menu(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.spell.menu.take() else {
+            return;
+        };
+        let (window, focus, note) = (menu.window, menu.focus.clone(), self.focus_handle.clone());
+        drop(menu);
+        cx.defer(move |cx| {
+            window
+                .update(cx, |_, window, _| {
+                    if focus.is_focused(window) {
+                        window.focus(&note);
+                    }
+                })
+                .ok();
+        });
+        cx.notify();
     }
 
     fn choose_spelling(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
@@ -489,12 +546,12 @@ impl EditorView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .shadow_lg()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                this.close_spelling_menu(window, cx)
-            }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_spelling_menu(cx)),
+            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
-                    this.close_spelling_menu(window, cx);
+                    this.close_spelling_menu(cx);
                     cx.stop_propagation();
                 }
             }))
@@ -587,18 +644,22 @@ fn lines_to_check(buffer: &Buffer, visible: Range<usize>) -> Range<usize> {
     lines
 }
 
-/// The prose of `lines`: their text without code, Markdown markers, link addresses and web
-/// addresses, as one segment per run.
+/// The prose of `lines`: their text without front matter, code, Markdown markers, link
+/// addresses and web addresses, as one segment per run (or per piece of a long run). At most
+/// [`MAX_CHECK_BYTES`] of text is read, from the start of `lines`.
 fn prose_segments(
     buffer: &Buffer,
     markdown: &mut MarkdownState,
     lines: Range<usize>,
 ) -> Vec<Segment> {
+    let lines = front_matter(buffer).map_or(lines.clone(), |end| lines.start.max(end)..lines.end);
     if lines.is_empty() {
         return Vec::new();
     }
     let start = buffer.line_start(lines.start);
-    let end = buffer.line_end(lines.end - 1);
+    let end = buffer
+        .line_end(lines.end - 1)
+        .min(buffer.clip_offset(ByteOffset(start.0 + MAX_CHECK_BYTES), Bias::Left));
     let mut excluded: Vec<Range<usize>> = Vec::new();
     for decoration in markdown.decorations(buffer, start..end) {
         let range = decoration.range.start.0..decoration.range.end.0;
@@ -618,10 +679,19 @@ fn prose_segments(
     }
     excluded.sort_by_key(|range| range.start);
     let mut segments = Vec::new();
-    let mut bytes = 0;
     for line in lines {
         let line_start = buffer.line_start(line).0;
-        let text = buffer.line_text(line);
+        let line_end = buffer.line_end(line).0;
+        if line_start > end.0 {
+            break;
+        }
+        let text = buffer.text_for_range(ByteOffset(line_start)..ByteOffset(line_end.min(end.0)));
+        // A line cut short ends at its last space, not inside a word.
+        let text = if line_end > end.0 {
+            &text[..text.rfind(char::is_whitespace).unwrap_or(0)]
+        } else {
+            &text[..]
+        };
         let mut cuts: Vec<Range<usize>> = excluded
             .iter()
             .filter(|range| range.start < line_start + text.len() && range.end > line_start)
@@ -630,7 +700,7 @@ fn prose_segments(
                     ..range.end.min(line_start + text.len()) - line_start
             })
             .collect();
-        cuts.extend(web_addresses(&text));
+        cuts.extend(web_addresses(text));
         cuts.sort_by_key(|range| range.start);
         let mut from = 0;
         for cut in cuts
@@ -638,22 +708,59 @@ fn prose_segments(
             .chain(std::iter::once(text.len()..text.len()))
         {
             if cut.start > from {
-                let piece = &text[from..cut.start];
-                if piece.chars().any(char::is_alphabetic) {
-                    bytes += piece.len();
-                    segments.push(Segment {
-                        offset: line_start + from,
-                        text: piece.to_owned(),
-                    });
+                for piece in pieces(&text[from..cut.start]) {
+                    let piece_text = &text[from + piece.start..from + piece.end];
+                    if piece_text.chars().any(char::is_alphabetic) {
+                        segments.push(Segment {
+                            offset: line_start + from + piece.start,
+                            text: piece_text.to_owned(),
+                        });
+                    }
                 }
             }
             from = from.max(cut.end);
         }
-        if bytes > MAX_CHECK_BYTES {
-            break;
-        }
     }
     segments
+}
+
+/// Where the note's front matter ends, if it has some: the line after a `---` or `...` line
+/// that closes a `---` on the first line.
+fn front_matter(buffer: &Buffer) -> Option<usize> {
+    // Read only short lines: a long one is no fence, and need not be copied to find out.
+    let fence = |line: usize, fences: &[&str]| {
+        let (start, end) = (buffer.line_start(line), buffer.line_end(line));
+        end.0 - start.0 <= 8 && fences.contains(&buffer.text_for_range(start..end).trim_end())
+    };
+    if !fence(0, &["---"]) {
+        return None;
+    }
+    (1..buffer.line_count().min(MAX_FRONT_MATTER_LINES))
+        .find(|&line| fence(line, &["---", "..."]))
+        .map(|line| line + 1)
+}
+
+/// `text` in pieces of at most [`MAX_SEGMENT_BYTES`], each ending before a space where there is
+/// one far enough in: byte ranges, together all of `text`.
+fn pieces(text: &str) -> Vec<Range<usize>> {
+    let mut pieces = Vec::new();
+    let mut from = 0;
+    while text.len() - from > MAX_SEGMENT_BYTES {
+        let mut to = from + MAX_SEGMENT_BYTES;
+        while !text.is_char_boundary(to) {
+            to -= 1;
+        }
+        if let Some(space) = text[from..to]
+            .rfind(char::is_whitespace)
+            .filter(|&space| space >= MIN_SEGMENT_BYTES)
+        {
+            to = from + space;
+        }
+        pieces.push(from..to);
+        from = to;
+    }
+    pieces.push(from..text.len());
+    pieces
 }
 
 /// Bare web addresses in a line (`https://...`, `www....`): whitespace-separated runs that look
@@ -759,6 +866,28 @@ mod tests {
         let change = editor.buffer().changes_since(0).unwrap().next().unwrap();
         adjust(&mut list, change);
         assert_eq!(list, [found(0, 2), found(10, 12)]);
+    }
+
+    #[test]
+    fn long_runs_are_cut_at_spaces() {
+        let text = "word ".repeat(10_000);
+        let found = pieces(&text);
+        assert!(found.len() > 1);
+        assert_eq!(found.first().unwrap().start, 0);
+        assert_eq!(found.last().unwrap().end, text.len());
+        for (piece, next) in found.iter().zip(&found[1..]) {
+            assert_eq!(piece.end, next.start);
+            assert!(piece.len() <= MAX_SEGMENT_BYTES, "{piece:?}");
+            assert_eq!(&text[next.start..next.start + 1], " ", "{next:?}");
+        }
+        // Without spaces, at a character boundary.
+        let text = "é".repeat(10_000);
+        assert!(
+            pieces(&text)
+                .iter()
+                .all(|piece| text.is_char_boundary(piece.end))
+        );
+        assert_eq!(pieces("short"), [Range { start: 0, end: 5 }]);
     }
 
     #[test]
