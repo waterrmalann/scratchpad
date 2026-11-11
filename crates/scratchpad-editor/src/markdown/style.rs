@@ -159,6 +159,29 @@ impl MarkdownState {
         lines: Range<usize>,
         selection: Option<Selection>,
     ) -> Vec<StyledLine> {
+        self.styled_lines_inner(buffer, lines, selection, None)
+    }
+
+    /// [`MarkdownState::styled_lines`], with [`SpanStyle::missing_page`] set on the wikilinks whose page (the
+    /// target without any `#heading`, as [`wikilink_page`](super::wikilink_page) gives it) `page_exists` says
+    /// does not exist. It is asked once per wikilink on each line the link is on, and about nothing else.
+    pub fn styled_lines_with_pages(
+        &mut self,
+        buffer: &Buffer,
+        lines: Range<usize>,
+        selection: Option<Selection>,
+        page_exists: impl Fn(&str) -> bool,
+    ) -> Vec<StyledLine> {
+        self.styled_lines_inner(buffer, lines, selection, Some(&page_exists))
+    }
+
+    fn styled_lines_inner(
+        &mut self,
+        buffer: &Buffer,
+        lines: Range<usize>,
+        selection: Option<Selection>,
+        page_exists: Option<&dyn Fn(&str) -> bool>,
+    ) -> Vec<StyledLine> {
         let lines = lines.start..lines.end.min(buffer.line_count());
         if lines.is_empty() {
             return Vec::new();
@@ -167,49 +190,16 @@ impl MarkdownState {
         let decorations = self.decorations(buffer, range);
         let selection = selection.map(|s| s.range());
         lines
-            .map(|line| style_line(buffer, &decorations, line, selection.clone()))
+            .map(|line| style_line(buffer, &decorations, line, selection.clone(), page_exists))
             .collect()
     }
+}
 
-    /// [`MarkdownState::styled_lines`], with [`SpanStyle::missing_page`] set on the wikilinks whose target
-    /// `page_exists` says has no page. It is asked only about the wikilinks on lines that have links.
-    pub fn styled_lines_with_pages(
-        &mut self,
-        buffer: &Buffer,
-        lines: Range<usize>,
-        selection: Option<Selection>,
-        page_exists: impl Fn(&str) -> bool,
-    ) -> Vec<StyledLine> {
-        let mut styled = self.styled_lines(buffer, lines.clone(), selection);
-        if !styled
-            .iter()
-            .any(|line| line.spans.iter().any(|span| span.style.link))
-        {
-            return styled;
-        }
-        let first = lines.start;
-        let range = buffer.line_start(first)..buffer.line_end(first + styled.len() - 1);
-        for d in self.decorations(buffer, range) {
-            let DecorationKind::WikiLink { target } = &d.kind else {
-                continue;
-            };
-            if page_exists(target) {
-                continue;
-            }
-            let (start, end) = (buffer.line_of(d.range.start), buffer.line_of(d.range.end));
-            for line in start.max(first)..=end.min(first + styled.len() - 1) {
-                let line_start = buffer.line_start(line).0;
-                let columns =
-                    d.range.start.0.saturating_sub(line_start)..d.range.end.0 - line_start;
-                for span in &mut styled[line - first].spans {
-                    if columns.start <= span.columns.start && span.columns.end <= columns.end {
-                        span.style.missing_page = true;
-                    }
-                }
-            }
-        }
-        styled
-    }
+/// The page a wikilink's `target` links to. Only targets [`wikilink_page`](super::wikilink_page) accepts become
+/// wikilinks, so this is its result without checking the name again.
+fn page_of(target: &str) -> &str {
+    let page = target.split_once('#').map_or(target, |(page, _)| page);
+    page.trim_matches(' ')
 }
 
 fn style_line(
@@ -217,12 +207,23 @@ fn style_line(
     decorations: &[Decoration],
     line: usize,
     selection: Option<Range<ByteOffset>>,
+    page_exists: Option<&dyn Fn(&str) -> bool>,
 ) -> StyledLine {
     let line_start = buffer.line_start(line);
     let line_end = buffer.line_end(line);
     let on_line: Vec<&Decoration> = decorations
         .iter()
         .filter(|d| d.range.start <= line_end && line_start <= d.range.end)
+        .collect();
+    // Which of them are wikilinks to missing pages.
+    let missing: Vec<bool> = on_line
+        .iter()
+        .map(|d| match (&d.kind, page_exists) {
+            (DecorationKind::WikiLink { target }, Some(page_exists)) => {
+                !page_exists(page_of(target))
+            }
+            _ => false,
+        })
         .collect();
 
     let mut style = SpanStyle::default();
@@ -282,6 +283,7 @@ fn style_line(
         let mut span_style = SpanStyle::default();
         for &index in &ranges {
             apply(&on_line[index].kind, &mut span_style);
+            span_style.missing_page |= missing[index];
         }
         // The innermost marker: decorations are ordered with enclosing ones first.
         let marker = markers
@@ -328,7 +330,7 @@ fn apply(kind: &DecorationKind, style: &mut SpanStyle) {
         DecorationKind::Emphasis => style.italic = true,
         DecorationKind::Strikethrough => style.strikethrough = true,
         DecorationKind::InlineCode => style.code = true,
-        DecorationKind::Link { .. } => style.link = true,
+        DecorationKind::Link { .. } | DecorationKind::WikiLink { .. } => style.link = true,
         DecorationKind::BlockQuote => style.quote = true,
         DecorationKind::Callout { kind } => style.callout = Some(*kind),
         DecorationKind::Superscript => style.superscript = true,
@@ -336,9 +338,8 @@ fn apply(kind: &DecorationKind, style: &mut SpanStyle) {
         DecorationKind::CodeBlock { .. } => style.code_block = true,
         DecorationKind::ListItem { .. }
         | DecorationKind::Task { .. }
-        | DecorationKind::ThematicBreak => {}
-        DecorationKind::WikiLink { .. } => style.link = true,
-        DecorationKind::Table { .. } => {}
+        | DecorationKind::ThematicBreak
+        | DecorationKind::Table { .. } => {}
         DecorationKind::TableHeader => style.table = Some(TableRowKind::Header),
         DecorationKind::TableDelimiter => style.table = Some(TableRowKind::Delimiter),
         DecorationKind::TableRow => style.table = Some(TableRowKind::Body),
@@ -357,7 +358,7 @@ fn marker_kind(kind: &DecorationKind) -> MarkerKind {
         | DecorationKind::Superscript
         | DecorationKind::Subscript => MarkerKind::Emphasis,
         DecorationKind::InlineCode => MarkerKind::Code,
-        DecorationKind::Link { .. } => MarkerKind::Link,
+        DecorationKind::Link { .. } | DecorationKind::WikiLink { .. } => MarkerKind::Link,
         DecorationKind::BlockQuote => MarkerKind::Quote,
         DecorationKind::Callout { kind } => MarkerKind::Callout { kind: *kind },
         DecorationKind::ListItem { ordered: false } => MarkerKind::ListBullet,
@@ -365,7 +366,6 @@ fn marker_kind(kind: &DecorationKind) -> MarkerKind {
         DecorationKind::Task { checked } => MarkerKind::TaskBox { checked: *checked },
         DecorationKind::ThematicBreak => MarkerKind::ThematicBreak,
         DecorationKind::CodeBlock { .. } => MarkerKind::CodeFence,
-        DecorationKind::WikiLink { .. } => MarkerKind::Link,
         DecorationKind::Table { .. }
         | DecorationKind::TableHeader
         | DecorationKind::TableRow
@@ -406,7 +406,8 @@ fn reveals(
         | DecorationKind::Superscript
         | DecorationKind::Subscript
         | DecorationKind::InlineCode
-        | DecorationKind::Link { .. } => decoration.range.clone(),
+        | DecorationKind::Link { .. }
+        | DecorationKind::WikiLink { .. } => decoration.range.clone(),
         DecorationKind::BlockQuote
         | DecorationKind::Callout { .. }
         | DecorationKind::ListItem { .. }
@@ -414,7 +415,6 @@ fn reveals(
         DecorationKind::Heading { .. }
         | DecorationKind::ThematicBreak
         | DecorationKind::CodeBlock { .. } => lines_of(&decoration.range),
-        DecorationKind::WikiLink { .. } => decoration.range.clone(),
         DecorationKind::Table { .. }
         | DecorationKind::TableHeader
         | DecorationKind::TableDelimiter

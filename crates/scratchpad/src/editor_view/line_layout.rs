@@ -14,7 +14,6 @@ use gpui::{
     Window, WindowTextSystem, fill, font, point, px, quad, size, transparent_black,
 };
 use scratchpad_core::PageIndex;
-use scratchpad_editor::markdown::wikilink_page;
 use scratchpad_editor::markdown::{
     CalloutKind, MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan, TableRowKind,
 };
@@ -118,11 +117,7 @@ impl LineKey {
         line: usize,
         selection: Option<Selection>,
     ) -> Self {
-        let page_exists = |target: &str| {
-            pages.is_none_or(|pages| {
-                wikilink_page(target).is_some_and(|page| pages.resolve(page).is_some())
-            })
-        };
+        let page_exists = |page: &str| pages.is_none_or(|pages| pages.resolve(page).is_some());
         let styled = markdown
             .styled_lines_with_pages(buffer, line..line + 1, selection, page_exists)
             .pop()
