@@ -202,3 +202,134 @@ fn widths_are_measured_once_per_table_and_again_only_after_it_changes(cx: &mut T
     cx.simulate_keystrokes("down down end ctrl-home");
     assert_eq!(measured(&editor, cx), 2);
 }
+
+#[gpui::test]
+fn typing_on_the_line_above_a_table_keeps_its_widths(cx: &mut TestAppContext) {
+    let text = big_table(3);
+    let (editor, cx) = open_editor(cx, &text);
+    assert_eq!(measured(&editor, cx), 1);
+    // The cursor at the end of `## Results`, the line right above the header.
+    cx.simulate_keystrokes("ctrl-home down down end");
+    cx.simulate_input("ab");
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(measured(&editor, cx), 1);
+    // A line added above the table moves it down; its widths move with it.
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("more");
+    assert_eq!(measured(&editor, cx), 1);
+    assert_eq!(
+        x_of(&editor, at(&editor_text(&editor, cx), "row 0"), cx),
+        PADDING
+    );
+    // Typing in the header row changes the table.
+    cx.simulate_keystrokes("down home right right");
+    cx.simulate_input("z");
+    cx.simulate_keystrokes("ctrl-home");
+    assert_eq!(measured(&editor, cx), 2);
+}
+
+#[gpui::test]
+fn resizing_the_window_keeps_the_widths_and_zooming_measures_again(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, TABLE);
+    assert_eq!(measured(&editor, cx), 1);
+    for width in [1000., 900., 1050.] {
+        cx.simulate_resize(size(px(width), px(720.)));
+        cx.run_until_parked();
+    }
+    assert_eq!(measured(&editor, cx), 1);
+    assert_eq!(x_of(&editor, at(TABLE, "cc"), cx), PADDING);
+    editor.update(cx, |editor, cx| editor.zoom_by(1, cx));
+    cx.run_until_parked();
+    assert_eq!(measured(&editor, cx), 2);
+}
+
+#[gpui::test]
+fn a_table_too_long_for_a_grid_is_shown_as_typed_without_measuring(cx: &mut TestAppContext) {
+    // 500 lines is the most a grid has (`MAX_GRID_LINES`): header, delimiter and 498 rows.
+    let text = big_table(498);
+    let (editor, cx) = open_editor(cx, &text);
+    assert_eq!(measured(&editor, cx), 1);
+    assert_eq!(x_of(&editor, at(&text, "row 0"), cx), PADDING, "a grid");
+    let text = big_table(499);
+    editor.update(cx, |editor, cx| editor.set_text(&text, cx));
+    cx.run_until_parked();
+    assert_eq!(measured(&editor, cx), 1, "not measured");
+    let row = at(&text, "| row 0");
+    assert_eq!(
+        x_of(&editor, at(&text, "row 0"), cx),
+        (at(&text, "row 0") - row) as f32 * ADVANCE,
+        "as typed, pipes shown"
+    );
+}
+
+#[gpui::test]
+fn cells_past_the_headers_count_are_hidden_inside_the_grid(cx: &mut TestAppContext) {
+    let text = "x\n\n| a | b |\n|---|---|\n| 1 | 2 | 3 | 4\n\nafter";
+    let (editor, cx) = open_editor(cx, text);
+    // Two one-char columns with 9 px of padding each side: the grid is 54 px wide.
+    let grid_right = 2. * (ADVANCE + 2. * PADDING);
+    assert_eq!(
+        x_of(&editor, at(text, "2 |"), cx),
+        grid_right / 2. + PADDING
+    );
+    // `3` and `4` belong to the hidden trailing marker, as GitHub drops them: nothing is drawn past
+    // the grid's right edge, where the row ends.
+    for extra in [at(text, "3"), at(text, "4")] {
+        let extra = bounds(&editor, extra, cx);
+        assert_eq!(extra.size.width, px(0.), "hidden");
+        assert_eq!(extra.left() - bounds(&editor, 0, cx).left(), px(grid_right));
+    }
+}
+
+fn editor_text(editor: &Entity<EditorView>, cx: &mut VisualTestContext) -> String {
+    editor.read_with(cx, |editor, _| editor.editor().buffer().normalized_text())
+}
+
+/// A note with a heading right above a table of `rows` body rows.
+fn big_table(rows: usize) -> String {
+    let mut text = String::from("x\n\n## Results\n| name | **value** | note |\n|---|--:|:-:|\n");
+    for row in 0..rows {
+        let value = row * 37 % 1000;
+        text.push_str(&format!("| row {row} | {value} | `code` *{row}* |\n"));
+    }
+    text.push_str("\nafter");
+    text
+}
+
+/// Times typing in a heading touching a 400-row table, dragging the window edge with it visible and
+/// opening a 5,000-row table (run with `--ignored --nocapture`, ideally in release). The counts of
+/// tables measured are what the other tests check; this reports what they cost.
+#[gpui::test]
+#[ignore = "timing, for docs/performance.md"]
+fn perf_typing_and_resizing_next_to_a_big_table(cx: &mut TestAppContext) {
+    use std::time::Instant;
+    let text = big_table(400);
+    let (editor, cx) = open_editor(cx, &text);
+    cx.simulate_keystrokes("ctrl-home down down end");
+    let measured_before = measured(&editor, cx);
+    let started = Instant::now();
+    for _ in 0..20 {
+        cx.simulate_input("y");
+    }
+    let typing = started.elapsed() / 20;
+    let typing_measured = measured(&editor, cx) - measured_before;
+    cx.simulate_keystrokes("ctrl-home");
+    let measured_before = measured(&editor, cx);
+    let started = Instant::now();
+    for step in 0..20 {
+        cx.simulate_resize(size(px(1100. - step as f32 * 7.), px(720.)));
+        cx.run_until_parked();
+    }
+    let resizing = started.elapsed() / 20;
+    let resize_measured = measured(&editor, cx) - measured_before;
+    let long = big_table(5000);
+    let started = Instant::now();
+    editor.update(cx, |editor, cx| editor.set_text(&long, cx));
+    cx.run_until_parked();
+    let opening = started.elapsed();
+    println!(
+        "keystroke in the heading: {typing:?} ({typing_measured} measured in 20); \
+         resize step: {resizing:?} ({resize_measured} measured in 20); \
+         open a 5,000-row table: {opening:?}"
+    );
+}

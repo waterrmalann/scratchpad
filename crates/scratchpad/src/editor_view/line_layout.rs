@@ -21,7 +21,7 @@ use scratchpad_editor::markdown::{
 use scratchpad_editor::{Bias, Buffer, Selection};
 
 use super::geometry::{Glyph, Indents, LineGeometry, expand_tabs, set_span_width, unwrapped_x};
-use super::table::{self, GridKey};
+use super::table::{self, GridKey, TableCache, TableLayout};
 use crate::theme::{Theme, typography};
 
 /// Heading sizes as multiples of the body size: the plan's 1.8 / 1.5 / 1.25 (PLAN §27), then
@@ -87,6 +87,14 @@ impl BaseStyle {
         (pixels * (self.font_size / typography::BODY_FONT_SIZE)).round()
     }
 
+    /// Whether text shaped with `other` is as wide as with this style: the same fonts and size. Only the
+    /// wrap width, the colours and the margin may differ.
+    pub(super) fn same_text_widths(&self, other: &BaseStyle) -> bool {
+        self.font == other.font
+            && self.mono_family == other.mono_family
+            && self.font_size == other.font_size
+    }
+
     /// How far quote text sits right of the text column's left edge.
     pub(super) fn quote_indent(&self) -> Pixels {
         self.scaled(QUOTE_INDENT)
@@ -101,23 +109,47 @@ pub(crate) struct LineKey {
     /// Draws list bullets and task boxes as shapes, and a callout's tag as its label, rather than
     /// as the characters typed.
     pub widgets: bool,
-    /// Lays a table line out as part of an aligned grid (ADR 0186); set by
-    /// [`TableCache::fill`](super::table::TableCache::fill).
+    /// Lays a table line out as part of an aligned grid (ADR 0186); set by [`KeyContext::key`].
     pub grid: Option<GridKey>,
 }
 
-impl LineKey {
-    /// How `line` looks with `selection`. In live preview (`Some`) markers away from the selection
-    /// are hidden, and bullets and task boxes are drawn as shapes unless the selection reaches inside
-    /// them; in source mode (`None`) everything shows as typed.
-    /// Wikilinks whose page is not in `pages` are drawn as missing; with no `pages`, none is.
-    pub fn new(
-        markdown: &mut MarkdownState,
-        pages: Option<&PageIndex>,
-        buffer: &Buffer,
-        line: usize,
-        selection: Option<Selection>,
-    ) -> Self {
+/// What a line's [`LineKey`] is built from besides the layout cache: the document, how it is shown
+/// and the text system tables are measured with.
+pub(crate) struct KeyContext<'a> {
+    pub buffer: &'a Buffer,
+    /// `None` in plain text.
+    pub markdown: Option<&'a mut MarkdownState>,
+    /// The pages wikilinks resolve to, if known.
+    pub pages: Option<&'a PageIndex>,
+    /// The selection markers are revealed around; `None` in source mode and plain text.
+    pub selection: Option<Selection>,
+    pub text_system: &'a WindowTextSystem,
+}
+
+impl KeyContext<'_> {
+    /// The same context with the markers revealed around `selection` instead, e.g. with the cursor
+    /// moved somewhere else.
+    pub fn with_selection(&mut self, selection: Option<Selection>) -> KeyContext<'_> {
+        KeyContext {
+            buffer: self.buffer,
+            markdown: self.markdown.as_deref_mut(),
+            pages: self.pages,
+            selection,
+            text_system: self.text_system,
+        }
+    }
+
+    /// How `line` looks: every reveal rule is applied here. In live preview (a selection) markers
+    /// away from the selection are hidden, bullets and task boxes are drawn as shapes unless the
+    /// selection reaches inside them, and a table the selection is off is laid out as a grid with
+    /// the widths kept in `tables`, or shown as typed when it cannot be one; in source mode
+    /// everything shows as typed. Wikilinks whose page is not in `pages` are drawn as missing; with
+    /// no `pages`, none is.
+    pub fn key(&mut self, line: usize, tables: &mut TableCache, base: &BaseStyle) -> LineKey {
+        let (buffer, pages, selection) = (self.buffer, self.pages, self.selection);
+        let Some(markdown) = self.markdown.as_deref_mut() else {
+            return LineKey::plain(buffer, line);
+        };
         let page_exists = |target: &str| {
             pages.is_none_or(|pages| {
                 wikilink_page(target).is_some_and(|page| pages.resolve(page).is_some())
@@ -142,13 +174,33 @@ impl LineKey {
                 }
             })
         });
-        Self {
+        let mut key = LineKey {
             styled,
             widgets,
             grid: None,
+        };
+        if let Some(row) = key.styled.style.table {
+            match tables.layout(line, row, base, self) {
+                Some(TableLayout::Grid(grid)) => key.grid = Some(grid),
+                // Too wide or too long for a grid: the table's markers show.
+                Some(TableLayout::AsTyped) => {
+                    for span in &mut key.styled.spans {
+                        if matches!(
+                            span.marker,
+                            Some(MarkerKind::TablePipe | MarkerKind::TableDelimiter)
+                        ) {
+                            span.hidden = false;
+                        }
+                    }
+                }
+                None => {}
+            }
         }
+        key
     }
+}
 
+impl LineKey {
     /// How `line` looks in a plain text file: one unstyled span, with no markers.
     pub fn plain(buffer: &Buffer, line: usize) -> Self {
         let len = buffer.line_end(line).0 - buffer.line_start(line).0;
@@ -433,7 +485,7 @@ impl LineLayout {
         } else {
             Vec::new()
         };
-        let runs = runs(key, &widgets, &line_font, base);
+        let runs = runs(&key.styled, &widgets, &line_font, base);
         let mut display = String::with_capacity(text.len());
         for span in key.styled.spans.iter().filter(|span| !span.hidden) {
             display.push_str(&text[span.columns.clone()]);
@@ -954,12 +1006,17 @@ fn text_start(text: &str, styled: &StyledLine) -> usize {
 }
 
 /// The displayed runs of a line: fonts, sizes and colours from the Markdown styles.
-fn runs(key: &LineKey, widgets: &[Widget], line_font: &LineFont, base: &BaseStyle) -> Vec<Run> {
+fn runs(
+    styled: &StyledLine,
+    widgets: &[Widget],
+    line_font: &LineFont,
+    base: &BaseStyle,
+) -> Vec<Run> {
     let theme = &base.theme;
-    let mut runs = Vec::with_capacity(key.styled.spans.len());
+    let mut runs = Vec::with_capacity(styled.spans.len());
     let mut display_len = 0;
     let mut after_checked_box = false;
-    for span in key.styled.spans.iter().filter(|span| !span.hidden) {
+    for span in styled.spans.iter().filter(|span| !span.hidden) {
         let columns = display_len..display_len + span.columns.len();
         display_len = columns.end;
         let style = span.style;
@@ -1118,12 +1175,7 @@ pub(super) fn measure_cells(
     text_system: &WindowTextSystem,
     mut cell: impl FnMut(usize, Pixels),
 ) -> Pixels {
-    let key = LineKey {
-        styled: styled.clone(),
-        widgets: false,
-        grid: None,
-    };
-    let runs = runs(&key, &[], &LineFont::new(styled.style, base), base);
+    let runs = runs(styled, &[], &LineFont::new(styled.style, base), base);
     let mut display = String::with_capacity(text.len());
     for span in styled.spans.iter().filter(|span| !span.hidden) {
         display.push_str(&text[span.columns.clone()]);
