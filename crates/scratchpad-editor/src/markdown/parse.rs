@@ -13,6 +13,7 @@ use pulldown_cmark::{
     BlockQuoteKind, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd,
 };
 
+use super::autolink::Autolinks;
 use super::{CalloutKind, Decoration, DecorationKind, MarkdownOptions};
 use crate::coords::ByteOffset;
 
@@ -27,12 +28,15 @@ pub(super) fn parse(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
         items: Vec::new(),
         links: Vec::new(),
     };
+    let mut autolinks = Autolinks::default();
     for (event, range) in Parser::new_ext(text, pulldown_options(options)).into_offset_iter() {
+        autolinks.event(&event, &range, text);
         builder.event(event, range);
     }
     // Events come in document order except a task box, which follows the start of the item's first block, e.g.
     // a setext heading.
     let mut decorations = builder.decorations;
+    decorations.extend(autolinks.finish(text));
     decorations.sort_by_key(|d| (d.range.start, std::cmp::Reverse(d.range.end)));
     decorations
 }

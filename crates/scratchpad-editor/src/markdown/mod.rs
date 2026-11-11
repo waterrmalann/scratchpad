@@ -6,6 +6,7 @@
 //! lines, which also say which syntax markers live preview hides around the selection (ADR 0042). The optional
 //! syntax recognised is set by [`MarkdownOptions`] (ADR 0185).
 
+pub(crate) mod autolink;
 mod blocks;
 mod format;
 mod front_matter;
@@ -47,7 +48,9 @@ pub enum DecorationKind {
     Strikethrough,
     InlineCode,
     /// An inline link `[text](destination)`, an autolink `<destination>` or an inline image `![alt](source)`,
-    /// which is styled and opened like a link and never loaded (ADR 0185).
+    /// which is styled and opened like a link and never loaded (ADR 0185). A bare web or e-mail address in text
+    /// is a link without markers, its destination made openable: `https://` before `www.`, `mailto:` before an
+    /// e-mail address (ADR 0187).
     Link {
         destination: String,
     },
@@ -167,6 +170,9 @@ pub struct MarkdownState {
     parsed: Vec<Option<Vec<Decoration>>>,
     /// The syntax the regions are parsed with.
     options: MarkdownOptions,
+    /// Where the note's closed front matter ends (0 without one), for the buffer version and length given, once
+    /// a query needed it: bare addresses in it are not links (ADR 0187).
+    front_matter_end: Option<(u64, usize, usize)>,
 }
 
 impl MarkdownState {
@@ -182,6 +188,7 @@ impl MarkdownState {
             starts: Vec::new(),
             parsed: Vec::new(),
             options,
+            front_matter_end: None,
         };
         state.rescan_all(buffer);
         state
@@ -243,6 +250,7 @@ impl MarkdownState {
                     .map(|d| d.shifted(start)),
             );
         }
+        self.drop_front_matter_autolinks(buffer, &mut found);
         found
     }
 

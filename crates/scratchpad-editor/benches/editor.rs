@@ -262,6 +262,27 @@ fn markdown_styled_long_line(c: &mut Criterion) {
     });
 }
 
+/// Parsing all of a 1 MB document of prose, which is all text to scan for bare addresses (ADR 0187): without
+/// any (only the quick check runs on each text event) and with an address or two in most paragraphs.
+fn markdown_parse_prose(c: &mut Criterion) {
+    let mut group = c.benchmark_group("markdown_parse_prose_1MB");
+    let prose = "A long paragraph of prose, the kind a note is mostly made of. It has sentences, commas and \
+                 full stops; some words are *emphasised* and some café or 日本語 mixed in.\n\n";
+    let addresses = "A paragraph that cites https://example.com/a/b?c=d (and www.example.org/x) or writes to \
+                     someone@example.net, with time: 10:30 and a ratio 1:2 for the quick check to pass.\n\n";
+    for (name, block) in [("plain", prose), ("addresses", addresses)] {
+        let editor = Editor::from_text(&block.repeat(MB / block.len()));
+        let buffer = editor.buffer();
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                MarkdownState::new(black_box(buffer))
+                    .decorations(buffer, ByteOffset(0)..buffer.end())
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     open,
@@ -274,6 +295,7 @@ criterion_group!(
     markdown_parse,
     markdown_keystroke,
     markdown_styled_screen,
-    markdown_styled_long_line
+    markdown_styled_long_line,
+    markdown_parse_prose
 );
 criterion_main!(benches);

@@ -24,7 +24,7 @@ with every new ADR.
 | [0030](0030-virtualized-editor-rendering.md) | Virtualized editor rendering with an anchor scroll position | Accepted; amended by 0132 |
 | [0031](0031-soft-wrapping-and-visual-navigation.md) | Soft wrapping and navigation by visual rows | Accepted; amended by 0126, 0130, 0132 |
 | [0032](0032-editor-input-clipboard-and-ime.md) | Editor input: keys, clipboard, IME and mouse | Accepted |
-| [0040](0040-markdown-decorations-with-pulldown-cmark.md) | Markdown decorations parsed with pulldown-cmark | Accepted; amended by 0185 |
+| [0040](0040-markdown-decorations-with-pulldown-cmark.md) | Markdown decorations parsed with pulldown-cmark | Accepted; amended by 0185, 0187 |
 | [0041](0041-block-regions-and-incremental-markdown-parsing.md) | Block regions with lazy, incremental Markdown parsing | Accepted |
 | [0042](0042-live-preview-styled-lines-and-marker-reveal.md) | Styled lines and marker reveal for live preview | Accepted |
 | [0043](0043-markdown-editing-commands.md) | Markdown editing commands edit the text | Accepted; amended by 0126 |
@@ -77,3 +77,4 @@ with every new ADR.
 | [0175](0175-the-notes-context-menu.md) | The note's context menu, with the spelling corrections in it | Accepted; amends 0150 and 0170 |
 | [0180](0180-typed-replacements.md) | Typed sequences become symbols, and Backspace takes them back | Accepted; amends 0044, 0150 and 0170 |
 | [0185](0185-optional-markdown-syntax-and-images.md) | Optional Markdown syntax (callouts, superscript, subscript, heading IDs); images styled as links | Accepted; amends 0040 and 0150 |
+| [0187](0187-bare-addresses-are-links.md) | Bare web and e-mail addresses are links, found in text without changing it | Accepted; amends 0040 |

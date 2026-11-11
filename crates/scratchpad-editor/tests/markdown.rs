@@ -129,7 +129,7 @@ fn links_mark_brackets_and_destination() {
 
 #[test]
 fn reference_links_stay_plain_text_even_when_defined() {
-    assert_eq!(describe("[ref]\n[ref]: http://x"), []);
+    assert_eq!(describe("[ref]\n\n[ref]: http://x"), []);
 }
 
 #[test]
@@ -273,7 +273,7 @@ fn malformed_markdown_degrades_to_plain_text() {
         "[text](",
         "`code",
         "~~strike",
-        "<http://unclosed",
+        "<https:unclosed",
         "#hashtag",
         "-not a list",
         "1.5 million",
@@ -288,7 +288,7 @@ fn escapes_html_and_tables_stay_plain_text() {
         r"\*not emphasis\* \`not code\` \[not](a link)",
         "<!-- *hidden* -->",
         "| a | b |\n| --- | --- |\n| 1 | 2 |",
-        "bare a@b.c www.x.y http://plain.url",
+        "not addresses a@b www. http:/plain.url",
     ] {
         assert_eq!(describe(text), [], "{text:?}");
     }
