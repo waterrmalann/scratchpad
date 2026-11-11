@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use gpui::{App, AppContext, Context, EventEmitter, Task};
-use scratchpad_core::{Note, NoteSearch, NoteStore, PageIndex, SearchHit, is_note_path};
+use scratchpad_core::{
+    Note, NoteSearch, NoteStore, PageIndex, SearchHit, fold_case, is_note_path, is_page_path,
+};
 
 use crate::{settings, toast};
 
@@ -132,8 +134,12 @@ pub struct Notes {
     /// older query can never overwrite newer ones.
     search_task: Option<Task<()>>,
     /// The folder's notes and plain text files by name, for wikilinks (ADR 0188): read with each
-    /// listing and kept in step with the note list between listings.
+    /// listing and kept in step with the note list between listings. Updated through
+    /// `Arc::make_mut` while the editor holds a clone, which copies only the changes since the
+    /// listing (see [`PageIndex`]). Empty while wikilinks are off.
     pages: Arc<PageIndex>,
+    /// Whether wikilinks are on, so that `pages` is needed.
+    wikilinks: bool,
 }
 
 impl EventEmitter<NotesEvent> for Notes {}
@@ -147,6 +153,7 @@ impl Notes {
     /// file as with [`open_file`](Self::open_file). If none does, the newest note is opened once
     /// the list arrives, or a new note if there are none.
     pub fn new(location: NotesLocation, reopen: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
+        let location_dir = location.dir.clone();
         let mut notes = Self {
             location,
             store: None,
@@ -163,7 +170,8 @@ impl Notes {
             hits: None,
             search: Arc::default(),
             search_task: None,
-            pages: Arc::default(),
+            pages: Arc::new(PageIndex::new(&location_dir)),
+            wikilinks: true,
         };
         notes.load_pins(cx);
         notes.open_folder(reopen, cx);
@@ -212,14 +220,17 @@ impl Notes {
         let store = self.store.clone();
         let location = self.location.clone();
         let changes = self.changes;
+        let wikilinks = self.wikilinks;
         let listing = cx.background_spawn(async move {
             let store = match store {
                 Some(store) => store,
                 None => location.open()?,
             };
-            let notes = store.list()?;
-            // The text files too, which are not notes but can be linked to.
-            let pages = PageIndex::read(store.dir())?;
+            // The text files too, which are not notes but can be linked to, from the same pass.
+            let (notes, pages) = match wikilinks {
+                true => store.list_with_pages()?,
+                false => (store.list()?, PageIndex::new(store.dir())),
+            };
             scratchpad_core::Result::Ok((store, notes, pages))
         });
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
@@ -234,7 +245,9 @@ impl Notes {
                     Ok((store, notes, pages)) => {
                         this.store = Some(store);
                         this.notes = Arc::new(notes);
-                        this.pages = Arc::new(pages);
+                        if this.wikilinks {
+                            this.pages = Arc::new(pages);
+                        }
                         this.search(cx);
                         if mem::take(&mut this.open_after_listing)
                             && this.selection == Selection::None
@@ -274,7 +287,7 @@ impl Notes {
         self.location = location;
         self.store = Some(store);
         self.notes = Arc::default();
-        self.pages = Arc::default();
+        self.pages = Arc::new(PageIndex::new(&self.location.dir));
         self.loaded = false;
         self.changes += 1;
         if !matches!(&self.selection, Selection::File(path) if self.note_path(path).is_none()) {
@@ -308,9 +321,28 @@ impl Notes {
         &self.pages
     }
 
+    /// Whether the folder's pages are kept for wikilinks.
+    pub fn wikilinks(&self) -> bool {
+        self.wikilinks
+    }
+
+    /// Turns keeping the folder's pages on or off with the wikilinks option. Off, listings do
+    /// not collect them; turned on, the folder is listed again to read them.
+    pub fn set_wikilinks(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.wikilinks == on {
+            return;
+        }
+        self.wikilinks = on;
+        self.pages = Arc::new(PageIndex::new(&self.location.dir));
+        if on && self.store.is_some() {
+            self.refresh(cx);
+        }
+        cx.notify();
+    }
+
     fn add_page(&mut self, path: &Path) {
-        if !self.pages.contains(path) && scratchpad_core::is_page_path(path) {
-            Arc::make_mut(&mut self.pages).insert(path.to_owned());
+        if self.wikilinks && is_page_path(path) && !self.pages.contains(path) {
+            Arc::make_mut(&mut self.pages).insert(path);
         }
     }
 
@@ -696,10 +728,11 @@ impl Notes {
     }
 }
 
-/// Whether two paths name the same file, as far as their spelling tells: Windows ignores case.
+/// Whether two paths name the same file, as far as their spelling tells: Windows ignores case
+/// as [`fold_case`] does.
 pub fn same_file(a: &Path, b: &Path) -> bool {
-    let lower = |path: &Path| PathBuf::from(path.to_string_lossy().to_lowercase());
-    a == b || (cfg!(windows) && lower(a) == lower(b))
+    let fold = |path: &Path| PathBuf::from(fold_case(&path.to_string_lossy()));
+    a == b || (cfg!(windows) && fold(a) == fold(b))
 }
 
 /// The name a folder is shown by in messages: its last component.

@@ -19,17 +19,28 @@ away, as in Obsidian.
 - **Which targets are links.** `markdown::wikilink_page` drops a `#heading` and the spaces around
   the page and accepts only a plain file stem: no `/ \ : * ? " < > |`, control characters or
   whitespace other than single spaces, no `..`, no leading or trailing dot or space, at most 100
-  chars, and not a device name (`CON`, `nul.txt`, `COM1`...). These are the stems the store's
-  `sanitize_file_stem` leaves unchanged. Anything else (paths, drives, URLs) is not decorated and
+  chars, and not a device name (`CON`, `nul.txt`, `COM0`, `COM1`...). These are the stems the
+  store's `sanitize_file_stem` leaves unchanged (a test in `scratchpad/tests/wikilinks.rs` checks
+  that the two agree); it is the only check of page names, which the app also asks before
+  opening or creating a page. Anything else (paths, drives, URLs) is not decorated and
   stays text. Embeds (`![[x]]`) and same-note links (`[[#Heading]]`) stay text too. Headings are
   not navigated to.
-- **Resolving.** `scratchpad_core::PageIndex` maps lower-cased stems to the folder's `.md` and
-  `.txt` files (`.md` preferred; hidden files skipped); `resolve` re-checks the name with
-  `is_plain_stem` (`sanitize_file_stem(page) == page`, no `..`). The notes model keeps one for the
-  notes folder in an `Arc`: read with each listing (one more `read_dir`, metadata only, off the UI
-  thread; listings follow the watcher's events) and updated in place by saves, new notes, renames,
-  deletes and `forget`. A file from another folder (ADR 0145) resolves against its own folder,
-  whose pages are read in the background each time a file from there opens. The editor holds the index
+- **Resolving.** `scratchpad_core::PageIndex` holds the folder's `.md` and `.txt` files (hidden
+  files skipped) by stem, compared as NTFS compares names: each char folded through a
+  single-char upper-case mapping (`fold_case`; a char whose upper case is several chars, like
+  `ß`, or outside the BMP stays itself), not `str::to_lowercase`, which would tell `ΟΔΟΣ` from
+  `οδοσ`. Per page it keeps the preferred file's name and which extensions exist, not paths;
+  `resolve` joins the name to the folder (`.md` preferred). Only stems of files in the folder
+  are found, so a path names nothing. The notes model keeps one for the notes folder in an
+  `Arc`, collected in the same pass as each listing (`NoteStore::list_with_pages`; off the UI
+  thread; listings follow the watcher's events) and updated by saves, new notes, renames,
+  deletes and `forget` through `Arc::make_mut`. As the editor holds a clone, that would copy
+  every page per change, so the index shares the map as listed and keeps later changes in a
+  small map of their own, merged in once they outnumber 32 or a sixteenth of the pages. With
+  Wikilinks off, listings skip the pages and none are kept; turning it on lists the folder
+  again. A file from another folder (ADR 0145) resolves against its own folder, whose pages are
+  read in the background when a file from there opens and again when the window becomes active
+  if they are over 2 s old (that folder is not watched). The editor holds the index
   (`EditorView::set_pages`) and restyles when the `Arc` changes; `MarkdownState::
   styled_lines_with_pages` sets `SpanStyle::missing_page` on wikilinks whose page is not in it,
   asking only for lines that have links. Lookups are hash map hits; nothing touches the disk while
@@ -38,12 +49,16 @@ away, as in Obsidian.
   one to a missing page has muted text and a muted dashed underline.
 - **Ctrl+click** emits `OpenPage(page)`; the app window handles it. A page in the index opens
   through `Notes::open_file`, as choosing it in the sidebar (a note of the folder) or File > Open
-  (a `.txt`, or a file of another folder) would. Otherwise the folder is read again in the
-  background, since the list may be out of date, and if the page is still missing it is created
+  (a `.txt`, or a file of another folder) would. Otherwise `Page.md` and `Page.txt` are looked up
+  on the disk in the background, since the list may be out of date (on NTFS that ignores case
+  too, without listing the folder), and if the page is still missing it is created
   there through `NoteStore::create` (the store's naming and collision rules, `create_new`) and
   written with `NoteStore::save` (atomic, ADR 0010) as `# Page`, so its title matches its name and
   editing its first line keeps the rules of ADR 0061; then it is listed (`note_saved`, ignored for
-  other folders) and opened. Errors show the file error toast.
+  other folders) and opened. Errors show the file error toast. While a page is being found or
+  created, further clicks on it (by folded name) are ignored, so a slow folder never gets both
+  `Page.md` and `Page 2.md`; of several different pages, only the last one clicked opens, and
+  any created is listed.
 - **Setting.** View > Markdown features > Wikilinks (`ToggleWikilinks`), remembered as
   `markdown_wikilinks` like the other options (ADR 0185).
 
@@ -56,13 +71,15 @@ away, as in Obsidian.
   brackets are text. Block structure and region boundaries do not change.
 - `.txt` files appearing or vanishing in the notes folder are not watched (the watcher reports
   notes only), so their drawing can lag until the next listing; Ctrl+click checks the disk before
-  creating, so it never makes a note next to a page that exists. Pages of another folder are read
-  each time a file there opens and are not watched.
+  creating, so it never makes a note next to a page that exists. Pages of another folder are
+  not watched: they are read when a file there opens and when the window is activated, so a
+  change made there while the window stays active shows on the next activation.
 - A page name with a character the store would change (`[[a:b]]`) is not a link at all, rather
   than a link to a differently named file.
 - Spell checking skips a wikilink without a label (it shows a page name) and checks a label.
 - Tests: decorations and option off (`tests/markdown.rs`), reveal and missing-page styling
   (`tests/live_preview.rs`), random Markdown with wikilinks on (`tests/markdown_properties.rs`,
-  `markdown::tests`), target validation (`markdown::wikilinks`), resolution (`core/tests/pages.rs`),
-  and opening, creating, other folders, rejected targets and the toggle end to end
+  `markdown::tests`), target validation (`markdown::wikilinks`), resolution and case folding (`core/tests/pages.rs`),
+  and opening, creating (once per page), other folders and their re-reading, rejected targets,
+  the agreement with the store's names and the toggle end to end
   (`scratchpad/tests/wikilinks.rs`, `menu_bar.rs`).

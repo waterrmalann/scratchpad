@@ -5,7 +5,8 @@
 //! separators or other characters Windows forbids in names, no control characters, no `..`, no leading or trailing
 //! dots and spaces, no runs of spaces or other whitespace, and not a reserved device name such as `CON` or `com1`.
 //! These are the stems the notes store's sanitizing leaves unchanged, so a missing page can be created under its
-//! exact name.
+//! exact name. This is the one check of page names: the app asks it before opening or creating a page, and its
+//! agreement with `scratchpad_core::sanitize_file_stem` (whose reserved names it shares) is tested there.
 
 /// The longest page name, in chars: the notes store caps file stems at this.
 const MAX_PAGE_CHARS: usize = 100;
@@ -33,7 +34,7 @@ fn is_plain_file_stem(name: &str) -> bool {
 }
 
 /// Windows treats a name whose part before the first dot (ignoring trailing spaces) is a device name as that
-/// device, e.g. `CON`, `nul.txt` or `COM1`.
+/// device, e.g. `CON`, `nul.txt` or `COM1`. `COM0` and `LPT0` are documented as reserved too.
 fn is_reserved_device_name(name: &str) -> bool {
     const FIXED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
     let head = name.split('.').next().unwrap_or(name).trim_end();
@@ -109,6 +110,8 @@ mod tests {
             "aux .md",
             "COM1",
             "lpt9",
+            "COM0",
+            "lpt0.md",
             "COM¹",
             "CONIN$",
         ] {
