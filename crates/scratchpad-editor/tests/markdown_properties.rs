@@ -2,8 +2,8 @@
 
 use proptest::prelude::*;
 use scratchpad_editor::markdown::{
-    Decoration, DecorationKind, MarkdownOptions, MarkdownState, MarkerKind, StyledSpan,
-    emoji_for_shortcode, wikilink_page,
+    Decoration, DecorationKind, MarkdownOption, MarkdownOptions, MarkdownState, MarkerKind,
+    StyledSpan, emoji_for_shortcode, wikilink_page,
 };
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Selection};
 
@@ -95,11 +95,8 @@ const ATOMS: &[&str] = &[
 fn options() -> impl Strategy<Value = MarkdownOptions> {
     prop_oneof![
         1 => Just(MarkdownOptions::ALL),
-        2 => any::<[bool; 8]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks, highlights, math, emoji_shortcodes]| {
-            MarkdownOptions {
-                callouts, superscript, subscript, heading_ids, wikilinks, highlights, math, emoji_shortcodes,
-            }
-        }),
+        2 => any::<[bool; MarkdownOption::ALL.len()]>()
+            .prop_map(|on| MarkdownOptions::from_fn(|option| on[option as usize])),
     ]
 }
 

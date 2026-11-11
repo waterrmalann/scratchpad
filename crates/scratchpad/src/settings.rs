@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use gpui::{App, Global, Task};
 use scratchpad_core::{Config, ThemePreference};
-use scratchpad_editor::markdown::MarkdownOptions;
+use scratchpad_editor::markdown::{MarkdownOption, MarkdownOptions};
 
 use crate::theme::{self, ActiveTheme, ThemeMode};
 
@@ -90,33 +90,48 @@ pub fn save_now(cx: &mut App) {
     }
 }
 
-/// The Markdown options remembered in `config`, with the defaults for those never changed.
-pub fn markdown_options(config: &Config) -> MarkdownOptions {
-    let default = MarkdownOptions::default();
-    MarkdownOptions {
-        callouts: config.markdown_callouts.unwrap_or(default.callouts),
-        superscript: config.markdown_superscript.unwrap_or(default.superscript),
-        subscript: config.markdown_subscript.unwrap_or(default.subscript),
-        heading_ids: config.markdown_heading_ids.unwrap_or(default.heading_ids),
-        wikilinks: config.markdown_wikilinks.unwrap_or(default.wikilinks),
-        highlights: config.markdown_highlights.unwrap_or(default.highlights),
-        math: config.markdown_math.unwrap_or(default.math),
-        emoji_shortcodes: config
-            .markdown_emoji_shortcodes
-            .unwrap_or(default.emoji_shortcodes),
-    }
+/// Pairs each Markdown option with the config field that remembers it (ADR 0185, 0190).
+macro_rules! markdown_config_keys {
+    ($($option:ident => $field:ident),* $(,)?) => {
+        /// What `config` remembers for `option`: `None` for the default.
+        fn stored(config: &Config, option: MarkdownOption) -> Option<bool> {
+            match option {
+                $(MarkdownOption::$option => config.$field,)*
+            }
+        }
+
+        fn stored_mut(config: &mut Config, option: MarkdownOption) -> &mut Option<bool> {
+            match option {
+                $(MarkdownOption::$option => &mut config.$field,)*
+            }
+        }
+    };
 }
 
-/// Remembers `options` in `config`.
+markdown_config_keys!(
+    Callouts => markdown_callouts,
+    Superscript => markdown_superscript,
+    Subscript => markdown_subscript,
+    HeadingIds => markdown_heading_ids,
+    Wikilinks => markdown_wikilinks,
+    Highlights => markdown_highlights,
+    Math => markdown_math,
+    EmojiShortcodes => markdown_emoji_shortcodes,
+);
+
+/// The Markdown options remembered in `config`, with the defaults for those never changed.
+pub fn markdown_options(config: &Config) -> MarkdownOptions {
+    MarkdownOptions::from_fn(|option| stored(config, option).unwrap_or(option.default_on()))
+}
+
+/// Remembers `options` in `config`: only those that differ from the default, so a default changed in a
+/// later version reaches everyone who has not turned that option on or off themselves. A value written
+/// by an older version that equals the default is read as it always was and dropped on the next write.
 pub fn store_markdown_options(config: &mut Config, options: MarkdownOptions) {
-    config.markdown_callouts = Some(options.callouts);
-    config.markdown_superscript = Some(options.superscript);
-    config.markdown_subscript = Some(options.subscript);
-    config.markdown_heading_ids = Some(options.heading_ids);
-    config.markdown_wikilinks = Some(options.wikilinks);
-    config.markdown_highlights = Some(options.highlights);
-    config.markdown_math = Some(options.math);
-    config.markdown_emoji_shortcodes = Some(options.emoji_shortcodes);
+    for option in MarkdownOption::ALL {
+        let on = options.get(option);
+        *stored_mut(config, option) = (on != option.default_on()).then_some(on);
+    }
 }
 
 pub fn theme_mode(preference: ThemePreference) -> ThemeMode {
@@ -132,5 +147,37 @@ fn theme_preference(mode: ThemeMode) -> ThemePreference {
         ThemeMode::System => ThemePreference::System,
         ThemeMode::Light => ThemePreference::Light,
         ThemeMode::Dark => ThemePreference::Dark,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_markdown_options_that_differ_from_the_default_are_stored() {
+        // An older version wrote every option; the values that equal the default still read back.
+        let mut config = Config {
+            markdown_callouts: Some(true),
+            markdown_superscript: Some(true),
+            markdown_math: Some(false),
+            ..Config::default()
+        };
+        let options = markdown_options(&config);
+        assert!(options.callouts && options.superscript && !options.math);
+        store_markdown_options(&mut config, options);
+        assert_eq!(config.markdown_callouts, None);
+        assert_eq!(config.markdown_superscript, Some(true));
+        assert_eq!(config.markdown_math, None);
+        assert_eq!(markdown_options(&config), options);
+        store_markdown_options(&mut config, MarkdownOptions::default());
+        assert_eq!(config, Config::default());
+        for option in MarkdownOption::ALL {
+            let mut options = MarkdownOptions::default();
+            options.set(option, !option.default_on());
+            store_markdown_options(&mut config, options);
+            assert_eq!(stored(&config, option), Some(!option.default_on()));
+            assert_eq!(markdown_options(&config), options);
+        }
     }
 }

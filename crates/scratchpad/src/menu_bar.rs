@@ -19,10 +19,9 @@ use gpui::{
 
 use crate::actions::editor::{Copy, Cut, Delete, Paste, Redo, SelectAll, ToggleSourceMode, Undo};
 use crate::actions::view::{
-    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleCallouts, ToggleHeadingIds,
-    ToggleSpellCheck, ToggleSubscript, ToggleSuperscript, ToggleWordWrap, ZoomIn, ZoomOut,
+    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn,
+    ZoomOut, markdown_toggles,
 };
-use crate::actions::view::{ToggleEmojiShortcodes, ToggleHighlights, ToggleMath, ToggleWikilinks};
 use crate::actions::{
     NewNote, OpenFile, OpenSettings, Quit, SaveAs, SaveNote, ToggleSidebar, ToggleStatusBar,
 };
@@ -84,9 +83,13 @@ enum Command {
 }
 
 fn item(label: &'static str, action: impl Action) -> Item {
+    boxed_item(label, Box::new(action))
+}
+
+fn boxed_item(label: &'static str, action: Box<dyn Action>) -> Item {
     Item {
         label,
-        command: Command::Action(Box::new(action)),
+        command: Command::Action(action),
         enabled: true,
         checked: None,
         on_note: false,
@@ -301,34 +304,15 @@ impl MenuBar {
                     .into(),
                 {
                     let options = self.editor.read(cx).markdown_options();
-                    submenu(
-                        "Markdown Extensions",
-                        vec![
-                            item("Callouts", ToggleCallouts)
-                                .checked(options.callouts)
-                                .into(),
-                            item("Superscript", ToggleSuperscript)
-                                .checked(options.superscript)
-                                .into(),
-                            item("Subscript", ToggleSubscript)
-                                .checked(options.subscript)
-                                .into(),
-                            item("Heading IDs", ToggleHeadingIds)
-                                .checked(options.heading_ids)
-                                .into(),
-                            item("Wikilinks", ToggleWikilinks)
-                                .checked(options.wikilinks)
-                                .into(),
-                            item("Highlights", ToggleHighlights)
-                                .checked(options.highlights)
-                                .into(),
-                            item("Math", ToggleMath).checked(options.math).into(),
-                            item("Emoji shortcodes", ToggleEmojiShortcodes)
-                                .checked(options.emoji_shortcodes)
-                                .into(),
-                        ],
-                    )
-                    .into()
+                    let entries = markdown_toggles()
+                        .into_iter()
+                        .map(|(option, action)| {
+                            boxed_item(option.label(), action)
+                                .checked(options.get(option))
+                                .into()
+                        })
+                        .collect();
+                    submenu("Markdown Extensions", entries).into()
                 },
                 edit("Source mode", ToggleSourceMode)
                     .checked(self.editor.read(cx).source_mode())

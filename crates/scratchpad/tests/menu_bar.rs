@@ -600,7 +600,8 @@ fn markdown_extensions_are_ticked_while_on_apply_at_once_and_are_remembered(
     let config = Config::load(&config_path);
     assert_eq!(config.markdown_superscript, Some(true));
     assert_eq!(config.markdown_callouts, Some(false));
-    assert_eq!(config.markdown_subscript, Some(false));
+    // Options left at their default are not written, so a changed default reaches this user.
+    assert_eq!(config.markdown_subscript, None);
     common::close(cx);
 
     // The same after a restart, for the next note too; the action turns one back off.
@@ -616,7 +617,8 @@ fn markdown_extensions_are_ticked_while_on_apply_at_once_and_are_remembered(
             .superscript
     );
     common::close(cx);
-    assert_eq!(Config::load(&config_path).markdown_superscript, Some(false));
+    // Back at its default, it is no longer written.
+    assert_eq!(Config::load(&config_path).markdown_superscript, None);
 }
 
 /// Highlights, math and emoji shortcodes (ADR 0190) toggle from the submenu and the actions, apply

@@ -110,7 +110,10 @@ pub fn register_app_handlers(cx: &mut App) {
 /// How the note is shown: text size, word wrap and spelling. Handled by the main window, so they work
 /// wherever focus is, and they apply to the note's text only, not to the rest of the window.
 pub mod view {
-    use gpui::{KeyBinding, actions};
+    use std::rc::Rc;
+
+    use gpui::{Action, App, InteractiveElement, KeyBinding, Window, actions};
+    use scratchpad_editor::markdown::MarkdownOption;
 
     actions!(
         view,
@@ -147,6 +150,43 @@ pub mod view {
             /// Turns showing emoji shortcodes (`:smile:`) as their emoji on or off (ADR 0190).
             ToggleEmojiShortcodes,
         ]
+    );
+
+    /// Pairs each Markdown option with its toggle action, the one list View > Markdown Extensions
+    /// and the main window's handlers are built from (ADR 0185, 0190).
+    macro_rules! markdown_toggles {
+        ($($action:ident => $option:ident),* $(,)?) => {
+            /// Each Markdown option with its toggle action, in menu order.
+            pub fn markdown_toggles() -> Vec<(MarkdownOption, Box<dyn Action>)> {
+                vec![$((MarkdownOption::$option, Box::new($action) as Box<dyn Action>)),*]
+            }
+
+            /// Handles every toggle action on `element` by calling `toggle` with its option.
+            pub fn on_markdown_toggles<E: InteractiveElement>(
+                mut element: E,
+                toggle: impl Fn(&MarkdownOption, &mut Window, &mut App) + 'static,
+            ) -> E {
+                let toggle = Rc::new(toggle);
+                $(
+                    let handler = toggle.clone();
+                    element = element.on_action(move |_: &$action, window, cx| {
+                        handler(&MarkdownOption::$option, window, cx)
+                    });
+                )*
+                element
+            }
+        };
+    }
+
+    markdown_toggles!(
+        ToggleCallouts => Callouts,
+        ToggleSuperscript => Superscript,
+        ToggleSubscript => Subscript,
+        ToggleHeadingIds => HeadingIds,
+        ToggleWikilinks => Wikilinks,
+        ToggleHighlights => Highlights,
+        ToggleMath => Math,
+        ToggleEmojiShortcodes => EmojiShortcodes,
     );
 
     pub fn key_bindings() -> Vec<KeyBinding> {

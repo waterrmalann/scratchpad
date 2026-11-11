@@ -294,7 +294,8 @@ fn the_wikilinks_feature_is_ticked_toggles_and_is_remembered(cx: &mut TestAppCon
     cx.dispatch_action(ToggleWikilinks);
     assert!(editor.read_with(cx, |e, _| e.markdown_options().wikilinks));
     common::close(cx);
-    assert_eq!(Config::load(&config_path).markdown_wikilinks, Some(true));
+    // Back at its default (on), it is no longer written.
+    assert_eq!(Config::load(&config_path).markdown_wikilinks, None);
 }
 
 #[gpui::test]

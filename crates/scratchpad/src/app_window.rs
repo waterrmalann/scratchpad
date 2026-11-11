@@ -9,13 +9,12 @@ use gpui::{
     Subscription, Task, Window, div, prelude::*, px,
 };
 use scratchpad_core::{NoteStore, PAGE_EXTENSIONS, PageIndex, fold_case};
-use scratchpad_editor::markdown::{MarkdownOptions, wikilink_page};
+use scratchpad_editor::markdown::{MarkdownOption, wikilink_page};
 
 use crate::actions::view::{
-    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleCallouts, ToggleHeadingIds,
-    ToggleSpellCheck, ToggleSubscript, ToggleSuperscript, ToggleWordWrap, ZoomIn, ZoomOut,
+    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn,
+    ZoomOut, on_markdown_toggles,
 };
-use crate::actions::view::{ToggleEmojiShortcodes, ToggleHighlights, ToggleMath, ToggleWikilinks};
 use crate::actions::{
     CloseWindow, NewNote, OpenFile, OpenSettings, SaveAs, SaveNote, SearchNotes, ToggleSidebar,
     ToggleStatusBar,
@@ -573,15 +572,10 @@ impl AppWindow {
     }
 
     /// Turns one of the Markdown options (View > Markdown Extensions) on or off in the note.
-    fn toggle_markdown_option(
-        &self,
-        cx: &mut Context<Self>,
-        option: fn(&mut MarkdownOptions) -> &mut bool,
-    ) {
+    fn toggle_markdown_option(&self, option: MarkdownOption, cx: &mut Context<Self>) {
         self.update_editor(cx, |editor, cx| {
             let mut options = editor.markdown_options();
-            let on = option(&mut options);
-            *on = !*on;
+            options.set(option, !options.get(option));
             editor.set_markdown_options(options, cx);
         })
     }
@@ -835,9 +829,12 @@ impl Focusable for AppWindow {
 
 impl Render for AppWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let markdown_toggles = cx.listener(|this, option: &MarkdownOption, _, cx| {
+            this.toggle_markdown_option(*option, cx)
+        });
         let mode = self.sidebar_mode(cx);
         let theme = cx.theme();
-        div()
+        on_markdown_toggles(div(), markdown_toggles)
             .key_context("AppWindow")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::close_window))
@@ -880,30 +877,6 @@ impl Render for AppWindow {
                 this.update_editor(cx, |editor, cx| {
                     editor.set_auto_replace(!editor.auto_replace(), cx)
                 })
-            }))
-            .on_action(cx.listener(|this, _: &ToggleCallouts, _, cx| {
-                this.toggle_markdown_option(cx, |options| &mut options.callouts)
-            }))
-            .on_action(cx.listener(|this, _: &ToggleSuperscript, _, cx| {
-                this.toggle_markdown_option(cx, |options| &mut options.superscript)
-            }))
-            .on_action(cx.listener(|this, _: &ToggleSubscript, _, cx| {
-                this.toggle_markdown_option(cx, |options| &mut options.subscript)
-            }))
-            .on_action(cx.listener(|this, _: &ToggleHeadingIds, _, cx| {
-                this.toggle_markdown_option(cx, |options| &mut options.heading_ids)
-            }))
-            .on_action(cx.listener(|this, _: &ToggleWikilinks, _, cx| {
-                this.toggle_markdown_option(cx, |options| &mut options.wikilinks)
-            }))
-            .on_action(cx.listener(|this, _: &ToggleHighlights, _, cx| {
-                this.toggle_markdown_option(cx, |options| &mut options.highlights)
-            }))
-            .on_action(cx.listener(|this, _: &ToggleMath, _, cx| {
-                this.toggle_markdown_option(cx, |options| &mut options.math)
-            }))
-            .on_action(cx.listener(|this, _: &ToggleEmojiShortcodes, _, cx| {
-                this.toggle_markdown_option(cx, |options| &mut options.emoji_shortcodes)
             }))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::save_as))

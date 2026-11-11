@@ -161,57 +161,91 @@ impl CalloutKind {
     }
 }
 
-/// Optional Markdown syntax on top of CommonMark with GFM strikethrough and task lists, which the user turns on
-/// or off (View > Markdown Extensions; ADR 0185, 0190). One field per extension, so adding one is adding a field;
-/// [`Default`] is what a new install gets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MarkdownOptions {
-    /// GFM alerts ([`DecorationKind::Callout`]); without it they are plain block quotes. On by default.
-    pub callouts: bool,
-    /// `^x^` ([`DecorationKind::Superscript`]).
-    pub superscript: bool,
-    /// `~x~` ([`DecorationKind::Subscript`]); without it a single `~` is strikethrough, like `~~`.
-    pub subscript: bool,
-    /// A trailing `{#id .class}` attribute block on a heading's line is one of the heading's markers rather
-    /// than part of its text.
-    pub heading_ids: bool,
-    /// `[[Page]]` links to other notes ([`DecorationKind::WikiLink`]). On by default.
-    pub wikilinks: bool,
-    /// `==text==` ([`DecorationKind::Highlight`]). On by default.
-    pub highlights: bool,
-    /// `$math$` and `$$math$$` ([`DecorationKind::Math`]). Off by default: `$` is common in prose (prices).
-    pub math: bool,
-    /// `:smile:` shown as its emoji ([`DecorationKind::Emoji`]). On by default.
-    pub emoji_shortcodes: bool,
-}
+/// Declares [`MarkdownOptions`] and [`MarkdownOption`] from one list: each option's field, variant, the name a
+/// menu shows for it and its default. Adding an option is adding a line here (and its key in the config and its
+/// toggle action in the app; ADR 0190).
+macro_rules! markdown_options {
+    ($( $(#[$doc:meta])* $field:ident, $variant:ident, $label:literal, default $default:literal; )*) => {
+        /// Optional Markdown syntax on top of CommonMark with GFM strikethrough and task lists, which the user
+        /// turns on or off (View > Markdown Extensions; ADR 0185, 0190). [`Default`] is what a new install gets.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub struct MarkdownOptions {
+            $( $(#[$doc])* pub $field: bool, )*
+        }
 
-impl MarkdownOptions {
-    /// Every option on.
-    pub const ALL: Self = Self {
-        callouts: true,
-        superscript: true,
-        subscript: true,
-        heading_ids: true,
-        wikilinks: true,
-        highlights: true,
-        math: true,
-        emoji_shortcodes: true,
+        /// One of the [`MarkdownOptions`], in menu order, for code that handles each the same way.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum MarkdownOption {
+            $( #[doc = concat!("[`MarkdownOptions::", stringify!($field), "`].")] $variant, )*
+        }
+
+        impl MarkdownOption {
+            /// Every option, in menu order.
+            pub const ALL: [MarkdownOption; [$(stringify!($field)),*].len()] = [$(MarkdownOption::$variant),*];
+
+            /// The name a menu shows for it, e.g. `Callouts`.
+            pub fn label(self) -> &'static str {
+                match self {
+                    $(MarkdownOption::$variant => $label,)*
+                }
+            }
+
+            /// Whether it is on in [`MarkdownOptions::default`].
+            pub fn default_on(self) -> bool {
+                match self {
+                    $(MarkdownOption::$variant => $default,)*
+                }
+            }
+        }
+
+        impl MarkdownOptions {
+            /// Every option on.
+            pub const ALL: Self = Self { $($field: true,)* };
+
+            /// Options with each on as `on` says.
+            pub fn from_fn(on: impl Fn(MarkdownOption) -> bool) -> Self {
+                Self { $($field: on(MarkdownOption::$variant),)* }
+            }
+
+            pub fn get(&self, option: MarkdownOption) -> bool {
+                match option {
+                    $(MarkdownOption::$variant => self.$field,)*
+                }
+            }
+
+            pub fn set(&mut self, option: MarkdownOption, on: bool) {
+                match option {
+                    $(MarkdownOption::$variant => self.$field = on,)*
+                }
+            }
+        }
+
+        impl Default for MarkdownOptions {
+            fn default() -> Self {
+                Self { $($field: $default,)* }
+            }
+        }
     };
 }
 
-impl Default for MarkdownOptions {
-    fn default() -> Self {
-        Self {
-            callouts: true,
-            superscript: false,
-            subscript: false,
-            heading_ids: false,
-            wikilinks: true,
-            highlights: true,
-            math: false,
-            emoji_shortcodes: true,
-        }
-    }
+markdown_options! {
+    /// GFM alerts ([`DecorationKind::Callout`]); without it they are plain block quotes.
+    callouts, Callouts, "Callouts", default true;
+    /// `^x^` ([`DecorationKind::Superscript`]).
+    superscript, Superscript, "Superscript", default false;
+    /// `~x~` ([`DecorationKind::Subscript`]); without it a single `~` is strikethrough, like `~~`.
+    subscript, Subscript, "Subscript", default false;
+    /// A trailing `{#id .class}` attribute block on a heading's line is one of the heading's markers rather
+    /// than part of its text.
+    heading_ids, HeadingIds, "Heading IDs", default false;
+    /// `[[Page]]` links to other notes ([`DecorationKind::WikiLink`]).
+    wikilinks, Wikilinks, "Wikilinks", default true;
+    /// `==text==` ([`DecorationKind::Highlight`]).
+    highlights, Highlights, "Highlights", default true;
+    /// `$math$` and `$$math$$` ([`DecorationKind::Math`]). Off by default: `$` is common in prose (prices).
+    math, Math, "Math", default false;
+    /// `:smile:` shown as its emoji ([`DecorationKind::Emoji`]).
+    emoji_shortcodes, EmojiShortcodes, "Emoji shortcodes", default true;
 }
 
 impl Decoration {
@@ -660,11 +694,8 @@ mod tests {
     pub(super) fn options() -> impl Strategy<Value = MarkdownOptions> {
         prop_oneof![
             1 => Just(MarkdownOptions::ALL),
-            2 => any::<[bool; 8]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks, highlights, math, emoji_shortcodes]| {
-                MarkdownOptions {
-                    callouts, superscript, subscript, heading_ids, wikilinks, highlights, math, emoji_shortcodes,
-                }
-            }),
+            2 => any::<[bool; MarkdownOption::ALL.len()]>()
+                .prop_map(|on| MarkdownOptions::from_fn(|option| on[option as usize])),
         ]
     }
 
@@ -959,6 +990,23 @@ mod tests {
                 parse::parse(text, MarkdownOptions::ALL),
                 "{text:?}"
             );
+        }
+    }
+
+    #[test]
+    fn every_option_is_listed_once_in_order_with_its_default() {
+        let default = MarkdownOptions::default();
+        for (i, option) in MarkdownOption::ALL.into_iter().enumerate() {
+            assert_eq!(option as usize, i);
+            assert_eq!(default.get(option), option.default_on());
+            assert!(MarkdownOptions::ALL.get(option));
+            let mut toggled = default;
+            toggled.set(option, !default.get(option));
+            let changed: Vec<_> = MarkdownOption::ALL
+                .into_iter()
+                .filter(|&other| toggled.get(other) != default.get(other))
+                .collect();
+            assert_eq!(changed, [option]);
         }
     }
 
