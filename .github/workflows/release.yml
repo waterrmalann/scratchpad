@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify tag matches version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare tag with workspace version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '[.packages[].version] | unique | if length == 1 then .[0] else "MIXED" end')"
+          if [ "$version" = "MIXED" ]; then
+            echo "::error::Workspace packages do not share a single version"
+            exit 1
+          fi
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::Tag '$TAG' does not match workspace version '$version'. Bump Cargo.toml or retag."
+            exit 1
+          fi
+          echo "Tag $TAG matches workspace version $version"
+
+  test:
+    name: Test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+
+  build:
+    name: Build Windows installer
+    needs: [verify, test]
+    uses: ./.github/workflows/build-windows.yml
+
+  publish:
+    name: Publish GitHub Release
+    needs: [verify, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      BUILD_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-x64
+          path: dist
+
+      - name: Verify checksums and version
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum -c SHA256SUMS.txt
+          if [ "${TAG#v}" != "$BUILD_VERSION" ]; then
+            echo "::error::Built version '$BUILD_VERSION' does not match tag '$TAG'"
+            exit 1
+          fi
+          ls -l
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.msi
+            dist/*.zip
+
+      - name: Create or update release
+        run: |
+          set -euo pipefail
+          files=(dist/*.msi dist/*.zip dist/SHA256SUMS.txt)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; uploading assets with --clobber"
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            prerelease=()
+            case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+            gh release create "$TAG" "${files[@]}" \
+              --title "$TAG" --generate-notes --verify-tag "${prerelease[@]}"
+          fi

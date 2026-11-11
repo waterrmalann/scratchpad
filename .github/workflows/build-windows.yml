@@ -1,0 +1,66 @@
+name: Build Windows
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: Workspace version from cargo metadata
+        value: ${{ jobs.build.outputs.version }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Read version
+        id: meta
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = $metadata.packages | Where-Object name -eq 'scratchpad' | ForEach-Object version
+          if (-not $version) { throw 'Could not read the scratchpad version.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      # Builds the release exe and the MSI (target/installer).
+      - name: Build MSI
+        run: ./packaging/build-installer.ps1
+
+      # The app has no portable mode, so the zip is just the exe plus licence and readme.
+      - name: Package portable zip and checksums
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = 'dist'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item "target/installer/Scratchpad-$env:VERSION-x64.msi" $out
+          $zip = "$out/Scratchpad-$env:VERSION-x64-portable.zip"
+          Compress-Archive -Path target/release/scratchpad.exe, LICENSE, README.md -DestinationPath $zip
+          $lines = foreach ($name in "Scratchpad-$env:VERSION-x64.msi", "Scratchpad-$env:VERSION-x64-portable.zip") {
+            "$((Get-FileHash "$out/$name" -Algorithm SHA256).Hash.ToLower())  $name"
+          }
+          [IO.File]::WriteAllText("$PWD/$out/SHA256SUMS.txt", ($lines -join "`n") + "`n")
+          Get-Content "$out/SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: dist/*
+          if-no-files-found: error

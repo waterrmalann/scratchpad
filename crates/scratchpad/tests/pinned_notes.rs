@@ -104,7 +104,7 @@ fn renaming_a_pinned_note_keeps_it_pinned_and_deleting_it_unpins(cx: &mut TestAp
     assert_rendered_in_order(&["group:Pinned", "note:Ancient", "group:Today"], cx);
     assert_eq!(
         notes.read_with(cx, |notes, _| notes.pinned().to_vec()),
-        [renamed.clone()]
+        std::slice::from_ref(&renamed)
     );
 
     notes

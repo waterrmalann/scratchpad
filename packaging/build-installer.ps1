@@ -16,7 +16,7 @@ function Invoke-Native([scriptblock]$Command) {
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
-    Invoke-Native { cargo build --release -p scratchpad }
+    Invoke-Native { cargo build --release --locked -p scratchpad }
 
     $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
     $version = $metadata.packages | Where-Object name -eq 'scratchpad' | ForEach-Object version
