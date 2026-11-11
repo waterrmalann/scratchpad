@@ -2,7 +2,8 @@
 
 use proptest::prelude::*;
 use scratchpad_editor::markdown::{
-    Decoration, DecorationKind, MarkdownOptions, MarkdownState, MarkerKind, wikilink_page,
+    Decoration, DecorationKind, MarkdownOptions, MarkdownState, MarkerKind, StyledSpan,
+    wikilink_page,
 };
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Selection};
 
@@ -256,13 +257,25 @@ proptest! {
         let marked = markdown.styled_lines_with_pages(&buffer, all, None, |target| target.len() % 2 == 0);
         prop_assert_eq!(plain.len(), marked.len());
         for (plain, marked) in plain.iter().zip(&marked) {
-            prop_assert_eq!(plain.spans.len(), marked.spans.len());
-            for (a, b) in plain.spans.iter().zip(&marked.spans) {
-                prop_assert!(!b.style.missing_page || b.style.link);
-                let mut b = b.clone();
-                b.style.missing_page = false;
-                prop_assert_eq!(a, &b);
+            prop_assert!(marked.spans.iter().all(|s| !s.style.missing_page || s.style.link));
+            // The flag may split a span that runs from one link into the next (`[[A]][[B]]`, the `]][[`
+            // markers): without it, the spans merge back into those of `styled_lines`.
+            let mut unmarked: Vec<StyledSpan> = Vec::new();
+            for span in &marked.spans {
+                let mut span = span.clone();
+                span.style.missing_page = false;
+                match unmarked.last_mut() {
+                    Some(last)
+                        if last.style == span.style
+                            && last.marker == span.marker
+                            && last.hidden == span.hidden =>
+                    {
+                        last.columns.end = span.columns.end;
+                    }
+                    _ => unmarked.push(span),
+                }
             }
+            prop_assert_eq!(&plain.spans, &unmarked);
         }
     }
 }

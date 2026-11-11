@@ -12,10 +12,13 @@ away, as in Obsidian.
 ## Decision
 - **Parsing.** `MarkdownOptions::wikilinks` (default on) turns on pulldown-cmark 0.13's
   `ENABLE_WIKILINKS`. A wikilink is a new `DecorationKind::WikiLink { target }` rather than a
-  `Link`: it opens a page, not a URL, and `link_at` and the URL check stay as they were. `target`
-  is pulldown-cmark's raw text before the first `|`. Markers are `[[`, `target|` when there is a
-  label, and `]]`, so live preview shows only the label or the target; they reveal like a link's
-  (the cursor touching the link) and are `MarkerKind::Link`. The label may hold inline markup.
+  `Link`: it opens a page, not a URL, and the URL check stays as it was (`MarkdownState::
+  link_target_at` returns either a URL or a page; `link_at` and `wikilink_at` wrap it). `target`
+  is the text as typed before the first `|`, without the backslash of a `\|` separator (Obsidian's
+  form in table cells, accepted anywhere; ADR 0186). Markers are `[[`, `target|` (or `target\|`)
+  when there is a label, and `]]`, so live preview shows only the label or the target; they reveal
+  like a link's (the cursor touching the link) and are `MarkerKind::Link`. The label may hold
+  inline markup.
 - **Which targets are links.** `markdown::wikilink_page` drops a `#heading` and the spaces around
   the page and accepts only a plain file stem: no `/ \ : * ? " < > |`, control characters or
   whitespace other than single spaces, no `..`, no leading or trailing dot or space, at most 100
@@ -42,8 +45,10 @@ away, as in Obsidian.
   read in the background when a file from there opens and again when the window becomes active
   if they are over 2 s old (that folder is not watched). The editor holds the index
   (`EditorView::set_pages`) and restyles when the `Arc` changes; `MarkdownState::
-  styled_lines_with_pages` sets `SpanStyle::missing_page` on wikilinks whose page is not in it,
-  asking only for lines that have links. Lookups are hash map hits; nothing touches the disk while
+  styled_lines_with_pages` sets `SpanStyle::missing_page` on wikilinks whose page is not in it
+  while it styles each line, asking `page_exists` with the page name (the target without its
+  `#heading`) once per wikilink on each of its lines and about nothing else. Spans that would run
+  from one link into a touching one (`[[A]][[B]]`) are split where only one page is missing. Lookups are hash map hits; nothing touches the disk while
   drawing or typing. Until the folder is listed, no link is drawn as missing.
 - **Drawing.** A link to an existing page looks like any link (text colour, accent underline);
   one to a missing page has muted text and a muted dashed underline.

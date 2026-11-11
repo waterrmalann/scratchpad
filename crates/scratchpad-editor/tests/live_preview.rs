@@ -393,6 +393,24 @@ fn wikilinks_show_only_their_label_or_page_away_from_the_cursor() {
     assert_eq!(shown_with("[[Page]]\n|", off), "[[Page]]\n");
 }
 
+/// The `]]` of one link and the `[[` of the next touching it are one span unless only one page is missing:
+/// then each link's half is marked by its own page.
+#[test]
+fn touching_wikilinks_are_marked_each_by_its_own_page() {
+    let ed = Editor::from_text("[[Here]][[Gone]]");
+    let buffer = ed.buffer();
+    let lines = MarkdownState::new(buffer)
+        .styled_lines_with_pages(buffer, 0..1, None, |page| page == "Here");
+    let text = buffer.line_text(0).into_owned();
+    let missing: Vec<&str> = lines[0]
+        .spans
+        .iter()
+        .filter(|span| span.style.missing_page)
+        .map(|span| &text[span.columns.clone()])
+        .collect();
+    assert_eq!(missing, ["[[", "Gone", "]]"]);
+}
+
 #[test]
 fn wikilinks_to_missing_pages_are_marked_and_only_links_are_asked_about() {
     let ed = Editor::from_text("[[Here]] [[Gone|g]] **b**\n\nplain\n[[Gone]]");
