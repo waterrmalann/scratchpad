@@ -38,8 +38,10 @@ layout (ADR 0071) never needed before, and typing in a 200-row table must stay w
   starts a region anyway. A table is therefore always one region (a property test checks both
   splitting and incremental updates with tables in the random documents).
 - **The grid** (`editor_view/table.rs`). With the selection off a table, its pipes and delimiter row
-  are hidden like any marker. `TableCache::fill` adds a `GridKey` (row kind and an `Arc` of the
-  table's `Columns`) to the line's `LineKey`, and `LineLayout::shape` then moves each cell's text to
+  are hidden like any marker. `KeyContext::key`, which builds every line's `LineKey` and applies
+  all reveal rules, asks `TableCache::layout` how a table line is laid out: as a grid, with a
+  `GridKey` (row kind and an `Arc` of the table's `Columns`) in the key, or as typed, with the
+  table's markers shown. `LineLayout::shape` then moves each cell's text to
   its column by widening the room before it (`set_span_width`), aligned left, centre or right in the
   column's width, with 0.6 em of padding each side; the row is made as wide as the grid. Nothing is
   inserted into the text, so `StyledLine::display_column`/`buffer_column` map clicks, Ctrl+clicks and
@@ -52,10 +54,20 @@ layout (ADR 0071) never needed before, and typing in a 200-row table must stay w
 - **Widths are measured once per table** and kept in the layout cache's `TableCache`, by the table's
   lines and the Markdown options: the first grid line laid out styles the table's lines in chunks of
   64 (so each query copies only those lines' decorations), shapes each row once and takes each
-  column's widest cell. The entry is dropped when a buffer change touches the table's lines or the
-  line after it, renumbered when lines are added or removed above it, dropped with the layouts when
-  the style changes, and at most 16 tables are kept (least recently used dropped). A key compares
+  column's widest cell. The entry is dropped when a buffer change touches the table's lines,
+  renumbered when lines are added or removed above it, and dropped when the fonts or the text size
+  change (zoom); a new wrap width, theme or margin keeps it, since only the comparison of the grid's
+  reach with the wrap width depends on them, and that is made on every lookup. An edit on the line
+  right above or below a table (a heading touching it, a row being typed after it) keeps its
+  widths: lookups match the table's exact lines, so a table that such an edit grows or shrinks is
+  measured again anyway. At most 16 tables are kept (least recently used dropped). A key compares
   its columns by pointer first, so checking a grid line's key costs no more than another line's.
+- **Long tables.** A table longer than 500 lines (`MAX_GRID_LINES`) is shown as typed, like a wide
+  one. Measuring shapes every row on the UI thread in one frame: a few milliseconds for 500 rows,
+  but a pasted 5,000-row table would stall the frame it is opened in, the one the cursor leaves it
+  in and every zoom. Measuring only the rows in view, widening the columns as rows scroll in, would
+  bound the cost too, but the columns would jump while scrolling, and the widest row could still be
+  anywhere; a table that long is rare in notes and reads as well as typed.
 - **Wide tables.** A grid row is one screen row and never wraps. With word wrap off it scrolls
   sideways like any long line (ADR 0132). With word wrap on, a table whose grid would reach past the
   text column is shown as typed instead (its markers shown, rows wrapped like text), so no cell is
@@ -73,11 +85,20 @@ layout (ADR 0071) never needed before, and typing in a 200-row table must stay w
   all of it (~15 ms per 400 KB). That is the price of keeping such tables whole; a table that big is
   rare in notes.
 - Rows typed with fewer cells than the header leave their last columns empty in the grid; cells past
-  the header's count are hidden with the trailing pipe, as GitHub drops them.
+  the header's count are hidden with the trailing pipe, as GitHub drops them, so nothing is drawn
+  past the grid's right edge.
+- With a 400-row table under a heading (release, test platform, whose shaping is cheaper than
+  DirectWrite's): a keystroke in the heading 4.3 → 1.3 ms, as it no longer re-measures the table; a
+  step of dragging the window edge 3.2 → 0.7 ms; opening a 5,000-row table 54 → 9.7 ms.
+- Live preview styles the visible lines one at a time when their keys are checked. Styling the
+  visible range in one batch would be cheaper in a long table, but the cache checks keys lazily, line
+  by line, without knowing the range ahead; the engine makes the per-line query cheap instead.
 - A table in a list item nested in a quote, or after tabs, may be a few pixels off its header, since
   only leading spaces are widened.
 - Tests: decoration ranges, alignments, escaped pipes, ragged rows, tables in quotes and lists and
   next to other blocks, the table query, incremental region updates and long tables
   (`tests/tables.rs`); random tables in `tests/markdown_properties.rs` and table lines in the
   region property tests (`markdown::tests`); the scanner (`blocks::tests`); the grid's column
-  positions, alignment, clicks, reveal, wide tables and re-measuring (`scratchpad/tests/tables.rs`).
+  positions, alignment, clicks, reveal, wide and long tables, cells past the header's count and
+  re-measuring after edits, resizes and zoom (`scratchpad/tests/tables.rs`, with an ignored timing
+  test for typing next to a big table, resizing with it visible and opening a 5,000-row one).

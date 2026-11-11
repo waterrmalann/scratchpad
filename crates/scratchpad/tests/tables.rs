@@ -268,7 +268,10 @@ fn cells_past_the_headers_count_are_hidden_inside_the_grid(cx: &mut TestAppConte
     let (editor, cx) = open_editor(cx, text);
     // Two one-char columns with 9 px of padding each side: the grid is 54 px wide.
     let grid_right = 2. * (ADVANCE + 2. * PADDING);
-    assert_eq!(x_of(&editor, at(text, "2 |"), cx), grid_right / 2. + PADDING);
+    assert_eq!(
+        x_of(&editor, at(text, "2 |"), cx),
+        grid_right / 2. + PADDING
+    );
     // `3` and `4` belong to the hidden trailing marker, as GitHub drops them: nothing is drawn past
     // the grid's right edge, where the row ends.
     for extra in [at(text, "3"), at(text, "4")] {
