@@ -22,8 +22,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent,
-    SharedString, Subscription, Task, UTF16Selection, Window, WindowTextSystem, div, font,
-    prelude::*, px,
+    SharedString, Subscription, Task, UTF16Selection, Window, div, font, prelude::*, px,
 };
 use scratchpad_core::PageIndex;
 use scratchpad_editor::markdown::{MarkdownOptions, MarkdownState};
@@ -34,7 +33,7 @@ use crate::theme::{ActiveTheme, typography};
 use element::{EditorElement, HScrollbarLayout, ScrollbarLayout};
 pub use find::{BACKGROUND_SEARCH_BYTES, Direction, FindStatus, SEARCH_DEBOUNCE};
 use layout_cache::LayoutCache;
-use line_layout::{BaseStyle, LineKey, LineLayout};
+use line_layout::{BaseStyle, KeyContext, LineLayout};
 use scroll::{LineHeights, ScrollAnchor, Viewport};
 
 /// Caret on/off period (PLAN §24).
@@ -646,13 +645,17 @@ impl EditorView {
             self.styled_for = styled_for;
             self.layouts.restyle();
         }
+        let buffer = self.editor.buffer();
         let lines = Lines {
-            buffer: self.editor.buffer(),
-            markdown: (!self.plain).then_some(&mut self.markdown),
-            pages: self.pages.as_deref(),
-            selection,
+            buffer,
+            cx: KeyContext {
+                buffer,
+                markdown: (!self.plain).then_some(&mut self.markdown),
+                pages: self.pages.as_deref(),
+                selection,
+                text_system: window.text_system(),
+            },
             cache: &mut self.layouts,
-            text_system: window.text_system(),
         };
         (lines, &mut self.scroll)
     }
@@ -1439,55 +1442,24 @@ impl EntityInputHandler for EditorView {
 /// The document as laid-out lines: what scroll math, hit testing and vertical motion walk over.
 struct Lines<'a> {
     buffer: &'a Buffer,
-    /// `None` in plain text.
-    markdown: Option<&'a mut MarkdownState>,
-    /// The pages wikilinks resolve to, if known.
-    pages: Option<&'a PageIndex>,
-    /// The selection markers are revealed around; `None` in source mode and plain text.
-    selection: Option<Selection>,
+    /// What the lines' keys are built from.
+    cx: KeyContext<'a>,
     cache: &'a mut LayoutCache,
-    text_system: &'a WindowTextSystem,
 }
 
 impl Lines<'_> {
     fn layout(&mut self, line: usize) -> Arc<LineLayout> {
-        let (buffer, markdown, selection) =
-            (self.buffer, self.markdown.as_deref_mut(), self.selection);
-        let (text_system, pages) = (self.text_system, self.pages);
-        self.cache
-            .line(line, buffer, text_system, |tables, style| match markdown {
-                Some(markdown) => {
-                    let mut key = LineKey::new(markdown, pages, buffer, line, selection);
-                    let source = table::Source {
-                        markdown,
-                        buffer,
-                        selection,
-                        text_system,
-                    };
-                    tables.fill(&mut key, line, style, source);
-                    key
-                }
-                None => LineKey::plain(buffer, line),
-            })
+        self.cache.line(line, &mut self.cx)
     }
 
     /// The layout `line` would have with `selection` instead of the current selection: moving the
     /// cursor can reveal or hide markers and so move the line's text.
     fn layout_with(&mut self, line: usize, selection: Selection) -> Arc<LineLayout> {
-        let (Some(markdown), Some(_)) = (self.markdown.as_deref_mut(), self.selection) else {
+        if self.cx.markdown.is_none() || self.cx.selection.is_none() {
             return self.layout(line);
-        };
-        let mut key = LineKey::new(markdown, self.pages, self.buffer, line, Some(selection));
-        let (tables, style) = self.cache.tables();
-        let source = table::Source {
-            markdown,
-            buffer: self.buffer,
-            selection: Some(selection),
-            text_system: self.text_system,
-        };
-        tables.fill(&mut key, line, style, source);
+        }
         self.cache
-            .line_with_key(line, self.buffer, self.text_system, key)
+            .line_with(line, &mut self.cx.with_selection(Some(selection)))
     }
 
     /// The buffer offset of `column` in `line`, on a grapheme boundary.

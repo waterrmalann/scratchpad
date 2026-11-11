@@ -6,7 +6,7 @@ use std::sync::Arc;
 use gpui::WindowTextSystem;
 use scratchpad_editor::{Buffer, TextChange};
 
-use super::line_layout::{BaseStyle, LineKey, LineLayout};
+use super::line_layout::{BaseStyle, KeyContext, LineKey, LineLayout};
 use super::table::TableCache;
 
 /// Lines kept when the cache is trimmed, on each side of the line it is trimmed around. Several
@@ -62,51 +62,36 @@ impl LayoutCache {
         }
     }
 
-    /// The layout of `line`, shaping it if it is not cached or `key` (called only if the line's key
-    /// may have changed, with the table widths and the style) differs from the one it was shaped for.
-    pub fn line(
-        &mut self,
-        line: usize,
-        buffer: &Buffer,
-        text_system: &WindowTextSystem,
-        key: impl FnOnce(&mut TableCache, &BaseStyle) -> LineKey,
-    ) -> Arc<LineLayout> {
+    /// The layout of `line`, shaping it if it is not cached or its key (built only if it may have
+    /// changed) differs from the one it was shaped for.
+    pub fn line(&mut self, line: usize, cx: &mut KeyContext) -> Arc<LineLayout> {
         let generation = self.generation;
         if let Some(entry) = self.lines.get(&line)
             && entry.checked == generation
         {
             return entry.layout.clone();
         }
-        let key = key(&mut self.tables, &self.style);
+        let key = cx.key(line, &mut self.tables, &self.style);
         if let Some(entry) = self.lines.get_mut(&line)
             && entry.key == key
         {
             entry.checked = generation;
             return entry.layout.clone();
         }
-        self.shape(line, buffer, text_system, key)
+        self.shape(line, cx.buffer, cx.text_system, key)
     }
 
-    /// The table widths, for computing a key outside [`line`](Self::line), with the style.
-    pub fn tables(&mut self) -> (&mut TableCache, &BaseStyle) {
-        (&mut self.tables, &self.style)
-    }
-
-    /// The layout `line` has with `key` rather than its current key, e.g. with the cursor moved
-    /// somewhere else. It replaces the cached layout, but [`line`](Self::line) checks its key again.
-    pub fn line_with_key(
-        &mut self,
-        line: usize,
-        buffer: &Buffer,
-        text_system: &WindowTextSystem,
-        key: LineKey,
-    ) -> Arc<LineLayout> {
+    /// The layout `line` has with the selection of `cx` rather than the current one, e.g. with the
+    /// cursor moved somewhere else. It replaces the cached layout, but [`line`](Self::line) checks
+    /// its key again.
+    pub fn line_with(&mut self, line: usize, cx: &mut KeyContext) -> Arc<LineLayout> {
+        let key = cx.key(line, &mut self.tables, &self.style);
         if let Some(entry) = self.lines.get(&line)
             && entry.key == key
         {
             return entry.layout.clone();
         }
-        let layout = self.shape(line, buffer, text_system, key);
+        let layout = self.shape(line, cx.buffer, cx.text_system, key);
         if let Some(entry) = self.lines.get_mut(&line) {
             entry.checked = self.generation.wrapping_sub(1);
         }

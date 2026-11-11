@@ -11,14 +11,14 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use gpui::{Bounds, Hsla, Pixels, WindowTextSystem, point, px, size};
+use gpui::{Bounds, Hsla, Pixels, point, px, size};
+use scratchpad_editor::TextChange;
 use scratchpad_editor::markdown::{
-    MarkdownOptions, MarkdownState, MarkerKind, StyledLine, Table, TableAlignment, TableRowKind,
+    MarkdownOptions, StyledLine, Table, TableAlignment, TableRowKind,
 };
-use scratchpad_editor::{Buffer, Selection, TextChange};
 
 use super::geometry::{Glyph, set_span_width, unwrapped_x};
-use super::line_layout::{BaseStyle, LineKey, measure_cells};
+use super::line_layout::{BaseStyle, KeyContext, measure_cells};
 use crate::theme::Theme;
 
 /// Room left and right of a cell's text inside its column, in multiples of the font size.
@@ -86,12 +86,11 @@ pub(crate) struct GridKey {
     pub columns: Arc<Columns>,
 }
 
-/// What the cache needs to look a table up or measure it.
-pub(crate) struct Source<'a> {
-    pub markdown: &'a mut MarkdownState,
-    pub buffer: &'a Buffer,
-    pub selection: Option<Selection>,
-    pub text_system: &'a WindowTextSystem,
+/// How a line of a table the selection is off is laid out.
+pub(crate) enum TableLayout {
+    Grid(GridKey),
+    /// As typed, markers shown: a grid that would not fit the text column with word wrap on.
+    AsTyped,
 }
 
 struct Entry {
@@ -113,37 +112,36 @@ pub(crate) struct TableCache {
 }
 
 impl TableCache {
-    /// Makes `key` (for `line`) lay its line out as part of a grid if the line is in a table the selection is
-    /// off, measuring the table if its widths are not kept. A grid that would not fit the text column with
-    /// word wrap on is shown as typed: `key` then shows the table's markers.
-    pub fn fill(&mut self, key: &mut LineKey, line: usize, base: &BaseStyle, source: Source) {
-        let Some(row) = key.styled.style.table else {
-            return;
-        };
-        let Some(table) = source.markdown.table(source.buffer, line, source.selection) else {
-            return;
-        };
+    /// How `line`, a `row` of a table, is laid out with the reveal and selection of `cx`, measuring the table
+    /// if its widths are not kept; `None` if it is shown as typed because the selection is on it.
+    pub fn layout(
+        &mut self,
+        line: usize,
+        row: TableRowKind,
+        base: &BaseStyle,
+        cx: &mut KeyContext,
+    ) -> Option<TableLayout> {
+        let markdown = cx.markdown.as_deref_mut()?;
+        let options = markdown.options();
+        let table = markdown.table(cx.buffer, line, cx.selection)?;
         if table.revealed {
-            return;
+            return None;
         }
-        let columns = self.columns(&table, base, source);
+        let columns = self.columns(&table, options, base, cx);
         if base.soft_wrap && columns.reach > base.wrap_width {
-            for span in &mut key.styled.spans {
-                if matches!(
-                    span.marker,
-                    Some(MarkerKind::TablePipe | MarkerKind::TableDelimiter)
-                ) {
-                    span.hidden = false;
-                }
-            }
-            return;
+            return Some(TableLayout::AsTyped);
         }
-        key.grid = Some(GridKey { row, columns });
+        Some(TableLayout::Grid(GridKey { row, columns }))
     }
 
-    fn columns(&mut self, table: &Table, base: &BaseStyle, source: Source) -> Arc<Columns> {
+    fn columns(
+        &mut self,
+        table: &Table,
+        options: MarkdownOptions,
+        base: &BaseStyle,
+        cx: &mut KeyContext,
+    ) -> Arc<Columns> {
         self.clock += 1;
-        let options = source.markdown.options();
         if let Some(entry) = self
             .entries
             .iter_mut()
@@ -153,7 +151,7 @@ impl TableCache {
             return entry.columns.clone();
         }
         self.measured += 1;
-        let columns = Arc::new(measure(table, base, source));
+        let columns = Arc::new(measure(table, base, cx));
         if self.entries.len() >= KEEP_TABLES
             && let Some(oldest) = (0..self.entries.len()).min_by_key(|&i| self.entries[i].used)
         {
@@ -199,27 +197,29 @@ impl TableCache {
 
 /// The column widths of `table`: the widest cell text of each column over all its rows, styled as they are
 /// with the selection off the table (inline markers hidden, header bold).
-fn measure(table: &Table, base: &BaseStyle, source: Source) -> Columns {
+fn measure(table: &Table, base: &BaseStyle, cx: &mut KeyContext) -> Columns {
     let mut widths = vec![px(0.); table.alignments.len()];
     let mut lead = px(0.);
     let mut indent = px(0.);
     let mut start = table.lines.start;
     while start < table.lines.end {
         let end = (start + MEASURE_CHUNK).min(table.lines.end);
-        let styled = source
+        let styled = cx
             .markdown
-            .styled_lines(source.buffer, start..end, source.selection);
+            .as_deref_mut()
+            .map_or_else(Vec::new, |markdown| {
+                markdown.styled_lines(cx.buffer, start..end, cx.selection)
+            });
         for (line, styled) in (start..end).zip(&styled) {
             if styled.style.table == Some(TableRowKind::Delimiter) {
                 continue;
             }
-            let text = source.buffer.line_text(line);
-            let row_lead =
-                measure_cells(&text, styled, base, source.text_system, |column, width| {
-                    if let Some(widest) = widths.get_mut(column) {
-                        *widest = (*widest).max(width);
-                    }
-                });
+            let text = cx.buffer.line_text(line);
+            let row_lead = measure_cells(&text, styled, base, cx.text_system, |column, width| {
+                if let Some(widest) = widths.get_mut(column) {
+                    *widest = (*widest).max(width);
+                }
+            });
             lead = lead.max(row_lead);
             if styled.style.quote {
                 indent = base.quote_indent();
