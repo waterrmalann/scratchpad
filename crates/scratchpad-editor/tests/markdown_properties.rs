@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use scratchpad_editor::markdown::{
-    Decoration, DecorationKind, MarkdownOptions, MarkdownState, wikilink_page,
+    Decoration, DecorationKind, MarkdownOptions, MarkdownState, MarkerKind, wikilink_page,
 };
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Selection};
 
@@ -70,6 +70,13 @@ const ATOMS: &[&str] = &[
     "&amp;",
     ";",
     "'",
+    "|",
+    " | ",
+    "|---|",
+    ":-:",
+    "- | -",
+    r"\|",
+    "| a | b |\n|---|---|\n",
 ];
 
 /// Any options, every one on in a third of the cases.
@@ -251,6 +258,82 @@ proptest! {
                 let mut b = b.clone();
                 b.style.missing_page = false;
                 prop_assert_eq!(a, &b);
+            }
+        }
+    }
+}
+
+/// Tables built from cells of text, inline syntax, escaped pipes and code spans, rows with or without outer
+/// pipes and with too few or too many cells, random delimiter rows, inside quotes and list items or after a
+/// paragraph, followed by other blocks (ADR 0186).
+fn table_text() -> impl Strategy<Value = String> {
+    const CELLS: &[&str] = &[
+        "", " ", "a", " b ", "**c**", "`d`", r"e\|f", r"`g\|h`", "*", "`", "é", "[x](y)", "~~s~~",
+    ];
+    const DELIMITERS: &[&str] = &["---", ":--", "--:", ":-:", "-", " - "];
+    /// What the table starts with, and what each later line of it starts with.
+    const CONTAINERS: &[(&str, &str)] = &[
+        ("", ""),
+        ("", ""),
+        ("> ", "> "),
+        ("- ", "  "),
+        ("intro\n", ""),
+    ];
+    const AFTER: &[&str] = &["", "\n", "\n\npara", "\n# h", "\n- item", "\nlazy", "\n> q"];
+    let row = |columns: usize| {
+        (
+            prop::collection::vec(prop::sample::select(CELLS), 1..=columns + 1),
+            any::<bool>(),
+        )
+            .prop_map(|(cells, outer)| {
+                let inner = cells.join("|");
+                if outer { format!("|{inner}|") } else { inner }
+            })
+    };
+    (1..4usize).prop_flat_map(move |columns| {
+        (
+            prop::collection::vec(prop::sample::select(CELLS), columns),
+            prop::collection::vec(prop::sample::select(DELIMITERS), columns),
+            prop::collection::vec(row(columns), 0..5),
+            prop::sample::select(CONTAINERS),
+            prop::sample::select(AFTER),
+        )
+            .prop_map(|(header, delimiters, rows, (first, rest), after)| {
+                let header: Vec<String> = header.iter().map(|cell| format!("h{cell}")).collect();
+                let mut lines = vec![
+                    format!("|{}|", header.join("|")),
+                    format!("|{}|", delimiters.join("|")),
+                ];
+                lines.extend(rows);
+                format!("{first}{}{after}", lines.join(&format!("\n{rest}")))
+            })
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1024))]
+
+    /// Table decorations are well formed, every line of a table (and only those) is styled as one, and its
+    /// markers hide or show together: shown exactly while the cursor is on one of the table's lines.
+    #[test]
+    fn tables_are_well_formed_and_reveal_as_a_whole(text in table_text(), at in 0..300usize) {
+        let buffer = Buffer::from_text(&text);
+        let mut markdown = MarkdownState::new(&buffer);
+        let decorations = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
+        check_well_formed(&text, &decorations)?;
+        let cursor = Selection::cursor(buffer.clip_offset(ByteOffset(at), Bias::Left));
+        let lines = markdown.styled_lines(&buffer, 0..buffer.line_count(), Some(cursor));
+        for (i, line) in lines.iter().enumerate() {
+            let table = markdown.table(&buffer, i, Some(cursor));
+            prop_assert_eq!(table.is_some(), line.style.table.is_some(), "line {} of {:?}", i, text);
+            let Some(table) = table else { continue };
+            prop_assert!(table.lines.contains(&i));
+            let on_table = table.lines.contains(&buffer.line_of(cursor.head));
+            prop_assert_eq!(table.revealed, on_table);
+            for span in &line.spans {
+                if matches!(span.marker, Some(MarkerKind::TablePipe | MarkerKind::TableDelimiter)) {
+                    prop_assert_eq!(span.hidden, !on_table, "line {} of {:?}", i, text);
+                }
             }
         }
     }

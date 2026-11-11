@@ -283,6 +283,57 @@ fn markdown_parse_prose(c: &mut Criterion) {
     group.finish();
 }
 
+/// A note with a 200-row table of three columns between paragraphs (ADR 0186).
+fn table_note() -> String {
+    let mut text = String::from(
+        "Some prose before the table.\n\n| Name | **Status** | Notes |\n|:--|:-:|--:|\n",
+    );
+    for row in 0..200 {
+        text.push_str(&format!(
+            "| item {row} | *open* | a `note` with \\| a pipe |\n"
+        ));
+    }
+    text.push_str("\nSome prose after the table.\n");
+    text
+}
+
+/// Typing in the middle of a 200-row table, each keystroke followed by what the view does next for a
+/// screen of the table's lines: style each line and look up its table (two keystrokes per iteration, as
+/// above). And styling all of its rows away from the cursor, which is what measuring its grid costs the
+/// engine.
+fn markdown_table(c: &mut Criterion) {
+    let mut editor = Editor::from_text(&table_note());
+    let row = 100;
+    editor.move_to(ByteOffset(editor.buffer().line_start(row).0 + 4), false);
+    let mut markdown = MarkdownState::new(editor.buffer());
+    markdown.decorations(editor.buffer(), ByteOffset(0)..editor.buffer().end());
+    let screen = row - 25..row + 25;
+    let restyle = |editor: &Editor, markdown: &mut MarkdownState| {
+        for line in screen.clone() {
+            let selection = Some(editor.selection());
+            markdown.styled_lines(editor.buffer(), line..line + 1, selection);
+            markdown.table(editor.buffer(), line, selection);
+        }
+    };
+    c.bench_function("markdown_table_two_keystrokes_200_rows", |b| {
+        b.iter(|| {
+            editor.insert_text(black_box("x"));
+            restyle(&editor, &mut markdown);
+            editor.backspace();
+            restyle(&editor, &mut markdown);
+        })
+    });
+    let away = Some(Selection::cursor(ByteOffset(0)));
+    let lines = editor.buffer().line_count();
+    c.bench_function("markdown_table_style_200_rows", |b| {
+        b.iter(|| {
+            for start in (2..lines).step_by(64) {
+                markdown.styled_lines(editor.buffer(), start..(start + 64).min(lines), away);
+            }
+        })
+    });
+}
+
 criterion_group!(
     benches,
     open,
@@ -296,6 +347,7 @@ criterion_group!(
     markdown_keystroke,
     markdown_styled_screen,
     markdown_styled_long_line,
-    markdown_parse_prose
+    markdown_parse_prose,
+    markdown_table
 );
 criterion_main!(benches);

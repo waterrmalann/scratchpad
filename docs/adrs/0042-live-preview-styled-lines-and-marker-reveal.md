@@ -1,6 +1,6 @@
 # 0042. Styled lines and marker reveal for live preview
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted; amended by 0186
 
 ## Context
 The GPUI view shapes one line at a time from runs of uniform style (PLAN §22/§23) and, in live preview, hides

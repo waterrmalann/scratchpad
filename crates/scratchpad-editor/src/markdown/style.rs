@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+use super::table::{self, TableRowKind};
 use super::{CalloutKind, Decoration, DecorationKind, MarkdownState};
 use crate::buffer::Buffer;
 use crate::coords::{Bias, ByteOffset};
@@ -29,6 +30,10 @@ pub struct SpanStyle {
     /// A wikilink (set with `link`) whose page does not exist; only
     /// [`MarkdownState::styled_lines_with_pages`] sets it.
     pub missing_page: bool,
+    /// The table row the span or line is in (ADR 0186); a renderer sets header cells in bold.
+    pub table: Option<TableRowKind>,
+    /// The column of the table cell the span is in, 0-based.
+    pub table_column: Option<u16>,
 }
 
 /// Which syntax a marker span belongs to.
@@ -59,6 +64,10 @@ pub enum MarkerKind {
     ThematicBreak,
     /// A whole fence line, info string included.
     CodeFence,
+    /// A table row's pipe, or its trailing pipe with whatever follows it on the row.
+    TablePipe,
+    /// A table's delimiter row, e.g. `|---|:-:|`.
+    TableDelimiter,
 }
 
 /// A run of a line with one style.
@@ -224,6 +233,9 @@ fn style_line(
                 | DecorationKind::BlockQuote
                 | DecorationKind::Callout { .. }
                 | DecorationKind::CodeBlock { .. }
+                | DecorationKind::TableHeader
+                | DecorationKind::TableDelimiter
+                | DecorationKind::TableRow
         );
         // Blocks inside list items and quotes start after their markers, mid-line.
         if block {
@@ -249,6 +261,7 @@ fn style_line(
     }
     edges.sort_by_key(|(offset, _)| *offset);
 
+    let table = table::enclosing(&on_line);
     let mut ranges = BTreeSet::new();
     let mut markers = BTreeSet::new();
     let mut edges = edges.into_iter().peekable();
@@ -278,7 +291,7 @@ fn style_line(
             hideable(&d.kind)
                 && selection
                     .as_ref()
-                    .is_some_and(|selection| !reveals(buffer, selection, d, m))
+                    .is_some_and(|selection| !reveals(buffer, selection, d, m, table))
         });
         let span = StyledSpan {
             columns: piece.start.0 - line_start.0..piece.end.0 - line_start.0,
@@ -325,6 +338,13 @@ fn apply(kind: &DecorationKind, style: &mut SpanStyle) {
         | DecorationKind::Task { .. }
         | DecorationKind::ThematicBreak => {}
         DecorationKind::WikiLink { .. } => style.link = true,
+        DecorationKind::Table { .. } => {}
+        DecorationKind::TableHeader => style.table = Some(TableRowKind::Header),
+        DecorationKind::TableDelimiter => style.table = Some(TableRowKind::Delimiter),
+        DecorationKind::TableRow => style.table = Some(TableRowKind::Body),
+        DecorationKind::TableCell { column, .. } => {
+            style.table_column = Some(u16::try_from(*column).unwrap_or(u16::MAX));
+        }
     }
 }
 
@@ -346,6 +366,11 @@ fn marker_kind(kind: &DecorationKind) -> MarkerKind {
         DecorationKind::ThematicBreak => MarkerKind::ThematicBreak,
         DecorationKind::CodeBlock { .. } => MarkerKind::CodeFence,
         DecorationKind::WikiLink { .. } => MarkerKind::Link,
+        DecorationKind::Table { .. }
+        | DecorationKind::TableHeader
+        | DecorationKind::TableRow
+        | DecorationKind::TableCell { .. } => MarkerKind::TablePipe,
+        DecorationKind::TableDelimiter => MarkerKind::TableDelimiter,
     }
 }
 
@@ -362,12 +387,14 @@ fn hideable(kind: &DecorationKind) -> bool {
 
 /// Whether live preview shows `marker` of `decoration` for `selection`: the selection touches (overlaps or is
 /// adjacent to) the marker's scope. Touching rather than overlapping means the cursor is never next to a hidden
-/// marker, so cursor motion never steps over invisible text.
+/// marker, so cursor motion never steps over invisible text. `table` is the table on the marker's line, if any:
+/// the markers of its rows show while the selection touches any of its lines (ADR 0186).
 fn reveals(
     buffer: &Buffer,
     selection: &Range<ByteOffset>,
     decoration: &Decoration,
     marker: &Range<ByteOffset>,
+    table: Option<&Decoration>,
 ) -> bool {
     let lines_of = |range: &Range<ByteOffset>| {
         buffer.line_start(buffer.line_of(range.start))..buffer.line_end(buffer.line_of(range.end))
@@ -388,6 +415,11 @@ fn reveals(
         | DecorationKind::ThematicBreak
         | DecorationKind::CodeBlock { .. } => lines_of(&decoration.range),
         DecorationKind::WikiLink { .. } => decoration.range.clone(),
+        DecorationKind::Table { .. }
+        | DecorationKind::TableHeader
+        | DecorationKind::TableDelimiter
+        | DecorationKind::TableRow
+        | DecorationKind::TableCell { .. } => lines_of(&table.unwrap_or(decoration).range),
     };
     selection.start <= scope.end && scope.start <= selection.end
 }

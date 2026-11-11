@@ -13,10 +13,12 @@ mod front_matter;
 mod lists;
 mod parse;
 mod style;
+mod table;
 mod wikilinks;
 
 pub use front_matter::{FrontMatter, MAX_FRONT_MATTER_BYTES, MAX_FRONT_MATTER_LINES, front_matter};
 pub use style::{MarkerKind, SpanStyle, StyledLine, StyledSpan};
+pub use table::{Table, TableAlignment, TableRowKind};
 pub use wikilinks::wikilink_page;
 
 use std::ops::Range;
@@ -86,6 +88,26 @@ pub enum DecorationKind {
     /// target without one.
     WikiLink {
         target: String,
+    },
+    /// A GFM table (ADR 0186), from its header row to its last row, with one alignment per column. It has no
+    /// markers; its rows have them.
+    Table {
+        alignments: Vec<TableAlignment>,
+    },
+    /// A table's header row; its markers are its pipes (see [`DecorationKind::TableRow`]).
+    TableHeader,
+    /// The `|---|:-:|` row under a table's header, from after any container prefix to its last non-blank byte;
+    /// it is its own one marker.
+    TableDelimiter,
+    /// A table's body row. Its markers are its pipes: the leading one, the ones between cells, and the trailing
+    /// one together with any text after it (cells past the header's count, which GFM drops). Escaped pipes
+    /// (`\|`) are cell text.
+    TableRow,
+    /// A cell of a header or body row, between its pipes, with its column (0-based) and that column's alignment;
+    /// its content is the cell without the spaces around it.
+    TableCell {
+        column: usize,
+        alignment: TableAlignment,
     },
 }
 
@@ -458,6 +480,13 @@ mod tests {
         "]]",
         "|",
         "[[a|b]]",
+        "| ",
+        " | ",
+        "|---|",
+        ":-:|",
+        "- | -",
+        "| a | b |\n|---|---|\n",
+        r"\|",
     ];
 
     #[derive(Debug, Clone)]
@@ -588,11 +617,22 @@ mod tests {
         ">[!WARNING]",
         "> > [!CAUTION]",
         "- > [!IMPORTANT]",
+        "| a | b |",
+        "a | b",
+        "|---|---|",
+        "| :-- | --: |",
+        "- | -",
+        "|:-:",
+        "> | a |",
+        "> |---|",
+        "  |---|",
+        "| ",
     ];
     /// What follows on the line: text, inline syntax and fragments that open or close blocks.
     const LINE_REST: &[&str] = &[
         "a", "word", "**", "*", "_", "`", "~~", "-->", "```", "é", "[x](y)", "<b>", " ", "#",
         "1. ", "- ", "> ", "^", "~", "{#a}", " {.b}", "![x](y)", "[!NOTE]", "[[", "]]", "[[a|b]]",
+        "|", " | ", r"\|", "|---", ":-",
     ];
 
     fn line() -> impl Strategy<Value = String> {

@@ -16,11 +16,12 @@ use gpui::{
 use scratchpad_core::PageIndex;
 use scratchpad_editor::markdown::wikilink_page;
 use scratchpad_editor::markdown::{
-    CalloutKind, MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan,
+    CalloutKind, MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan, TableRowKind,
 };
 use scratchpad_editor::{Bias, Buffer, Selection};
 
 use super::geometry::{Glyph, Indents, LineGeometry, expand_tabs, set_span_width, unwrapped_x};
+use super::table::{self, GridKey};
 use crate::theme::{Theme, typography};
 
 /// Heading sizes as multiples of the body size: the plan's 1.8 / 1.5 / 1.25 (PLAN §27), then
@@ -85,6 +86,11 @@ impl BaseStyle {
     fn scaled(&self, pixels: Pixels) -> Pixels {
         (pixels * (self.font_size / typography::BODY_FONT_SIZE)).round()
     }
+
+    /// How far quote text sits right of the text column's left edge.
+    pub(super) fn quote_indent(&self) -> Pixels {
+        self.scaled(QUOTE_INDENT)
+    }
 }
 
 /// Everything besides its text that a line's layout depends on. A cached layout is reused while its
@@ -95,6 +101,9 @@ pub(crate) struct LineKey {
     /// Draws list bullets and task boxes as shapes, and a callout's tag as its label, rather than
     /// as the characters typed.
     pub widgets: bool,
+    /// Lays a table line out as part of an aligned grid (ADR 0186); set by
+    /// [`TableCache::fill`](super::table::TableCache::fill).
+    pub grid: Option<GridKey>,
 }
 
 impl LineKey {
@@ -133,7 +142,11 @@ impl LineKey {
                 }
             })
         });
-        Self { styled, widgets }
+        Self {
+            styled,
+            widgets,
+            grid: None,
+        }
     }
 
     /// How `line` looks in a plain text file: one unstyled span, with no markers.
@@ -154,6 +167,7 @@ impl LineKey {
                 spans,
             },
             widgets: false,
+            grid: None,
         }
     }
 }
@@ -409,7 +423,11 @@ impl LineLayout {
         text_system: &WindowTextSystem,
     ) -> Self {
         let block = key.styled.style;
-        let line_font = LineFont::new(block, base);
+        let mut line_font = LineFont::new(block, base);
+        // A grid's delimiter row is drawn as a rule in a short row.
+        if key.grid.as_ref().map(|grid| grid.row) == Some(TableRowKind::Delimiter) {
+            line_font.line_height = (base.font_size * table::DELIMITER_ROW_HEIGHT).round();
+        }
         let mut widgets = if key.widgets {
             widgets(&key.styled)
         } else {
@@ -460,8 +478,23 @@ impl LineLayout {
             width = set_span_width(&mut glyphs, columns, indent.round(), width);
         }
 
+        if let Some(grid) = &key.grid {
+            // A table in a list item: indentation lines its later rows up with the first, which has the
+            // bullet, as above.
+            let spaces = text.bytes().take_while(|&byte| byte == b' ').count();
+            if item_markers.clone().next().is_none()
+                && spaces > 0
+                && display_of(spaces) == table::row_start(&key.styled)
+            {
+                let indent = line_font.size * BULLET_WIDTH / 2. * spaces as f32;
+                width = set_span_width(&mut glyphs, 0..display_of(spaces), indent.round(), width);
+            }
+            width = table::position(&key.styled, &display, &mut glyphs, width, grid);
+        }
+
         let mut indents = Indents::default();
-        let mut wrap_width = if base.soft_wrap {
+        // A grid row is never wrapped (ADR 0186).
+        let mut wrap_width = if base.soft_wrap && key.grid.is_none() {
             base.wrap_width
         } else {
             Pixels::MAX
@@ -654,6 +687,12 @@ impl LineLayout {
             let origin = point(px(0.), (self.line_height / 2.).round());
             let bounds = Bounds::new(origin, size(base.wrap_width, px(1.)));
             self.above.push(Shape::rect(bounds, theme.border));
+        }
+        if let Some(grid) = &key.grid {
+            let left = self.geometry.x_for(table::row_start(&key.styled));
+            for (bounds, color) in table::shapes(grid, left, self.line_height, theme) {
+                self.below.push(Shape::rect(bounds, color));
+            }
         }
         if key.styled.style.quote {
             let bounds = Bounds::new(point(px(0.), px(0.)), size(QUOTE_BAR_WIDTH, self.height()));
@@ -930,7 +969,7 @@ fn runs(key: &LineKey, widgets: &[Widget], line_font: &LineFont, base: &BaseStyl
         } else {
             line_font.font.clone()
         };
-        if style.bold {
+        if style.bold || style.table == Some(TableRowKind::Header) {
             font.weight = FontWeight::BOLD;
         }
         if style.italic {
@@ -1067,4 +1106,33 @@ fn merged(runs: &[Run], include: impl Fn(&Run) -> bool) -> Vec<Range<usize>> {
         }
     }
     ranges
+}
+
+/// Measures the cells of the table row `text` styled as `styled`, shaped as [`LineLayout::shape`] shapes it,
+/// calling `cell` with each cell's column and the width of its text. Returns where the row starts: the width of
+/// what comes before it on the line (ADR 0186).
+pub(super) fn measure_cells(
+    text: &str,
+    styled: &StyledLine,
+    base: &BaseStyle,
+    text_system: &WindowTextSystem,
+    mut cell: impl FnMut(usize, Pixels),
+) -> Pixels {
+    let key = LineKey {
+        styled: styled.clone(),
+        widgets: false,
+        grid: None,
+    };
+    let runs = runs(&key, &[], &LineFont::new(styled.style, base), base);
+    let mut display = String::with_capacity(text.len());
+    for span in styled.spans.iter().filter(|span| !span.hidden) {
+        display.push_str(&text[span.columns.clone()]);
+    }
+    let (_, mut glyphs, width) = shape_runs(&display, &runs, text_system);
+    let width = expand_tabs(&display, &mut glyphs, width);
+    for (column, columns) in table::cells(styled, &display) {
+        let x = |column| unwrapped_x(&glyphs, column, width);
+        cell(column, x(columns.end) - x(columns.start));
+    }
+    unwrapped_x(&glyphs, table::row_start(styled), width)
 }
