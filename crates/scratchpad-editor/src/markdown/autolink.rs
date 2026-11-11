@@ -10,8 +10,8 @@
 //! `https://` followed by a domain, `www.` followed by a domain with a period after start of line, whitespace
 //! or one of `*_~(`, and `local@domain.tld`. A domain is alphanumeric segments (`-` and `_` allowed, no `_` in
 //! the last two) separated by periods. The address runs to whitespace, `<` or a `]` it did not open, then loses
-//! trailing punctuation (`?!.,:*_~'"`), an entity-like `&name;` and any `)` without a matching `(`. Every byte the rules look at or
-//! cut at is ASCII, so all ranges are char boundaries.
+//! trailing punctuation (`?!.,:*_~'"`), an entity-like `&name;` and any `)` without a matching `(`. Every byte
+//! the rules look at or cut at is ASCII, so all ranges are char boundaries.
 
 use std::ops::Range;
 

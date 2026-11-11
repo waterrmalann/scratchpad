@@ -65,8 +65,9 @@ fn highlights_pair_their_double_equals_signs() {
         [d("Highlight", "==marked==", "marked", &["==", "=="])]
     );
     assert_eq!(highlights("==a== and ==b=="), ["==a==", "==b=="]);
-    // Inside words, and around other inline markup.
-    assert_eq!(highlights("x==y==z"), ["==y=="]);
+    // Around other inline markup, and after or before punctuation.
+    assert_eq!(highlights("(==y==)"), ["==y=="]);
+    assert_eq!(highlights("a ==b==, c"), ["==b=="]);
     assert_eq!(highlights("==a *b* c=="), ["==a *b* c=="]);
     assert_eq!(highlights("**==a==**"), ["==a=="]);
     assert_eq!(highlights("==a `code` b=="), ["==a `code` b=="]);
@@ -105,6 +106,11 @@ fn equals_signs_that_are_not_highlights_stay_text() {
         "<https://x.com/==a==>",
         "https://x.com/?a==b==",
         "[[==a==]]",
+        // Between letters or digits, `==` pairs like `_`: comparisons are no highlights.
+        "x==y==z",
+        "x==1 and y==2",
+        "if a==b then c==d",
+        "a==b==",
         // Not across the edge of another inline element.
         "*a ==b* c==",
         "==a *b== c*",

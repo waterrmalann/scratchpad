@@ -7,8 +7,10 @@
 //! definitions may be in another region), so their text is prose: `[:smile:][r]` shows the emoji whether or not
 //! `r` is defined.
 //!
-//! `==` pairs like an emphasis delimiter run (CommonMark §6.2): a run of exactly two `=` (not escaped) opens if
-//! it is left-flanking and closes if it is right-flanking. It closes the nearest opener before it in the same inline element: a highlight
+//! `==` pairs like an emphasis delimiter run of `_` (CommonMark §6.2): a run of exactly two `=` (not escaped)
+//! opens if it is left-flanking and, when also right-flanking, comes after punctuation; it closes if it is
+//! right-flanking and, when also left-flanking, comes before punctuation. So `==a==` and `a ==b== c` highlight,
+//! but `x==1 and y==2` does not. It closes the nearest opener before it in the same inline element: a highlight
 //! never crosses the edge of another inline element (`*a ==b* c==` has none), but may enclose one
 //! (`==a *b* c==`). Runs of one or three or more `=` are text, and setext underlines are not text at all.
 //! Everything looked at is ASCII, so all ranges are char boundaries.
@@ -132,13 +134,16 @@ impl TextMarks {
         let before = text[..at].chars().next_back();
         let after = text[at + 2..].chars().next();
         let (left, right) = (flanking(after, before), flanking(before, after));
+        // The rule of `_`: a run flanked on both sides opens only after punctuation and closes only before it.
+        let can_open = left && (!right || punctuation(before));
+        let can_close = right && (!left || punctuation(after));
         let open = self
             .openers
             .last()
             .filter(|&&(depth, _)| depth == self.depth)
             .map(|&(_, start)| start);
         match open {
-            Some(start) if right => {
+            Some(start) if can_close => {
                 self.openers.pop();
                 let markers = vec![offsets(start..start + 2), offsets(at..at + 2)];
                 self.found.push(Decoration {
@@ -148,7 +153,7 @@ impl TextMarks {
                     markers,
                 });
             }
-            _ if left => self.openers.push((self.depth, at)),
+            _ if can_open => self.openers.push((self.depth, at)),
             _ => {}
         }
     }
