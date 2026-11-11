@@ -43,7 +43,7 @@ with every new ADR.
 | [0066](0066-notes-that-are-not-utf8.md) | Notes that are not valid UTF-8 open read-only until the user agrees | Accepted |
 | [0070](0070-markdown-typography-in-the-editor-view.md) | Markdown typography in the editor view | Accepted; amended by 0130 |
 | [0071](0071-live-preview-layout-and-column-mapping.md) | Live preview layout and column mapping | Accepted; amended by 0125 |
-| [0072](0072-markdown-shortcuts-tasks-and-links.md) | Markdown shortcuts, task boxes and links | Accepted |
+| [0072](0072-markdown-shortcuts-tasks-and-links.md) | Markdown shortcuts, task boxes and links | Accepted; amended by 0188 |
 | [0080](0080-a-small-settings-panel.md) | A small settings panel with two settings | Accepted |
 | [0081](0081-changing-the-notes-folder.md) | Changing the notes folder | Accepted; amended by 0145 |
 | [0082](0082-config-dir-override.md) | SCRATCHPAD_CONFIG_DIR keeps trial runs away from the user's settings | Accepted |
@@ -76,4 +76,5 @@ with every new ADR.
 | [0170](0170-spell-checking-with-the-system-checker.md) | Spell checking with the system's checker | Accepted; amends 0001 and 0150; amended by 0175, 0180 |
 | [0175](0175-the-notes-context-menu.md) | The note's context menu, with the spelling corrections in it | Accepted; amends 0150 and 0170 |
 | [0180](0180-typed-replacements.md) | Typed sequences become symbols, and Backspace takes them back | Accepted; amends 0044, 0150 and 0170 |
-| [0185](0185-optional-markdown-syntax-and-images.md) | Optional Markdown syntax (callouts, superscript, subscript, heading IDs); images styled as links | Accepted; amends 0040 and 0150 |
+| [0185](0185-optional-markdown-syntax-and-images.md) | Optional Markdown syntax (callouts, superscript, subscript, heading IDs); images styled as links | Accepted; amends 0040 and 0150; amended by 0188 |
+| [0188](0188-wikilinks-to-pages-in-the-same-folder.md) | Wikilinks to pages in the same folder | Accepted; amends 0072 and 0185 |

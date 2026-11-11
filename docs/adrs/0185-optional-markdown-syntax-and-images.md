@@ -1,6 +1,6 @@
 # 0185. Optional Markdown syntax: callouts, superscript, subscript, heading IDs; images styled as links
 Date: 2026-11-11
-Status: Accepted; amends ADR 0040 and 0150
+Status: Accepted; amends ADR 0040 and 0150; amended by 0188
 
 ## Context
 Notes copied from GitHub and Obsidian use GFM alerts (`> [!NOTE]`), `^sup^`, `~sub~` and heading

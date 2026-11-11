@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use gpui::{App, AppContext, Context, EventEmitter, Task};
-use scratchpad_core::{Note, NoteSearch, NoteStore, SearchHit, is_note_path};
+use scratchpad_core::{Note, NoteSearch, NoteStore, PageIndex, SearchHit, is_note_path};
 
 use crate::{settings, toast};
 
@@ -131,6 +131,9 @@ pub struct Notes {
     /// The running search. Replacing it drops (cancels) the previous one, so results of an
     /// older query can never overwrite newer ones.
     search_task: Option<Task<()>>,
+    /// The folder's notes and plain text files by name, for wikilinks (ADR 0188): read with each
+    /// listing and kept in step with the note list between listings.
+    pages: Arc<PageIndex>,
 }
 
 impl EventEmitter<NotesEvent> for Notes {}
@@ -160,6 +163,7 @@ impl Notes {
             hits: None,
             search: Arc::default(),
             search_task: None,
+            pages: Arc::default(),
         };
         notes.load_pins(cx);
         notes.open_folder(reopen, cx);
@@ -214,7 +218,9 @@ impl Notes {
                 None => location.open()?,
             };
             let notes = store.list()?;
-            scratchpad_core::Result::Ok((store, notes))
+            // The text files too, which are not notes but can be linked to.
+            let pages = PageIndex::read(store.dir())?;
+            scratchpad_core::Result::Ok((store, notes, pages))
         });
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let listed = listing.await;
@@ -225,9 +231,10 @@ impl Notes {
                     return;
                 }
                 match listed {
-                    Ok((store, notes)) => {
+                    Ok((store, notes, pages)) => {
                         this.store = Some(store);
                         this.notes = Arc::new(notes);
+                        this.pages = Arc::new(pages);
                         this.search(cx);
                         if mem::take(&mut this.open_after_listing)
                             && this.selection == Selection::None
@@ -267,6 +274,7 @@ impl Notes {
         self.location = location;
         self.store = Some(store);
         self.notes = Arc::default();
+        self.pages = Arc::default();
         self.loaded = false;
         self.changes += 1;
         if !matches!(&self.selection, Selection::File(path) if self.note_path(path).is_none()) {
@@ -292,6 +300,24 @@ impl Notes {
     /// Notes on disk, most recently modified first.
     pub fn notes(&self) -> &[Note] {
         &self.notes
+    }
+
+    /// The folder's notes and `.txt` files by name, which wikilinks of notes in the folder resolve
+    /// against (ADR 0188). A new `Arc` whenever a page is added or removed.
+    pub fn pages(&self) -> &Arc<PageIndex> {
+        &self.pages
+    }
+
+    fn add_page(&mut self, path: &Path) {
+        if !self.pages.contains(path) && scratchpad_core::is_page_path(path) {
+            Arc::make_mut(&mut self.pages).insert(path.to_owned());
+        }
+    }
+
+    fn remove_page(&mut self, path: &Path) {
+        if self.pages.contains(path) {
+            Arc::make_mut(&mut self.pages).remove(path);
+        }
     }
 
     /// Whether the first listing has finished (successfully or not).
@@ -332,6 +358,7 @@ impl Notes {
             return;
         }
         self.changes += 1;
+        self.add_page(&note.path);
         let notes = Arc::make_mut(&mut self.notes);
         notes.retain(|listed| listed.path != note.path);
         notes.insert(0, note);
@@ -354,6 +381,7 @@ impl Notes {
         }
         let neighbour = self.neighbour_of(path);
         self.changes += 1;
+        self.remove_page(path);
         Arc::make_mut(&mut self.notes).retain(|note| note.path != path);
         self.pinned.retain(|pinned| pinned != path);
         if let Some(hits) = &mut self.hits {
@@ -521,6 +549,7 @@ impl Notes {
     ) -> scratchpad_core::Result<Note> {
         let note = self.opened_store()?.create(title)?;
         self.changes += 1;
+        self.add_page(&note.path);
         Arc::make_mut(&mut self.notes).insert(0, note.clone());
         if self.selection == Selection::Draft(draft) {
             self.selection = Selection::Note(note.path.clone());
@@ -543,6 +572,8 @@ impl Notes {
             return Ok(new_path);
         }
         self.changes += 1;
+        self.remove_page(path);
+        self.add_page(&new_path);
         for pinned in self.pinned.iter_mut().filter(|pinned| *pinned == path) {
             *pinned = new_path.clone();
         }
@@ -579,6 +610,7 @@ impl Notes {
         let neighbour = self.neighbour_of(path);
         self.opened_store()?.delete(path)?;
         self.changes += 1;
+        self.remove_page(path);
         Arc::make_mut(&mut self.notes).retain(|note| note.path != path);
         self.pinned.retain(|pinned| pinned != path);
         if let Some(hits) = &mut self.hits {

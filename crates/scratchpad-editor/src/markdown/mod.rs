@@ -12,9 +12,11 @@ mod front_matter;
 mod lists;
 mod parse;
 mod style;
+mod wikilinks;
 
 pub use front_matter::{FrontMatter, MAX_FRONT_MATTER_BYTES, MAX_FRONT_MATTER_LINES, front_matter};
 pub use style::{MarkerKind, SpanStyle, StyledLine, StyledSpan};
+pub use wikilinks::wikilink_page;
 
 use std::ops::Range;
 
@@ -75,6 +77,13 @@ pub enum DecorationKind {
     CodeBlock {
         info: String,
     },
+    /// `[[target]]` or `[[target|label]]`, with [`MarkdownOptions::wikilinks`] (ADR 0188): a link to the page
+    /// [`wikilink_page`] finds in `target`, in the note's folder. Only targets naming a plain file stem are
+    /// links. The markers are `[[`, `target|` when there is a label, and `]]`; the content is the label, or the
+    /// target without one.
+    WikiLink {
+        target: String,
+    },
 }
 
 /// The kind of a GFM alert ([`DecorationKind::Callout`]).
@@ -114,6 +123,8 @@ pub struct MarkdownOptions {
     /// A trailing `{#id .class}` attribute block on a heading's line is one of the heading's markers rather
     /// than part of its text.
     pub heading_ids: bool,
+    /// `[[Page]]` links to other notes ([`DecorationKind::WikiLink`]). On by default.
+    pub wikilinks: bool,
 }
 
 impl MarkdownOptions {
@@ -123,6 +134,7 @@ impl MarkdownOptions {
         superscript: true,
         subscript: true,
         heading_ids: true,
+        wikilinks: true,
     };
 }
 
@@ -133,6 +145,7 @@ impl Default for MarkdownOptions {
             superscript: false,
             subscript: false,
             heading_ids: false,
+            wikilinks: true,
         }
     }
 }
@@ -271,6 +284,19 @@ impl MarkdownState {
             .into_iter()
             .find_map(|d| match d.kind {
                 DecorationKind::Link { destination } if offset < d.range.end => Some(destination),
+                _ => None,
+            })
+    }
+
+    /// The page of the wikilink whose text or markers contain the char at `offset` ([`wikilink_page`] of its
+    /// target), for opening it on Ctrl+click.
+    pub fn wikilink_at(&mut self, buffer: &Buffer, offset: ByteOffset) -> Option<String> {
+        self.decorations(buffer, offset..offset)
+            .into_iter()
+            .find_map(|d| match d.kind {
+                DecorationKind::WikiLink { target } if offset < d.range.end => {
+                    wikilink_page(&target).map(str::to_owned)
+                }
                 _ => None,
             })
     }
@@ -420,6 +446,10 @@ mod tests {
         "~",
         " {#a}",
         "![x](y)",
+        "[[",
+        "]]",
+        "|",
+        "[[a|b]]",
     ];
 
     #[derive(Debug, Clone)]
@@ -442,8 +472,8 @@ mod tests {
     fn options() -> impl Strategy<Value = MarkdownOptions> {
         prop_oneof![
             1 => Just(MarkdownOptions::ALL),
-            2 => any::<[bool; 4]>().prop_map(|[callouts, superscript, subscript, heading_ids]| {
-                MarkdownOptions { callouts, superscript, subscript, heading_ids }
+            2 => any::<[bool; 5]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks]| {
+                MarkdownOptions { callouts, superscript, subscript, heading_ids, wikilinks }
             }),
         ]
     }
@@ -554,7 +584,7 @@ mod tests {
     /// What follows on the line: text, inline syntax and fragments that open or close blocks.
     const LINE_REST: &[&str] = &[
         "a", "word", "**", "*", "_", "`", "~~", "-->", "```", "é", "[x](y)", "<b>", " ", "#",
-        "1. ", "- ", "> ", "^", "~", "{#a}", " {.b}", "![x](y)", "[!NOTE]",
+        "1. ", "- ", "> ", "^", "~", "{#a}", " {.b}", "![x](y)", "[!NOTE]", "[[", "]]", "[[a|b]]",
     ];
 
     fn line() -> impl Strategy<Value = String> {

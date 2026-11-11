@@ -537,3 +537,149 @@ fn changing_the_options_reparses_lazily() {
         [DecorationKind::Superscript, DecorationKind::Subscript]
     );
 }
+
+#[test]
+fn wikilinks_mark_their_brackets_and_the_target_before_a_label() {
+    assert_eq!(
+        describe("[[Page]] [[Page|the label]] [[Page#Heading]] [[Other #Part|x]]"),
+        [
+            d(
+                "WikiLink { target: \"Page\" }",
+                "[[Page]]",
+                "Page",
+                &["[[", "]]"]
+            ),
+            d(
+                "WikiLink { target: \"Page\" }",
+                "[[Page|the label]]",
+                "the label",
+                &["[[", "Page|", "]]"]
+            ),
+            d(
+                "WikiLink { target: \"Page#Heading\" }",
+                "[[Page#Heading]]",
+                "Page#Heading",
+                &["[[", "]]"]
+            ),
+            d(
+                "WikiLink { target: \"Other #Part\" }",
+                "[[Other #Part|x]]",
+                "x",
+                &["[[", "Other #Part|", "]]"]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn wikilinks_sit_next_to_and_inside_other_inline_markup() {
+    assert_eq!(
+        describe("**[[A]]** *x* [[B|*em* `c`]] [l](u) [[C]]"),
+        [
+            d("Strong", "**[[A]]**", "[[A]]", &["**", "**"]),
+            d("WikiLink { target: \"A\" }", "[[A]]", "A", &["[[", "]]"]),
+            d("Emphasis", "*x*", "x", &["*", "*"]),
+            d(
+                "WikiLink { target: \"B\" }",
+                "[[B|*em* `c`]]",
+                "*em* `c`",
+                &["[[", "B|", "]]"]
+            ),
+            d("Emphasis", "*em*", "em", &["*", "*"]),
+            d("InlineCode", "`c`", "c", &["`", "`"]),
+            d("Link u", "[l](u)", "l", &["[", "](u)"]),
+            d("WikiLink { target: \"C\" }", "[[C]]", "C", &["[[", "]]"]),
+        ]
+    );
+    // In a heading, a list item and a quote.
+    let kinds: Vec<String> = describe("# [[H]]\n\n- [[L]]\n\n> [[Q]]")
+        .into_iter()
+        .map(|d| d.0)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "H1",
+            "WikiLink { target: \"H\" }",
+            "Bullet",
+            "WikiLink { target: \"L\" }",
+            "BlockQuote",
+            "WikiLink { target: \"Q\" }",
+        ]
+    );
+}
+
+#[test]
+fn escaped_code_embedded_and_rejected_wikilinks_are_text() {
+    for text in [
+        r"\[\[Page]]",
+        r"\[[Page]]",
+        r"[[Page\]]",
+        r"[[\[[Page|label]]",
+        "`[[Page]]`",
+        "    [[Page]]",
+        "[[]] [[|]] [[|x]] [[",
+        "![[Picture.png]]",
+        "[[../Secret]] [[sub/Page]] [[C:\\x]] [[CON]] [[https://example.org/]] [[a\nb]]",
+    ] {
+        let links: Vec<Described> = describe(text)
+            .into_iter()
+            .filter(|d| d.0.starts_with("WikiLink"))
+            .collect();
+        assert_eq!(links, [], "{text:?}");
+    }
+    assert_eq!(
+        describe("```\n[[Page]]\n```"),
+        [d(
+            "Code ",
+            "```\n[[Page]]\n```",
+            "[[Page]]",
+            &["```", "```"]
+        )]
+    );
+}
+
+#[test]
+fn wikilinks_take_precedence_over_links_and_emphasis_around_them() {
+    // The outer link cannot contain a wikilink; `**` across a wikilink does not pair.
+    assert_eq!(
+        describe("[see [[A]]](u) **x [[B** y]]"),
+        [d("WikiLink { target: \"A\" }", "[[A]]", "A", &["[[", "]]"])]
+    );
+    // `[[a]](b)` was a link with the text `[a]`; it is a wikilink followed by text.
+    assert_eq!(
+        describe("[[a]](b)"),
+        [d("WikiLink { target: \"a\" }", "[[a]]", "a", &["[[", "]]"])]
+    );
+}
+
+#[test]
+fn without_the_option_wikilinks_parse_as_before() {
+    let off = MarkdownOptions {
+        wikilinks: false,
+        ..MarkdownOptions::default()
+    };
+    assert_eq!(describe_with("[[Page]] [[a|b]]", off), []);
+    assert_eq!(
+        describe_with("[[a]](b)", off),
+        [d("Link b", "[[a]](b)", "[a]", &["[", "](b)"])]
+    );
+    assert!(MarkdownOptions::default().wikilinks);
+}
+
+#[test]
+fn wikilink_at_finds_the_page_under_the_pointer() {
+    let buffer = Buffer::from_text("go [[Page#Top|there]] [x](https://a.b)");
+    let mut markdown = MarkdownState::new(&buffer);
+    for offset in [3, 5, 15, 20] {
+        assert_eq!(
+            markdown.wikilink_at(&buffer, ByteOffset(offset)).as_deref(),
+            Some("Page"),
+            "{offset}"
+        );
+    }
+    assert_eq!(markdown.wikilink_at(&buffer, ByteOffset(2)), None);
+    assert_eq!(markdown.wikilink_at(&buffer, ByteOffset(21)), None);
+    assert_eq!(markdown.wikilink_at(&buffer, ByteOffset(23)), None);
+    assert_eq!(markdown.link_at(&buffer, ByteOffset(5)), None);
+}

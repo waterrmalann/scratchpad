@@ -24,6 +24,7 @@ use gpui::{
     SharedString, Subscription, Task, UTF16Selection, Window, WindowTextSystem, div, font,
     prelude::*, px,
 };
+use scratchpad_core::PageIndex;
 use scratchpad_editor::markdown::{MarkdownOptions, MarkdownState};
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Selection, Utf16Offset};
 
@@ -66,6 +67,20 @@ pub enum EditorEvent {
     /// The text changed through user input (typing, IME, paste, undo, ...). Not emitted by
     /// [`EditorView::set_text`].
     Changed,
+}
+
+/// Emitted by [`EditorView`] on Ctrl+click on a wikilink (ADR 0188): open the page of this name
+/// in the folder of the note, creating it if there is none. The name is a plain file stem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenPage(pub String);
+
+/// What a Ctrl+click on a link opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// A link's destination, opened only if it is a web or mail address.
+    Url(String),
+    /// A wikilink's page.
+    Page(String),
 }
 
 /// A text editor for one document.
@@ -125,6 +140,9 @@ pub struct EditorView {
     #[cfg(feature = "test-support")]
     match_highlights: Vec<Bounds<Pixels>>,
     _subscriptions: Vec<Subscription>,
+    /// The pages of the note's folder, for drawing wikilinks to missing ones differently; `None`
+    /// while not known, when every wikilink is drawn as found (ADR 0188).
+    pages: Option<Arc<PageIndex>>,
 }
 
 /// How the next layout brings the cursor into view.
@@ -166,6 +184,7 @@ enum Granularity {
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
+impl EventEmitter<OpenPage> for EditorView {}
 
 impl Focusable for EditorView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -218,6 +237,7 @@ impl EditorView {
             #[cfg(feature = "test-support")]
             match_highlights: Vec::new(),
             _subscriptions: subscriptions,
+            pages: None,
         }
     }
 
@@ -455,6 +475,25 @@ impl EditorView {
         }
     }
 
+    /// The pages wikilinks of the open note resolve to (ADR 0188). Lines with wikilinks are
+    /// restyled when they change: a cheap pointer check, so callers may pass the same index often.
+    pub fn set_pages(&mut self, pages: Option<Arc<PageIndex>>, cx: &mut Context<Self>) {
+        let same = match (&self.pages, &pages) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.pages = pages;
+            self.styled_for = None;
+            cx.notify();
+        }
+    }
+
+    pub fn pages(&self) -> Option<&Arc<PageIndex>> {
+        self.pages.as_ref()
+    }
+
     // --- Engine plumbing ---
 
     /// Runs an edit, notifying observers if the text changed and scrolling to the cursor.
@@ -602,6 +641,7 @@ impl EditorView {
         let lines = Lines {
             buffer: self.editor.buffer(),
             markdown: (!self.plain).then_some(&mut self.markdown),
+            pages: self.pages.as_deref(),
             selection,
             cache: &mut self.layouts,
             text_system: window.text_system(),
@@ -644,8 +684,8 @@ impl EditorView {
         buffer.clip_offset(ByteOffset(start.0 + column), Bias::Left)
     }
 
-    /// The destination of the link drawn at a window position.
-    fn link_at(&mut self, position: Point<Pixels>, window: &Window) -> Option<String> {
+    /// The link or wikilink drawn at a window position.
+    fn link_at(&mut self, position: Point<Pixels>, window: &Window) -> Option<LinkTarget> {
         if self.plain {
             return None;
         }
@@ -656,7 +696,14 @@ impl EditorView {
         }
         let column = layout.column_under(layout.row_at(hit.position.y), hit.position.x)?;
         let offset = self.offset(hit.line, column);
-        self.markdown.link_at(self.editor.buffer(), offset)
+        let buffer = self.editor.buffer();
+        match self.markdown.link_at(buffer, offset) {
+            Some(url) => Some(LinkTarget::Url(url)),
+            None => self
+                .markdown
+                .wikilink_at(buffer, offset)
+                .map(LinkTarget::Page),
+        }
     }
 
     // --- Keyboard ---
@@ -762,9 +809,12 @@ impl EditorView {
                 return;
             }
             if event.modifiers.secondary()
-                && let Some(url) = self.link_at(event.position, window)
+                && let Some(link) = self.link_at(event.position, window)
             {
-                open_link(&url, cx);
+                match link {
+                    LinkTarget::Url(url) => open_link(&url, cx),
+                    LinkTarget::Page(page) => cx.emit(OpenPage(page)),
+                }
                 return;
             }
         }
@@ -1383,6 +1433,8 @@ struct Lines<'a> {
     buffer: &'a Buffer,
     /// `None` in plain text.
     markdown: Option<&'a mut MarkdownState>,
+    /// The pages wikilinks resolve to, if known.
+    pages: Option<&'a PageIndex>,
     /// The selection markers are revealed around; `None` in source mode and plain text.
     selection: Option<Selection>,
     cache: &'a mut LayoutCache,
@@ -1393,9 +1445,10 @@ impl Lines<'_> {
     fn layout(&mut self, line: usize) -> Arc<LineLayout> {
         let (buffer, markdown, selection) =
             (self.buffer, self.markdown.as_deref_mut(), self.selection);
+        let pages = self.pages;
         self.cache
             .line(line, buffer, self.text_system, || match markdown {
-                Some(markdown) => LineKey::new(markdown, buffer, line, selection),
+                Some(markdown) => LineKey::new(markdown, pages, buffer, line, selection),
                 None => LineKey::plain(buffer, line),
             })
     }
@@ -1406,7 +1459,7 @@ impl Lines<'_> {
         let (Some(markdown), Some(_)) = (self.markdown.as_deref_mut(), self.selection) else {
             return self.layout(line);
         };
-        let key = LineKey::new(markdown, self.buffer, line, Some(selection));
+        let key = LineKey::new(markdown, self.pages, self.buffer, line, Some(selection));
         self.cache
             .line_with_key(line, self.buffer, self.text_system, key)
     }

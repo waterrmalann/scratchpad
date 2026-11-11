@@ -82,7 +82,7 @@ pub struct Config {
     #[serde(deserialize_with = "or_default")]
     pub auto_replace: Option<bool>,
     /// Optional Markdown syntax (View > Markdown features); `None` is the app's default for each:
-    /// callouts on, the others off.
+    /// callouts and wikilinks on, the others off.
     #[serde(deserialize_with = "or_default")]
     pub markdown_callouts: Option<bool>,
     #[serde(deserialize_with = "or_default")]
@@ -91,6 +91,8 @@ pub struct Config {
     pub markdown_subscript: Option<bool>,
     #[serde(deserialize_with = "or_default")]
     pub markdown_heading_ids: Option<bool>,
+    #[serde(deserialize_with = "or_default")]
+    pub markdown_wikilinks: Option<bool>,
 }
 
 impl Config {

@@ -138,6 +138,8 @@ pub mod view {
             ToggleSubscript,
             /// Turns Markdown heading attribute blocks (`# Title {#id}`) on or off (ADR 0185).
             ToggleHeadingIds,
+            /// Turns wikilinks to other notes (`[[Page]]`) on or off (ADR 0188).
+            ToggleWikilinks,
         ]
     );
 

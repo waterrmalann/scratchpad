@@ -98,6 +98,7 @@ pub fn markdown_options(config: &Config) -> MarkdownOptions {
         superscript: config.markdown_superscript.unwrap_or(default.superscript),
         subscript: config.markdown_subscript.unwrap_or(default.subscript),
         heading_ids: config.markdown_heading_ids.unwrap_or(default.heading_ids),
+        wikilinks: config.markdown_wikilinks.unwrap_or(default.wikilinks),
     }
 }
 
@@ -107,6 +108,7 @@ pub fn store_markdown_options(config: &mut Config, options: MarkdownOptions) {
     config.markdown_superscript = Some(options.superscript);
     config.markdown_subscript = Some(options.subscript);
     config.markdown_heading_ids = Some(options.heading_ids);
+    config.markdown_wikilinks = Some(options.wikilinks);
 }
 
 pub fn theme_mode(preference: ThemePreference) -> ThemeMode {

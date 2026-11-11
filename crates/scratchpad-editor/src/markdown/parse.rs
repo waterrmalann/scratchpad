@@ -13,7 +13,7 @@ use pulldown_cmark::{
     BlockQuoteKind, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd,
 };
 
-use super::{CalloutKind, Decoration, DecorationKind, MarkdownOptions};
+use super::{CalloutKind, Decoration, DecorationKind, MarkdownOptions, wikilink_page};
 use crate::coords::ByteOffset;
 
 /// Parses `text` with `options` and returns its decorations ordered by start, enclosing decorations before enclosed
@@ -46,6 +46,7 @@ fn pulldown_options(options: MarkdownOptions) -> Options {
     pulldown.set(Options::ENABLE_SUPERSCRIPT, options.superscript);
     pulldown.set(Options::ENABLE_SUBSCRIPT, options.subscript);
     pulldown.set(Options::ENABLE_HEADING_ATTRIBUTES, options.heading_ids);
+    pulldown.set(Options::ENABLE_WIKILINKS, options.wikilinks);
     pulldown
 }
 
@@ -148,6 +149,9 @@ impl Builder<'_> {
         range: Range<usize>,
         opener: usize,
     ) {
+        if let LinkType::WikiLink { has_pothole } = link_type {
+            return self.wikilink(&destination, has_pothole, range, opener);
+        }
         // Reference links resolve against definitions anywhere in the document, which a region parsed on its own
         // cannot see, so they stay plain text everywhere rather than only sometimes (ADR 0040).
         let supported = matches!(
@@ -161,6 +165,37 @@ impl Builder<'_> {
             self.push(kind, range.clone(), range.clone(), Vec::new())
         });
         self.links.push((index, range.start + opener));
+    }
+
+    /// `[[target]]` or `[[target|label]]` (ADR 0188). pulldown-cmark reports the whole of it as the range and
+    /// the text before the first `|` as the target. Embeds (`![[x]]`), targets that are not plain page names and
+    /// targets that are not the text as typed (pulldown-cmark drops an escaping backslash) stay text.
+    fn wikilink(&mut self, target: &str, has_pothole: bool, range: Range<usize>, opener: usize) {
+        let text = &self.text[range.clone()];
+        let well_formed =
+            opener == 1 && text.len() >= 4 && text.starts_with("[[") && text.ends_with("]]");
+        let open = range.start..range.start + 2;
+        let close = range.end.saturating_sub(2)..range.end;
+        let pipe = (well_formed && has_pothole)
+            .then(|| self.text[open.end..close.start].find('|'))
+            .flatten()
+            .map(|i| open.end + i);
+        let typed = well_formed && self.text[open.end..pipe.unwrap_or(close.start)] == *target;
+        if typed && wikilink_page(target).is_some() {
+            let (content_start, markers) = match pipe {
+                Some(pipe) => (
+                    pipe + 1,
+                    vec![open.clone(), open.end..pipe + 1, close.clone()],
+                ),
+                None => (open.end, vec![open.clone(), close.clone()]),
+            };
+            let kind = DecorationKind::WikiLink {
+                target: target.to_owned(),
+            };
+            self.push(kind, range.clone(), content_start..close.start, markers);
+        }
+        // Its markers are known already: nothing to do at its end.
+        self.links.push((None, range.start + opener));
     }
 
     fn push(

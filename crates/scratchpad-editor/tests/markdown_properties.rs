@@ -1,7 +1,9 @@
 //! Randomized Markdown: parsing never panics and decorations are always well formed.
 
 use proptest::prelude::*;
-use scratchpad_editor::markdown::{Decoration, MarkdownOptions, MarkdownState};
+use scratchpad_editor::markdown::{
+    Decoration, DecorationKind, MarkdownOptions, MarkdownState, wikilink_page,
+};
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Selection};
 
 /// Markdown syntax fragments, prose and hostile Unicode that combine into well-formed and malformed documents.
@@ -55,14 +57,19 @@ const ATOMS: &[&str] = &[
     "{#a .b}",
     "{",
     "}",
+    "[[",
+    "]]",
+    "|",
+    "Page",
+    "[[Page|label]]",
 ];
 
 /// Any options, every one on in a third of the cases.
 fn options() -> impl Strategy<Value = MarkdownOptions> {
     prop_oneof![
         1 => Just(MarkdownOptions::ALL),
-        2 => any::<[bool; 4]>().prop_map(|[callouts, superscript, subscript, heading_ids]| {
-            MarkdownOptions { callouts, superscript, subscript, heading_ids }
+        2 => any::<[bool; 5]>().prop_map(|[callouts, superscript, subscript, heading_ids, wikilinks]| {
+            MarkdownOptions { callouts, superscript, subscript, heading_ids, wikilinks }
         }),
     ]
 }
@@ -162,6 +169,51 @@ proptest! {
                 prop_assert!(left <= column && column <= right, "{column} -> {shown} -> {left}..{right}");
                 prop_assert_eq!(line.display_column(left), shown);
                 prop_assert_eq!(line.display_column(right), shown);
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1024))]
+
+    /// With wikilinks on, every wikilink names a plain page, is `[[...]]` with `[[`, `]]` and any `target|` as its
+    /// markers, and asking which pages exist only flags its spans as missing, changing nothing else.
+    #[test]
+    fn wikilinks_are_well_formed_and_missing_pages_only_mark_their_spans(
+        text in markdown_text(),
+        options in options(),
+    ) {
+        let options = MarkdownOptions { wikilinks: true, ..options };
+        let buffer = Buffer::from_text(&text);
+        let mut markdown = MarkdownState::with_options(&buffer, options);
+        let decorations = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
+        check_well_formed(&buffer.normalized_text(), &decorations)?;
+        for d in &decorations {
+            let DecorationKind::WikiLink { target } = &d.kind else { continue };
+            prop_assert!(wikilink_page(target).is_some(), "{d:?}");
+            let slice = |r: &std::ops::Range<ByteOffset>| buffer.text_for_range(r.clone()).into_owned();
+            let markers: Vec<String> = d.markers.iter().map(slice).collect();
+            prop_assert_eq!(markers.first().map(String::as_str), Some("[["));
+            prop_assert_eq!(markers.last().map(String::as_str), Some("]]"));
+            if markers.len() == 3 {
+                prop_assert_eq!(&markers[1], &format!("{target}|"));
+            } else {
+                prop_assert_eq!(markers.len(), 2);
+                prop_assert_eq!(&slice(&d.content), target);
+            }
+        }
+        let all = 0..buffer.line_count();
+        let plain = markdown.styled_lines(&buffer, all.clone(), None);
+        let marked = markdown.styled_lines_with_pages(&buffer, all, None, |target| target.len() % 2 == 0);
+        prop_assert_eq!(plain.len(), marked.len());
+        for (plain, marked) in plain.iter().zip(&marked) {
+            prop_assert_eq!(plain.spans.len(), marked.spans.len());
+            for (a, b) in plain.spans.iter().zip(&marked.spans) {
+                prop_assert!(!b.style.missing_page || b.style.link);
+                let mut b = b.clone();
+                b.style.missing_page = false;
+                prop_assert_eq!(a, &b);
             }
         }
     }
