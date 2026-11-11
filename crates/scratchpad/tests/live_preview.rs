@@ -798,6 +798,32 @@ fn images_look_and_open_like_links_and_load_nothing(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn ctrl_click_opens_bare_addresses_at_their_resolved_destination(cx: &mut TestAppContext) {
+    // Bare addresses hide nothing, so display columns are buffer columns.
+    let (editor, cx) = open_editor(cx, "go www.example.com or a@b.org `www.c.org`\nnext");
+    cx.simulate_keystrokes("ctrl-end");
+    let end = cursor(&editor, cx);
+    let line = bounds(&editor, 0..0, cx);
+    let at_column = |column: f32| point(line.left() + px(column * ADVANCE + 4.), line.center().y);
+
+    // Neither the text around them nor an address in code is a link, and a plain click edits.
+    for column in [1., 20., 33.] {
+        click(at_column(column), Modifiers::secondary_key(), cx);
+        assert_eq!(cx.opened_url(), None, "column {column}");
+    }
+    click(at_column(5.), Modifiers::none(), cx);
+    assert_eq!(cx.opened_url(), None);
+    assert_eq!(cursor(&editor, cx), 5);
+
+    cx.simulate_keystrokes("ctrl-end");
+    click(at_column(5.), Modifiers::secondary_key(), cx);
+    assert_eq!(cx.opened_url().as_deref(), Some("https://www.example.com"));
+    assert_eq!(cursor(&editor, cx), end, "opening does not move the cursor");
+    click(at_column(25.), Modifiers::secondary_key(), cx);
+    assert_eq!(cx.opened_url().as_deref(), Some("mailto:a@b.org"));
+}
+
+#[gpui::test]
 fn a_callout_shows_its_label_in_place_of_its_tag_until_the_cursor_is_on_it(
     cx: &mut TestAppContext,
 ) {

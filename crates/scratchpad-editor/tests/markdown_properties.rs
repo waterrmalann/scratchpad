@@ -62,6 +62,14 @@ const ATOMS: &[&str] = &[
     "|",
     "Page",
     "[[Page|label]]",
+    "https://",
+    "www.",
+    "x@y.z",
+    ".com",
+    "(",
+    "&amp;",
+    ";",
+    "'",
 ];
 
 /// Any options, every one on in a third of the cases.
@@ -169,6 +177,35 @@ proptest! {
                 prop_assert!(left <= column && column <= right, "{column} -> {shown} -> {left}..{right}");
                 prop_assert_eq!(line.display_column(left), shown);
                 prop_assert_eq!(line.display_column(right), shown);
+            }
+        }
+    }
+
+    /// Bare addresses (links without markers) keep the invariants of every decoration, never reach into code or
+    /// another decoration's markers, and always get a destination that opens on Ctrl+click.
+    #[test]
+    fn bare_addresses_are_well_formed(text in markdown_text(), options in options()) {
+        let buffer = Buffer::from_text(&text);
+        let decorations = MarkdownState::with_options(&buffer, options).decorations(&buffer, ByteOffset(0)..buffer.end());
+        let text = buffer.normalized_text();
+        check_well_formed(&text, &decorations)?;
+        for bare in decorations.iter().filter(|d| d.markers.is_empty()) {
+            let DecorationKind::Link { destination } = &bare.kind else { continue };
+            let shown = &text[bare.range.start.0..bare.range.end.0];
+            prop_assert_eq!(&bare.content, &bare.range);
+            prop_assert!(
+                destination.ends_with(shown)
+                    && ["http://", "https://", "mailto:"]
+                        .iter()
+                        .any(|scheme| destination.get(..scheme.len()).is_some_and(|s| s.eq_ignore_ascii_case(scheme))),
+                "{destination:?} for {shown:?} in {text:?}"
+            );
+            prop_assert!(!shown.contains(char::is_whitespace), "{shown:?} in {text:?}");
+            for other in &decorations {
+                let code = matches!(other.kind, DecorationKind::InlineCode | DecorationKind::CodeBlock { .. });
+                let overlaps = |r: &std::ops::Range<ByteOffset>| r.start < bare.range.end && bare.range.start < r.end;
+                prop_assert!(!(code && overlaps(&other.content)), "{bare:?} in code {other:?} in {text:?}");
+                prop_assert!(!other.markers.iter().any(overlaps), "{bare:?} overlaps a marker of {other:?} in {text:?}");
             }
         }
     }

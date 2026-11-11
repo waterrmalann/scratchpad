@@ -124,7 +124,9 @@ impl Scanner {
                 starts
             }
         };
-        self.previous_blank = blank;
+        // pulldown-cmark 0.13 continues a GFM alert across a whitespace-only line indented 4 or more columns
+        // (`> [!NOTE]`, `    `, `> x` is one quote), so such a line does not separate regions.
+        self.previous_blank = blank && column < 4;
         starts && !first && !self.uncertain
     }
 }
@@ -273,6 +275,8 @@ mod tests {
     #[test]
     fn regions_start_after_blank_lines_at_unindented_lines() {
         assert_eq!(starts("text\nmore\n\npara\n \nx\n\n  indented\n\n"), [3, 5]);
+        // A whitespace-only line indented 4 columns does not: pulldown-cmark joins an alert across it.
+        assert_eq!(starts("> [!NOTE]\n    \n> [!NOTE]\n\t\nx"), []);
     }
 
     #[test]

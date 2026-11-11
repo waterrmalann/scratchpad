@@ -8,6 +8,7 @@ use std::ops::Range;
 
 use crate::coords::ByteOffset;
 use crate::editor::Editor;
+use crate::markdown::autolink::looks_like_web_address;
 use crate::markdown::{MarkdownState, front_matter};
 
 /// One replacement: `from`, typed, becomes `to` when its last char is typed.
@@ -160,7 +161,7 @@ fn looks_like_address(run: &str) -> bool {
     let mut chars = run.chars();
     let tag = chars.next() == Some('<') && chars.next().is_some_and(|c| c.is_ascii_alphabetic());
     let destination = run.rfind("](").is_some_and(|i| !run[i + 2..].contains(')'));
-    tag || destination || run.starts_with("www.") || run.contains(['/', '\\', '@'])
+    tag || destination || looks_like_web_address(run) || run.contains(['/', '\\'])
 }
 
 /// Whether the end of `line` (the line before a match) is in an inline code span, closed or being typed: a run

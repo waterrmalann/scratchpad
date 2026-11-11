@@ -547,9 +547,12 @@ fn prose_segments(
         match &decoration.kind {
             DecorationKind::CodeBlock { .. } | DecorationKind::InlineCode => excluded.push(range),
             DecorationKind::Link { destination } => {
-                // An autolink, `<https://...>`, shows its address as its text.
+                // An autolink, `<https://...>`, shows its address as its text, and a bare
+                // address (no markers) is nothing but its address.
                 let content = decoration.content.clone();
-                if buffer.text_for_range(content.clone()) == destination.as_str() {
+                if decoration.markers.is_empty()
+                    || buffer.text_for_range(content.clone()) == destination.as_str()
+                {
                     excluded.push(range);
                 } else {
                     excluded.extend(decoration.markers.iter().map(|m| m.start.0..m.end.0));
