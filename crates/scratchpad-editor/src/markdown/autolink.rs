@@ -412,11 +412,22 @@ fn domain(text: &str, start: usize, end: usize, need_period: bool) -> Option<usi
     valid.then_some(i)
 }
 
-/// Where the address continuing at `from` ends: at whitespace, `<` or `end`.
+/// Where the address continuing at `from` ends: at whitespace, `<`, a `]` without a `[` before it in the
+/// address, or `end`. So `[www.x.com][ref]` and `[see www.x.com]` link `www.x.com` whether or not `ref` is
+/// defined (reference links are read as text, ADR 0190), while `x.com/a[1]` keeps its brackets.
 fn path_end(text: &str, from: usize, end: usize) -> usize {
-    text[from..end]
-        .find(|c: char| c.is_whitespace() || c == '<')
-        .map_or(end, |i| from + i)
+    let mut open = 0usize;
+    for (i, c) in text[from..end].char_indices() {
+        match c {
+            '[' => open += 1,
+            ']' if open == 0 => return from + i,
+            ']' => open -= 1,
+            '<' => return from + i,
+            c if c.is_whitespace() => return from + i,
+            _ => {}
+        }
+    }
+    end
 }
 
 /// `end` moved back over what does not belong to the address `start..end`: trailing punctuation, an entity-like

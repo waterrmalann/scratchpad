@@ -392,3 +392,25 @@ fn bare_addresses_are_styled_as_links_with_nothing_hidden() {
         assert_eq!(link, ["https://a.com"]);
     }
 }
+
+/// Reference links are read as text (ADR 0190), so an address in one ends at the `]` that closes its
+/// brackets, whether or not the reference is defined; brackets inside an address are kept.
+#[test]
+fn an_address_ends_at_a_closing_bracket_it_did_not_open() {
+    for defined in ["", "\n\n[r]: https://u.v\n[1]: https://u.v"] {
+        check(&[
+            (
+                &format!("[see www.a.com][r]{defined}"),
+                &[("www.a.com", "https://www.a.com")],
+            ),
+            (
+                &format!("[example.com][1] or [https://b.org]{defined}"),
+                &[("https://b.org", "https://b.org")],
+            ),
+            (
+                &format!("www.x.com/a[1]/b]{defined}"),
+                &[("www.x.com/a[1]/b", "https://www.x.com/a[1]/b")],
+            ),
+        ]);
+    }
+}
