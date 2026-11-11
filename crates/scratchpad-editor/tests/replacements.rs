@@ -341,3 +341,90 @@ fn inside_a_transaction_the_replacement_joins_it() {
     assert!(ed.undo());
     assert_eq!(state(&ed), "a |");
 }
+
+#[test]
+fn link_destinations_are_left_alone() {
+    assert_eq!(
+        typed("|", "[draft](notes--v2.md)"),
+        "[draft](notes--v2.md)|"
+    );
+    assert_eq!(typed("|", "[x](a->b)"), "[x](a->b)|");
+    // After the link, prose again.
+    assert_eq!(typed("|", "[x](a) -> b"), "[x](a) → b|");
+}
+
+#[test]
+fn a_leading_rule_without_front_matter_after_it_does_not_stop_replacements() {
+    assert_eq!(
+        typed("---\nIntro paragraph\n|", "a -> b"),
+        "---\nIntro paragraph\na → b|"
+    );
+    assert_eq!(typed("---\n|", "a -> b"), "---\na → b|");
+    // Front matter still being typed, before its closing line, is left alone.
+    assert_eq!(
+        typed("|", "---\ntitle: a -> b\ntags:\n  - x -> y"),
+        "---\ntitle: a -> b\ntags:\n  - x -> y|"
+    );
+    // A blank line ends it.
+    assert_eq!(
+        typed("---\ntitle: a\n\n|", "x -> y"),
+        "---\ntitle: a\n\nx → y|"
+    );
+}
+
+#[test]
+fn escaped_backticks_and_longer_code_spans_are_counted_as_markdown_does() {
+    assert_eq!(typed(r"a \` b |", "->"), r"a \` b →|");
+    assert_eq!(typed("``a ` b`` |", "->"), "``a ` b`` →|");
+    assert_eq!(typed("``a ` b |", "->"), "``a ` b ->|");
+    // The whole line is read, even when long: a span closed far back, and one still open.
+    let long = "x".repeat(600);
+    assert_eq!(typed(&format!("`{long}` |"), "->"), format!("`{long}` →|"));
+    assert_eq!(typed(&format!("`{long} |"), "->"), format!("`{long} ->|"));
+}
+
+#[test]
+fn plus_minus_after_a_plus_stays() {
+    assert_eq!(typed("|", "C++-style"), "C++-style|");
+    assert_eq!(typed("|", "5 +- 1"), "5 ± 1|");
+}
+
+#[test]
+fn a_dash_held_off_on_a_list_marker_line_becomes_one_once_text_follows() {
+    assert_eq!(typed("|", "- -- item"), "- — item|");
+    assert_eq!(typed("|", "-- signed"), "— signed|");
+    // Still a thematic break, a flag, or a table's delimiter row.
+    assert_eq!(typed("|", "- -- -"), "- -- -|");
+    assert_eq!(typed("|", "- --flag"), "- --flag|");
+    let mut ed = editor("|");
+    type_keys(&mut ed, "| -- | x");
+    assert_eq!(ed.buffer().normalized_text(), "| -- | x");
+    // Its own undo step, after the char that made it a dash.
+    let mut ed = editor("|");
+    type_keys(&mut ed, "- -- i");
+    assert!(ed.undo());
+    assert_eq!(state(&ed), "- -- i|");
+}
+
+#[test]
+fn after_undo_and_redo_a_replacement_is_no_longer_extended() {
+    // Redo brings the symbol back, but not the memory of what it replaced (ADR 0180).
+    let mut ed = editor("a |");
+    type_keys(&mut ed, "<-");
+    assert!(ed.undo());
+    assert!(ed.redo());
+    assert_eq!(state(&ed), "a ←|");
+    type_keys(&mut ed, ">");
+    assert_eq!(state(&ed), "a ←>|");
+}
+
+#[test]
+fn toggling_the_setting_keeps_a_backspace_revert_from_being_replaced_again() {
+    let mut ed = editor("a |");
+    type_keys(&mut ed, "--");
+    ed.backspace_typed();
+    ed.set_typed_replacements(false);
+    ed.set_typed_replacements(true);
+    type_keys(&mut ed, "-");
+    assert_eq!(state(&ed), "a ---|");
+}

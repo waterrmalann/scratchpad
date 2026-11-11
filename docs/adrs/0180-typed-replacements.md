@@ -27,8 +27,10 @@ must keep working.
   replacement (its range, its rule, the buffer version after it). While the cursor is right after
   it and nothing changed, Backspace puts the original text back in one step (an edit, which `Ctrl+Z`
   undoes to the symbol again). The next char typed after that replaces nothing, so `--`, taken
-  back, then `-` gives `---`. Moving the cursor, any other edit, or turning the feature off forgets
-  it.
+  back, then `-` gives `---`; turning the setting off and on in between does not change that. Moving
+  the cursor, any other edit, or turning the feature off forgets the last replacement. So does undo:
+  after undo and redo, `←` is just text, and `>` typed after it gives `←>` (redo does not bring back
+  the memory of what it replaced; Backspace then deletes as usual).
 - **Longer rules after a shorter one (`<-` then `>`).** Holding `<-` back until the next key would
   leave the arrow unreplaced at the end of a line, so `<-` is replaced at once. When the next char
   would make a longer rule out of the original text (`<-` + `>` is `<->`), the replacement is taken
@@ -39,24 +41,35 @@ must keep working.
   transaction is not the last undo step, so it is put back by replacing the text instead.
 - **Exclusions**, besides the ones above:
   - Code: `MarkdownState::in_code` over the matched text (code spans, fenced and indented blocks,
-    unclosed fences), and an odd number of backticks before the match on its line, which is a span
-    whose closing backtick is not typed yet.
-  - Front matter: from a `---` first line until a `---` or `...` line, read only for the first
-    1,000 lines, as spell checking does (ADR 0170).
+    unclosed fences), and a code span still open before the match on its line: a run of backticks
+    with no run as long after it, as CommonMark pairs them, not counting backslash-escaped ones
+    outside a span. Up to 16 KB of the line before the match is read for this.
+  - Front matter, closed or still being typed, as `markdown::front_matter` finds it (shared with
+    spell checking, ADR 0170): a `---` first line whose next line is `key:` or a closing line. It is
+    closed by a `---` or `...` line; while there is none above the cursor, it lasts only while its
+    lines look like front matter (`key:` lines, indented lines, `- ` items, `#` comments), so a
+    leading `---` rule followed by a paragraph does not stop replacements in the note. At most
+    1,000 lines and 64 KB are read, in one piece.
   - HTML comments: nothing is replaced when a `<!--` comes after the last `-->` in the 4 KB before
     the match, nor in the `--` that completes `<!--`. So neither `<!--` nor `-->` breaks.
   - Addresses, paths, autolinks and tags: not when the run of non-whitespace the match ends holds
-    `/`, `\` or `@` (so `://` too) or starts with `www.` or with `<` and a letter. This keeps `...`
-    and `--` in URLs and paths, and `->` in `<https://…>`.
+    `/`, `\` or `@` (so `://` too) or a `](` with no `)` after it (a link destination being
+    typed), or starts with `www.` or with `<` and a letter. This keeps `...` and `--` in URLs,
+    paths and destinations such as `[draft](notes--v2.md)`, and `->` in `<https://…>`.
   - `--` (guard `Dash`): held off while the line up to the cursor is only `-`, `|`, `:` and
     whitespace, since it can still become `---` (a thematic break, a front matter fence or a setext
-    underline) or a table's delimiter row. The cost: `--` at the start of a line stays `--`.
+    underline) or a table's delimiter row. Once a char other than a dash or whitespace follows a held
+    `--` and a space on a line of dashes and spaces, the line can no longer be a rule, and the `--`
+    becomes a dash then, as its own undo step: `- -- item` and `-- signed` give `- — item` and
+    `— signed`. Lines with `|` are table rows and keep their dashes (`| -- |`), as do cells of
+    dashes only in a delimiter row.
   - `--flag`: a `--` that starts a word (after nothing, whitespace or an opening bracket or quote)
     is taken back when a letter or digit is typed right after it, so `--verbose` and `--2` type as
     they are while `well--yes` and ` -- ` become dashes.
   - `(c)`, `(r)`, `(tm)` (guard `Symbol`): only at the start of a word, so a call `f(c)` or a link
     `[x](c)` stays. `(c)` and `(r)` are also kept when `(b)` or `(q)` comes before them on their line
     or the line before: an enumeration `(a) … (b) … (c)`.
+  - `+-` (guard `NotAfter('+')`): not right after a `+`, so `C++-style` stays.
 - **Autocorrect.** Both act on keystrokes and each makes its own undo step. Autocorrect asks about a
   word after a space or `.,;:!?` and corrects it only if the text is unchanged when the answer comes,
   and its correction moves the cursor, which forgets the last replacement. So `teh...` gives
@@ -71,11 +84,15 @@ must keep working.
 - The state is small and checked against the buffer version, so undo, redo, other edits and cursor
   moves cannot leave a stale replacement for Backspace to "take back".
 - A keystroke that can end a rule reads a few hundred bytes around the cursor and asks the Markdown
-  structure about code: 15-45 µs for typing `->` and replacing it in a 10 MB note, up to ~0.2 ms in
-  very long front matter (docs/performance.md). Other keystrokes are unchanged.
+  structure about code (last, as the dearest check): 20-45 µs for typing `->` and replacing it in a
+  10 MB note, ~35 µs in front matter 1,000 lines long (docs/performance.md). Other keystrokes are
+  unchanged.
 - The comment check looks back 4 KB only, and does not know about code: a `<!--` in a code span
   within that distance stops replacements until a `-->`.
-- Heuristics can miss: `-->` typed in prose becomes `—>`, `(c)` in some other enumeration is
+- A held `--` is told only by the text, so a `-- ` pasted on a line of its own also becomes a dash
+  when a letter is typed after it.
+- Heuristics can miss: `-->` typed in prose becomes `—>`, a `--` cell in a table body row of
+  dashes only stays `--`, `(c)` in some other enumeration is
   replaced, and a `/` in a word (`and/or...`) keeps the dots. Backspace fixes each in one key.
 - Unit tests cover the pure matching (`find`, `in_html_comment`); the editor tests type through
   `insert_typed` (every rule, longest match, Backspace, undo, every exclusion, the setting) and the

@@ -1,6 +1,6 @@
 # 0170. Spell checking with the system's checker
 Date: 2026-11-06
-Status: Accepted; amended by 0175
+Status: Accepted; amended by 0175, 0180
 
 ## Context
 Notes are prose, and typos in them go unnoticed. Every Windows app that checks spelling (Edge,
@@ -41,7 +41,9 @@ miss the user's words.
   typing stops, and again when scrolling reaches lines not yet checked. At most 256 KB of text
   is read, even when one line on screen is longer (the rest of it is not checked), and runs of
   prose go to the checker in pieces of at most 16 KB, cut at a space. Front matter (from a
-  `---` first line to the next `---` or `...` line), code blocks, inline code, link addresses,
+  `---` first line to the next `---` or `...` line; amended by ADR 0180: only when the second
+  line is a `key:` line or the closing one, so prose between two rules is checked, and found by
+  `markdown::front_matter`, shared with typed replacements), code blocks, inline code, link addresses,
   autolinks, bare `https://` and `www.` addresses and Markdown markers are left out, using the
   document's Markdown decorations (ADR 0040). Words with digits, underscores or dots, words in
   capitals (abbreviations), and any word in a run without spaces that holds `@`, `/` or `\`

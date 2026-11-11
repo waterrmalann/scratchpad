@@ -108,12 +108,13 @@ cost one scan of a 14-entry table. Release build, `tests/perf.rs`, 2026-11-11:
 
 | Work on the UI thread | When | Time |
 | --- | --- | --- |
-| Type `-` and `>` in a 10 MB note, and replace them with `→` (two keystrokes, one replacement) | a rule's last char | 15-45 µs |
-| Type `-` after `-` in front matter 1,000 lines long (no replacement) | as above, the worst case | 165-215 µs |
+| Type `-` and `>` in a 10 MB note, and replace them with `→` (two keystrokes, one replacement) | a rule's last char | 20-45 µs |
+| Type `-` after `-` in front matter 1,000 lines long (no replacement) | as above, the most text read | ~35 µs |
 
-Deciding reads at most 512 bytes of the two lines before the cursor and 4 KB for an open HTML
-comment, asks the Markdown structure whether the text is code (parsing the edited region, which
-the next frame needs anyway), and in front matter reads the short lines above the cursor.
+Deciding reads at most 512 bytes of the two lines before the cursor, up to 16 KB of its line for
+code spans and 4 KB for an open HTML comment, the front matter above the cursor in one piece (at
+most 64 KB; reading it a line at a time cost ~0.6 ms), and last asks the Markdown structure
+whether the text is code (parsing the edited region, which the next frame needs anyway).
 
 ## Binary
 

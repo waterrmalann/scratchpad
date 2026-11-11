@@ -79,7 +79,7 @@ fn a_keystroke_in_a_10mb_note_and_restyling_its_line() {
 #[test]
 #[cfg_attr(debug_assertions, ignore = "timing limits are for release builds")]
 fn a_typed_replacement_in_a_10mb_note() {
-    // Measured 15-45 µs for `-` and `>` typed and `→` replacing them (two keystrokes), and 165-215 µs for a `-` that
+    // Measured 15-45 µs for `-` and `>` typed and `→` replacing them (two keystrokes), and ~35 µs for a `-` that
     // replaces nothing in front matter 1,000 lines long, where the most text is read to decide (ADR 0180).
     for fraction in [0.0, 0.5, 1.0] {
         let (mut editor, mut markdown) = parsed_10mb_note(fraction);

@@ -73,6 +73,6 @@ with every new ADR.
 | [0150](0150-an-in-window-menu-bar.md) | An in-window menu bar whose keys come from the keymap | Accepted |
 | [0155](0155-recovery-snapshots-belong-to-their-instance.md) | Recovery snapshots belong to the instance that wrote them | Accepted |
 | [0160](0160-pinned-notes.md) | Notes can be pinned to a section above the date groups | Accepted |
-| [0170](0170-spell-checking-with-the-system-checker.md) | Spell checking with the system's checker | Accepted; amended by 0175 |
+| [0170](0170-spell-checking-with-the-system-checker.md) | Spell checking with the system's checker | Accepted; amended by 0175, 0180 |
 | [0175](0175-the-notes-context-menu.md) | The note's context menu, with the spelling corrections in it | Accepted |
 | [0180](0180-typed-replacements.md) | Typed sequences become symbols, and Backspace takes them back | Accepted |

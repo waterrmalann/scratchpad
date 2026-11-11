@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::time::Duration;
 
 use gpui::{Context, Task};
-use scratchpad_editor::markdown::{DecorationKind, MarkdownState};
+use scratchpad_editor::markdown::{DecorationKind, MarkdownState, front_matter};
 use scratchpad_editor::{Bias, Buffer, ByteOffset, TextChange};
 use scratchpad_spell::{Action, Checked, Segment};
 
@@ -30,8 +30,6 @@ const MAX_CHECK_BYTES: usize = 256 * 1024;
 /// check, or a word for autocorrect) waiting long.
 const MAX_SEGMENT_BYTES: usize = 16 * 1024;
 const MIN_SEGMENT_BYTES: usize = 4 * 1024;
-/// Front matter is looked for this far down the note at most.
-const MAX_FRONT_MATTER_LINES: usize = 1000;
 
 /// A misspelled or repeated word in the note.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,7 +531,9 @@ fn prose_segments(
     markdown: &mut MarkdownState,
     lines: Range<usize>,
 ) -> Vec<Segment> {
-    let lines = front_matter(buffer).map_or(lines.clone(), |end| lines.start.max(end)..lines.end);
+    // Only closed front matter: an open one may be a note being written under a `---`.
+    let front_matter = front_matter(buffer, usize::MAX).filter(|front_matter| front_matter.closed);
+    let lines = front_matter.map_or(lines.clone(), |f| lines.start.max(f.end)..lines.end);
     if lines.is_empty() {
         return Vec::new();
     }
@@ -603,22 +603,6 @@ fn prose_segments(
         }
     }
     segments
-}
-
-/// Where the note's front matter ends, if it has some: the line after a `---` or `...` line
-/// that closes a `---` on the first line.
-fn front_matter(buffer: &Buffer) -> Option<usize> {
-    // Read only short lines: a long one is no fence, and need not be copied to find out.
-    let fence = |line: usize, fences: &[&str]| {
-        let (start, end) = (buffer.line_start(line), buffer.line_end(line));
-        end.0 - start.0 <= 8 && fences.contains(&buffer.text_for_range(start..end).trim_end())
-    };
-    if !fence(0, &["---"]) {
-        return None;
-    }
-    (1..buffer.line_count().min(MAX_FRONT_MATTER_LINES))
-        .find(|&line| fence(line, &["---", "..."]))
-        .map(|line| line + 1)
 }
 
 /// `text` in pieces of at most [`MAX_SEGMENT_BYTES`], each ending before a space where there is

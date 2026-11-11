@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use crate::coords::ByteOffset;
 use crate::editor::Editor;
-use crate::markdown::MarkdownState;
+use crate::markdown::{MarkdownState, front_matter};
 
 /// One replacement: `from`, typed, becomes `to` when its last char is typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +30,8 @@ pub enum Guard {
     /// quote), so a call `f(c)` or a link `[x](c)` stays. With `Some(previous)`, also not when `previous` appears
     /// before it on its line or the line before, so enumerations `(a) … (b) … (c)` stay.
     Symbol(Option<&'static str>),
+    /// Not right after this char, so `C++-style` keeps its `+-`.
+    NotAfter(char),
 }
 
 const fn rule(from: &'static str, to: &'static str) -> Rule {
@@ -72,7 +74,11 @@ pub const RULES: &[Rule] = &[
         to: "™",
         guard: Guard::Symbol(None),
     },
-    rule("+-", "±"),
+    Rule {
+        from: "+-",
+        to: "±",
+        guard: Guard::NotAfter('+'),
+    },
 ];
 
 /// How far back from the cursor the text is read to decide on a rule: the line before and the cursor's line, cut
@@ -82,8 +88,8 @@ const CONTEXT_BYTES: usize = 512;
 /// How far back an opening `<!--` is looked for.
 const COMMENT_BYTES: usize = 4096;
 
-/// Front matter is looked for this far down the note at most (as for spell checking, ADR 0170).
-const MAX_FRONT_MATTER_LINES: usize = 1000;
+/// How much of the line before a match is read to tell whether it is in a code span being typed.
+const LINE_BYTES: usize = 16 * 1024;
 
 /// Whether typing `c` can complete a rule. Checked first, so that most keystrokes cost nothing more.
 pub fn triggers(c: char) -> bool {
@@ -92,11 +98,10 @@ pub fn triggers(c: char) -> bool {
 
 /// The rule to apply to `before`, the text before the cursor (just after the typed char), of which only the
 /// cursor's line and the line before are read: the longest rule `before` ends with whose guards allow it. Every
-/// rule also needs:
-/// - an even number of backticks before it on its line (an odd number is an inline code span being typed);
-/// - not to be in a web or e-mail address, a path or an autolink or HTML tag being typed: the run of
-///   non-whitespace it ends must not hold `/`, `\` or `@` (so neither `://`), nor start with `www.` or with `<`
-///   and a letter.
+/// rule also needs not to be in a web or e-mail address, a path, a link destination, or an autolink or HTML tag
+/// being typed: the run of non-whitespace it ends must not hold `/`, `\` or `@` (so neither `://`) or a `](`
+/// not closed by a `)`, nor start with `www.` or with `<` and a letter. Whether it is in code is for the caller
+/// to ask ([`in_code_span`] and the Markdown structure).
 pub fn find(before: &str) -> Option<&'static Rule> {
     let line_start = before.rfind('\n').map_or(0, |i| i + 1);
     let line = &before[line_start..];
@@ -120,12 +125,11 @@ pub fn find(before: &str) -> Option<&'static Rule> {
         .filter(|rule| {
             let start = line.len() - rule.from.len();
             let line_before = &line[..start];
-            line_before.matches('`').count().is_multiple_of(2)
-                && guard_allows(
-                    rule.guard,
-                    &before[..before.len() - rule.from.len()],
-                    line_before,
-                )
+            guard_allows(
+                rule.guard,
+                &before[..before.len() - rule.from.len()],
+                line_before,
+            )
         })
         .max_by_key(|rule| rule.from.len())
 }
@@ -141,6 +145,7 @@ fn guard_allows(guard: Guard, before: &str, line_before: &str) -> bool {
             starts_word(line_before.chars().next_back())
                 && previous.is_none_or(|previous| !before.contains(previous))
         }
+        Guard::NotAfter(not) => !line_before.ends_with(not),
     }
 }
 
@@ -154,7 +159,52 @@ fn starts_word(before: Option<char>) -> bool {
 fn looks_like_address(run: &str) -> bool {
     let mut chars = run.chars();
     let tag = chars.next() == Some('<') && chars.next().is_some_and(|c| c.is_ascii_alphabetic());
-    tag || run.starts_with("www.") || run.contains(['/', '\\', '@'])
+    let destination = run.rfind("](").is_some_and(|i| !run[i + 2..].contains(')'));
+    tag || destination || run.starts_with("www.") || run.contains(['/', '\\', '@'])
+}
+
+/// Whether the end of `line` (the line before a match) is in an inline code span, closed or being typed: a run
+/// of backticks opened it and no run as long closed it. Backslash-escaped backticks outside a span open nothing.
+pub fn in_code_span(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut open = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if open.is_none() => i += 2,
+            b'`' => {
+                let run = bytes[i..].iter().take_while(|&&b| b == b'`').count();
+                open = match open {
+                    None => Some(run),
+                    Some(n) if n == run => None,
+                    other => other,
+                };
+                i += run;
+            }
+            _ => i += 1,
+        }
+    }
+    open.is_some()
+}
+
+/// After `c` was typed at the end of `line` (the line before it): if `line` is only dashes and whitespace and
+/// ends with a `--` run and whitespace, held off as the line could still become `---`, and `c` is neither a dash
+/// nor whitespace, the line can no longer be a thematic break, and that `--` (at the offset returned) becomes a
+/// dash: `- -- item`, `-- signed`. A `--` run right before `c` is a flag (`--x`) and stays.
+pub fn held_dash(line: &str, c: char) -> Option<usize> {
+    if c == '-' || c.is_whitespace() || !line.chars().all(|c| c == '-' || c.is_whitespace()) {
+        return None;
+    }
+    let dashes = line.trim_end();
+    if dashes.len() == line.len() || !dashes.ends_with("--") {
+        return None;
+    }
+    let start = dashes.len() - 2;
+    let starts_run = dashes[..start]
+        .chars()
+        .next_back()
+        .is_none_or(char::is_whitespace);
+    starts_run.then_some(start)
 }
 
 /// Whether a match, the last `matched` bytes of `before`, is in an HTML comment: the text before it has a `<!--`
@@ -204,11 +254,12 @@ impl Editor {
         !self.replacements().off
     }
 
-    /// Turns typed replacements on or off.
+    /// Turns typed replacements on or off. Backspace right after a replacement then deletes as usual; a char typed
+    /// right after Backspace took one back still replaces nothing.
     pub fn set_typed_replacements(&mut self, on: bool) {
         let replacements = self.replacements_mut();
         replacements.off = !on;
-        replacements.forget();
+        replacements.last = None;
     }
 
     /// The last replacement, while the cursor is right after it and nothing changed since.
@@ -261,17 +312,19 @@ impl Editor {
             .reverted
             .is_some_and(|(_, at)| at.0 + c.len_utf8() == cursor.0);
         self.replacements_mut().reverted = None;
-        if self.replacements().off || suppressed || !triggers(c) || !self.selection().is_empty() {
+        if self.replacements().off || suppressed || !self.selection().is_empty() {
             return;
         }
+        self.replace_held_dash(c, markdown);
+        if !triggers(c) {
+            return;
+        }
+        let cursor = self.selection().head;
         let Some(rule) = find(&self.context_before(cursor)) else {
             return;
         };
         let start = ByteOffset(cursor.0 - rule.from.len());
-        if markdown.in_code(self.buffer(), start..cursor)
-            || self.in_front_matter(cursor)
-            || in_html_comment(&self.text_before(cursor, COMMENT_BYTES), rule.from.len())
-        {
+        if self.excluded(start..cursor, markdown) {
             return;
         }
         let undoable = !self.in_transaction();
@@ -284,6 +337,49 @@ impl Editor {
             version: self.buffer().version(),
             undoable,
         });
+    }
+
+    /// A `--` held off on a line of dashes becomes a dash once `c`, typed after it, means the line is no thematic
+    /// break ([`held_dash`]), as its own undo step; the cursor stays after `c`.
+    fn replace_held_dash(&mut self, c: char, markdown: &mut MarkdownState) {
+        let buffer = self.buffer();
+        let cursor = self.selection().head;
+        let typed_at = ByteOffset(cursor.0 - c.len_utf8());
+        let line_start = buffer.line_start(buffer.line_of(cursor));
+        // A line break typed starts the line. Lines of dashes are short; a long line is not read.
+        if typed_at < line_start || typed_at.0 - line_start.0 > 64 {
+            return;
+        }
+        let line = buffer.text_for_range(line_start..typed_at);
+        let Some(offset) = held_dash(&line, c) else {
+            return;
+        };
+        let range = ByteOffset(line_start.0 + offset)..ByteOffset(line_start.0 + offset + 2);
+        if self.excluded(range.clone(), markdown) {
+            return;
+        }
+        let after = ByteOffset(cursor.0 - 2 + "—".len());
+        self.break_undo_group();
+        self.transact(|editor| {
+            editor.replace_range(range, "—");
+            editor.set_selection(crate::selection::Selection::cursor(after));
+        });
+    }
+
+    /// Whether the text at `range`, matched by a rule, is where nothing is replaced: in code (a code block or a
+    /// span, closed or being typed), front matter or an HTML comment.
+    fn excluded(&mut self, range: Range<ByteOffset>, markdown: &mut MarkdownState) -> bool {
+        let buffer = self.buffer();
+        let line_start = buffer.line_start(buffer.line_of(range.start));
+        let line_bytes = (range.start.0 - line_start.0).min(LINE_BYTES);
+        // Cheapest first: the Markdown structure may have to parse the edited region.
+        in_code_span(&self.text_before(range.start, line_bytes))
+            || in_html_comment(
+                &self.text_before(range.end, COMMENT_BYTES),
+                range.end.0 - range.start.0,
+            )
+            || self.in_front_matter(range.end)
+            || markdown.in_code(self.buffer(), range.clone())
     }
 
     /// Backspace right after a replacement: brings back the text it replaced, as its own undo step. Returns
@@ -327,20 +423,13 @@ impl Editor {
         text[text.ceil_char_boundary(extra)..].to_owned()
     }
 
-    /// Whether `offset` is in the note's front matter: the first line is `---` and no `---` or `...` line closes it
-    /// before `offset`'s line.
+    /// Whether `offset` is in the note's front matter, closed or still being typed ([`front_matter`]).
     fn in_front_matter(&self, offset: ByteOffset) -> bool {
-        let buffer = self.buffer();
-        // Read only short lines: a long one is no fence, and need not be copied to find out.
-        let fence = |line: usize, fences: &[&str]| {
-            let (start, end) = (buffer.line_start(line), buffer.line_end(line));
-            end.0 - start.0 <= 8 && fences.contains(&buffer.text_for_range(start..end).trim_end())
-        };
-        let line = buffer.line_of(offset);
+        let line = self.buffer().line_of(offset);
+        // Read up to `offset`'s line: lines past it do not change whether it is in front matter.
         line > 0
-            && line < MAX_FRONT_MATTER_LINES
-            && fence(0, &["---"])
-            && !(1..line).any(|line| fence(line, &["---", "..."]))
+            && front_matter(self.buffer(), line + 1)
+                .is_some_and(|front_matter| line < front_matter.end)
     }
 }
 
@@ -425,10 +514,54 @@ mod tests {
     }
 
     #[test]
-    fn an_odd_number_of_backticks_before_is_code_being_typed() {
-        assert_eq!(to("`a->"), None);
-        assert_eq!(to("`a` ->"), Some("→"));
-        assert_eq!(to("`a`\n->"), Some("→"));
+    fn code_spans_open_until_a_run_of_backticks_as_long_closes_them() {
+        assert!(in_code_span("`a"));
+        assert!(!in_code_span("`a` "));
+        assert!(!in_code_span("a "));
+        // Escaped backticks open nothing, outside a span.
+        assert!(!in_code_span(r"a \` b "));
+        assert!(in_code_span(r"a \` b `c"));
+        // Inside a span a backslash is just a backslash.
+        assert!(!in_code_span(r"`a\` b "));
+        // Runs pair by length.
+        assert!(!in_code_span("``a ` b`` "));
+        assert!(in_code_span("``a ` b"));
+        assert!(in_code_span("``a ` b``` "));
+    }
+
+    #[test]
+    fn link_destinations_are_left_alone() {
+        assert_eq!(to("[draft](notes--"), None);
+        assert_eq!(to("[x](a->"), None);
+        assert_eq!(to("[a b](c..."), None);
+        // After the link, prose again.
+        assert_eq!(to("[x](a) ->"), Some("→"));
+        assert_eq!(to("[x](a)->"), Some("→"));
+        // Brackets that are not a link.
+        assert_eq!(to("[x] (a ->"), Some("→"));
+    }
+
+    #[test]
+    fn plus_minus_is_not_after_another_plus() {
+        assert_eq!(to("a +-"), Some("±"));
+        assert_eq!(to("5+-"), Some("±"));
+        assert_eq!(to("C++-"), None);
+    }
+
+    #[test]
+    fn a_held_dash_becomes_a_dash_once_the_line_cannot_be_a_rule() {
+        assert_eq!(held_dash("- -- ", 'i'), Some(2));
+        assert_eq!(held_dash("-- ", 'J'), Some(0));
+        assert_eq!(held_dash("  --  ", '('), Some(2));
+        // Still a possible rule, or not held.
+        assert_eq!(held_dash("- -- ", '-'), None);
+        assert_eq!(held_dash("- -- ", ' '), None);
+        assert_eq!(held_dash("--- ", 'x'), None);
+        assert_eq!(held_dash("- - ", 'x'), None);
+        // A flag, a table row, prose.
+        assert_eq!(held_dash("- --", 'x'), None);
+        assert_eq!(held_dash("| -- ", 'x'), None);
+        assert_eq!(held_dash("a -- ", 'x'), None);
     }
 
     #[test]

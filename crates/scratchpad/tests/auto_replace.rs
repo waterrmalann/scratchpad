@@ -107,3 +107,19 @@ fn the_view_menu_turns_it_off_and_it_is_remembered(cx: &mut TestAppContext) {
     common::close(cx);
     assert_eq!(Config::load(&config_path).auto_replace, Some(true));
 }
+
+#[gpui::test]
+fn another_note_does_not_inherit_a_replacement_to_take_back(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "");
+    cx.simulate_input("a ->");
+    assert_eq!(text(&editor, cx), "a →");
+    // Another note whose text ends the same way, with the cursor at the same place.
+    editor.update(cx, |editor, cx| editor.set_text("a →", cx));
+    cx.simulate_keystrokes("ctrl-end backspace");
+    assert_eq!(text(&editor, cx), "a ");
+    // Replacements go on in it.
+    cx.simulate_input("=>");
+    assert_eq!(text(&editor, cx), "a ⇒");
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(text(&editor, cx), "a =>");
+}

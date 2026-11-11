@@ -203,6 +203,12 @@ fn front_matter_is_not_checked(cx: &mut TestAppContext) {
     editor.update(cx, |editor, cx| editor.set_text("---\ntitle: Zorp\n", cx));
     cx.run_until_parked();
     assert_eq!(misspelled(&editor, cx), ["Zorp"]);
+    // Prose between two rules is no front matter either.
+    editor.update(cx, |editor, cx| {
+        editor.set_text("---\nThe quikc fox\n---\n", cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(misspelled(&editor, cx), ["quikc"]);
 }
 
 #[gpui::test]

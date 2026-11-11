@@ -7,10 +7,12 @@
 
 mod blocks;
 mod format;
+mod front_matter;
 mod lists;
 mod parse;
 mod style;
 
+pub use front_matter::{FrontMatter, MAX_FRONT_MATTER_BYTES, MAX_FRONT_MATTER_LINES, front_matter};
 pub use style::{MarkerKind, SpanStyle, StyledLine, StyledSpan};
 
 use std::ops::Range;
