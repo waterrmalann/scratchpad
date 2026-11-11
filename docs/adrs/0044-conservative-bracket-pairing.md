@@ -16,8 +16,17 @@ the user. Prose is full of apostrophes, list bullets start with `*`, and code fe
   (equal counts, or an even number of the quote), i.e. the closer is not needed. This approximates "skip only
   auto-inserted closers" without tracking state that edits, undo and cursor moves would have to invalidate.
 - `backspace_typed` deletes both halves of an empty pair around the cursor.
-- With a selection, an opener (or `*`) wraps it and keeps it selected; typing `*` twice makes it bold.
-- `*` is not auto-paired: it starts bullets and appears in arithmetic, so pairing it would fight the user.
+- With a selection, an opener, `*` or `~` wraps it and keeps it selected; typing `*` twice makes it bold,
+  `~` twice strikes it through (`~~text~~`). Each wrap is one undo step.
+- `_` over a selection wraps it only where that makes emphasis: the selection holds a letter or digit and no
+  `_`, and has no letter, digit or `_` right outside it, or sits between two `_` (so `_` twice makes
+  `__strong__`). Otherwise `_` replaces the selection as plain typing does. `_` inside a word is not emphasis
+  in CommonMark, and selecting a space, a `-` or an identifier such as `foo_bar` and typing `_` is usually
+  meant as a replacement (`foo bar` to `foo_bar`).
+- Wrapping does not look at the Markdown around the selection: in code spans and code blocks `*`, `~` and `_`
+  wrap the same way as in prose. Plain text files (ADR 0147) do not pair or wrap at all.
+- `*`, `~` and `_` are not auto-paired without a selection: `*` starts bullets and appears in arithmetic, `~`
+  means "about" and `_` joins words, so pairing them would fight the user.
 
 ## Consequences
 - Stepping over and deleting pairs also applies to pairs the user typed by hand, which is what they would

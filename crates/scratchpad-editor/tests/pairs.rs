@@ -108,6 +108,78 @@ fn typing_an_opener_or_star_over_a_selection_wraps_it() {
 }
 
 #[test]
+fn tilde_over_a_selection_wraps_it_and_twice_strikes_it_through() {
+    let mut ed = editor("say ^text| now");
+    type_keys(&mut ed, "~");
+    assert_eq!(state(&ed), "say ~^text|~ now");
+    type_keys(&mut ed, "~");
+    assert_eq!(state(&ed), "say ~~^text|~~ now");
+    // A backward selection stays backward.
+    assert_eq!(typed("|text^", "~~"), "~~|text^~~");
+    // Typing on replaces the struck-through text, inside the markers.
+    assert_eq!(typed("^text|", "~~x"), "~~x|~~");
+}
+
+#[test]
+fn each_wrap_is_one_undo_step() {
+    let mut ed = editor("a ^text| b");
+    type_keys(&mut ed, "~~");
+    assert!(ed.undo());
+    assert_eq!(state(&ed), "a ~^text|~ b");
+    assert!(ed.undo());
+    assert_eq!(state(&ed), "a ^text| b");
+    assert!(!ed.undo());
+
+    let mut ed = editor("^word|");
+    type_keys(&mut ed, "_");
+    assert!(ed.undo());
+    assert_eq!(state(&ed), "^word|");
+}
+
+#[test]
+fn tilde_without_a_selection_is_typed_as_it_is() {
+    assert_eq!(typed("|", "~"), "~|");
+    assert_eq!(typed("a |b", "~~"), "a ~~|b");
+    assert_eq!(typed("|", "~~struck~~"), "~~struck~~|");
+}
+
+#[test]
+fn underscore_wraps_a_selection_that_it_would_make_emphasis() {
+    assert_eq!(typed("say ^text| now", "_"), "say _^text|_ now");
+    assert_eq!(typed("^text|", "__"), "__^text|__");
+    assert_eq!(typed("(^two words|)", "_"), "(_^two words|_)");
+}
+
+#[test]
+fn underscore_replaces_identifiers_spaces_and_parts_of_words() {
+    // An identifier is replaced, not wrapped.
+    assert_eq!(typed("^foo_bar| = 1", "_"), "_| = 1");
+    // Joining words with `_`.
+    assert_eq!(typed("foo^ |bar", "_"), "foo_|bar");
+    assert_eq!(typed("foo^-|bar", "_"), "foo_|bar");
+    // Inside a word, or next to an `_` on one side only, `_` would not be emphasis.
+    assert_eq!(typed("un^bel|ievable", "_"), "un_|ievable");
+    assert_eq!(typed("^foo|_bar", "_"), "_|_bar");
+    assert_eq!(typed("foo_^bar|", "_"), "foo__|");
+    // Without a selection `_` is typed as it is.
+    assert_eq!(typed("snake|", "_case"), "snake_case|");
+}
+
+#[test]
+fn wrapping_ignores_code_spans_and_blocks_like_star() {
+    // No Markdown context is consulted: in code, `~` and `_` wrap as `*` does.
+    for key in ["*", "~", "_"] {
+        assert_eq!(typed("`a ^b| c`", key), format!("`a {key}^b|{key} c`"));
+        assert_eq!(
+            typed("```\n^x|\n```", key),
+            format!("```\n{key}^x|{key}\n```")
+        );
+    }
+    // ...and the identifier rule for `_` is the same in code as in prose.
+    assert_eq!(typed("`^foo_bar|`", "_"), "`_|`");
+}
+
+#[test]
 fn star_is_not_paired_without_a_selection() {
     assert_eq!(typed("|", "* item"), "* item|");
     assert_eq!(typed("2 |", "*"), "2 *|");

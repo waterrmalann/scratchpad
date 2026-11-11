@@ -17,7 +17,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 
 - **Live preview** — Headings, bold, italic, strikethrough, inline code, code blocks, quotes, lists, task boxes, rules and links are drawn as you type. The Markdown markers show only where the cursor is. `Ctrl+/` shows all of them.
 - **Markdown-aware editing** — Enter continues a list or quote, Tab nests a list item, `Ctrl+B`/`I`/`E`/`K` format the selection, and clicking a task box ticks it. `Ctrl`+click opens a link.
-- **Typing helpers** — A new note starts with a `# ` heading for its title (Backspace removes it). Brackets and quotes pair up conservatively, and a third backtick alone on a line opens a code block and closes it for you.
+- **Typing helpers** — A new note starts with a `# ` heading for its title (Backspace removes it). Brackets and quotes pair up conservatively. Typing a bracket, quote, `*`, `~` or `_` over a selection wraps it (twice for `**bold**` or `~~strikethrough~~`; `_` only where it makes emphasis, so `foo_bar` and spaces are still replaced), and a third backtick alone on a line opens a code block and closes it for you.
 - **Plain text for other files** — Files that are not named `.md` or `.markdown` are edited as plain text, untouched by Markdown rules.
 
 <picture>

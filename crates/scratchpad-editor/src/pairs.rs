@@ -28,7 +28,9 @@ impl Editor {
     ///   the line end, and (for quotes) the previous one is neither a letter or digit nor the same quote, so
     ///   apostrophes and code fences type normally;
     /// - a closer typed right before the same closer moves over it, if that keeps the line's pairs balanced;
-    /// - an opener or `*` typed over a selection wraps it, keeping it selected.
+    /// - an opener, `*` or `~` typed over a selection wraps it, keeping it selected, so typing `*` or `~`
+    ///   twice makes it bold or struck through; `_` wraps only where that makes emphasis (not inside a word,
+    ///   nor over an identifier like `foo_bar` or a space) and otherwise replaces the selection.
     ///
     /// Paste, IME commits and programmatic text use [`Editor::insert_text`].
     pub fn insert_typed(&mut self, text: &str) {
@@ -41,9 +43,13 @@ impl Editor {
             return self.insert_text(text);
         }
         if !selection.is_empty() {
-            match closer_of(c).or((c == '*').then_some('*')) {
-                Some(close) => self.wrap_selection(c, close),
-                None => self.insert_text(text),
+            let wraps = closer_of(c).is_some()
+                || matches!(c, '*' | '~')
+                || (c == '_' && self.underscore_wraps(selection));
+            if wraps {
+                self.wrap_selection(c, closer_of(c).unwrap_or(c));
+            } else {
+                self.insert_text(text);
             }
             return;
         }
@@ -113,6 +119,22 @@ impl Editor {
                 shift(selection.head),
             ));
         });
+    }
+
+    /// Whether `_` typed over `selection` wraps it rather than replacing it: the selection holds a letter or
+    /// digit and no `_`, and either sits between two `_` (wrapping again makes `__strong__`) or has no
+    /// letter, digit or `_` right before or after it. Inside a word `_` is not emphasis (CommonMark), and
+    /// selecting a space, a `-` or an identifier such as `foo_bar` and typing `_` is meant as a replacement.
+    fn underscore_wraps(&self, selection: Selection) -> bool {
+        let (start, end) = (selection.start(), selection.end());
+        let selected = self.buffer().text_for_range(start..end);
+        if selected.contains('_') || !selected.chars().any(char::is_alphanumeric) {
+            return false;
+        }
+        let (before, _) = self.chars_around(start);
+        let (_, after) = self.chars_around(end);
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        (before == Some('_') && after == Some('_')) || !(word(before) || word(after))
     }
 
     /// The chars just before and after `offset`.

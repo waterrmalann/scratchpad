@@ -437,6 +437,43 @@ fn typed_brackets_pair_and_backspace_removes_an_empty_pair(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn typed_tildes_and_underscores_wrap_the_selection(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "say text now");
+    let selected = |cx: &mut VisualTestContext| {
+        editor.read_with(cx, |editor, _| {
+            let selection = editor.editor().selection();
+            (selection.start().0, selection.end().0)
+        })
+    };
+
+    cx.simulate_keystrokes("ctrl-right ctrl-right ctrl-shift-left");
+    assert_eq!(selected(cx), (4, 8));
+    cx.simulate_input("~");
+    cx.simulate_input("~");
+    assert_eq!(text(&editor, cx), "say ~~text~~ now");
+    assert_eq!(selected(cx), (6, 10), "the selection stays on the text");
+    cx.simulate_keystrokes("ctrl-z");
+    assert_eq!(
+        text(&editor, cx),
+        "say ~text~ now",
+        "one undo step per wrap"
+    );
+    cx.simulate_keystrokes("ctrl-z");
+    assert_eq!(text(&editor, cx), "say text now");
+
+    cx.simulate_keystrokes("ctrl-home ctrl-right ctrl-right ctrl-shift-left");
+    cx.simulate_input("_");
+    assert_eq!(text(&editor, cx), "say _text_ now");
+
+    // In a plain text file nothing wraps: the keys replace the selection.
+    editor.update(cx, |editor, cx| editor.set_markdown(false, cx));
+    cx.simulate_keystrokes("ctrl-home ctrl-shift-right");
+    assert_eq!(selected(cx), (0, 3));
+    cx.simulate_input("~");
+    assert_eq!(text(&editor, cx), "~ _text_ now");
+}
+
+#[gpui::test]
 fn clicking_a_task_box_toggles_it_without_moving_the_cursor(cx: &mut TestAppContext) {
     let (editor, cx) = open_editor(cx, "- [ ] task\n- [x] done\nnext");
     cx.simulate_keystrokes("ctrl-end");

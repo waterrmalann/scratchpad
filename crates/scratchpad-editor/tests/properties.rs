@@ -36,7 +36,9 @@ const ATOMS: &[&str] = &[
 ];
 
 /// Keys whose typing pairs, wraps or steps over a closer, and plain ones.
-const KEYS: [char; 11] = ['(', ')', '[', ']', '"', '\'', '`', '*', 'a', ' ', 'é'];
+const KEYS: [char; 13] = [
+    '(', ')', '[', ']', '"', '\'', '`', '*', '~', '_', 'a', ' ', 'é',
+];
 
 fn hostile_text() -> impl Strategy<Value = String> {
     prop_oneof![
