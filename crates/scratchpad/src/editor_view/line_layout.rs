@@ -44,6 +44,8 @@ const CODE_BLOCK_PADDING: Pixels = px(14.);
 /// Room left and right of inline code on its background, at the normal text size.
 const INLINE_CODE_PADDING: Pixels = px(3.);
 const INLINE_CODE_RADIUS: Pixels = px(3.);
+/// Corners of a highlight's background.
+const HIGHLIGHT_RADIUS: Pixels = px(2.);
 /// Quote text sits this far right of the quote's bar, at the normal text size.
 const QUOTE_INDENT: Pixels = px(18.);
 const QUOTE_BAR_WIDTH: Pixels = px(3.);
@@ -68,6 +70,8 @@ const TASK_BOX_SIZE: f32 = 0.92;
 pub(crate) struct BaseStyle {
     pub font: Font,
     pub mono_family: SharedString,
+    /// Math's family (ADR 0190), the body font's where no math font is installed.
+    pub math_family: SharedString,
     /// The body text size, zoom included.
     pub font_size: Pixels,
     pub line_height: Pixels,
@@ -91,6 +95,7 @@ impl BaseStyle {
     pub(super) fn same_text_widths(&self, other: &BaseStyle) -> bool {
         self.font == other.font
             && self.mono_family == other.mono_family
+            && self.math_family == other.math_family
             && self.font_size == other.font_size
     }
 
@@ -106,7 +111,8 @@ impl BaseStyle {
 pub(crate) struct LineKey {
     pub styled: StyledLine,
     /// Draws list bullets and task boxes as shapes, and a callout's tag as its label, rather than
-    /// as the characters typed.
+    /// as the characters typed. Emoji shortcodes are drawn as their emoji whatever this says: the
+    /// styled line already leaves out those the selection touches (ADR 0190).
     pub widgets: bool,
     /// Lays a table line out as part of an aligned grid (ADR 0186); set by [`KeyContext::key`].
     pub grid: Option<GridKey>,
@@ -157,17 +163,20 @@ impl KeyContext<'_> {
         let line_start = buffer.line_start(line).0;
         let line_end = buffer.line_end(line).0;
         let widgets = selection.is_some_and(|selection| {
-            !widgets(&styled).iter().any(|widget| match widget.kind {
-                // A callout's label shows while the selection is off its line, as the quote's
-                // `>` does: the tag is typed text the cursor may want to edit.
-                WidgetKind::Callout { .. } => {
-                    selection.start().0 <= line_end && selection.end().0 >= line_start
-                }
-                _ => {
-                    selection.start().0 < line_start + widget.columns.end
-                        && selection.end().0 > line_start + widget.columns.start
-                }
-            })
+            !widgets(&styled, true)
+                .iter()
+                .any(|widget| match widget.kind {
+                    // A callout's label shows while the selection is off its line, as the quote's
+                    // `>` does: the tag is typed text the cursor may want to edit.
+                    WidgetKind::Callout { .. } => {
+                        selection.start().0 <= line_end && selection.end().0 >= line_start
+                    }
+                    WidgetKind::Emoji { .. } => false,
+                    _ => {
+                        selection.start().0 < line_start + widget.columns.end
+                            && selection.end().0 > line_start + widget.columns.start
+                    }
+                })
         });
         let mut key = LineKey {
             styled,
@@ -231,23 +240,30 @@ enum WidgetKind {
     Callout {
         kind: CalloutKind,
     },
+    /// An emoji shortcode such as `:smile:`, drawn as its emoji (ADR 0190).
+    Emoji {
+        emoji: &'static str,
+    },
 }
 
-/// A list marker drawn as a shape, or a callout tag drawn as its label, in live preview.
+/// A list marker drawn as a shape, a callout tag drawn as its label, or an emoji shortcode drawn
+/// as its emoji, in live preview.
 struct Widget {
     kind: WidgetKind,
     /// Buffer columns at first, display columns once the line is laid out.
     columns: Range<usize>,
-    /// A callout's label, shaped with the line.
+    /// A callout's label or an emoji, shaped with the line.
     label: Option<Arc<gpui::LineLayout>>,
 }
 
-/// The line's bullets, task boxes and callout tags. A bullet followed by a task box is drawn as
-/// just the box.
-fn widgets(styled: &StyledLine) -> Vec<Widget> {
+/// The line's emoji shortcodes and, with `shapes`, its bullets, task boxes and callout tags. A
+/// bullet followed by a task box is drawn as just the box.
+fn widgets(styled: &StyledLine, shapes: bool) -> Vec<Widget> {
     let mut widgets: Vec<Widget> = Vec::new();
     for span in &styled.spans {
         let kind = match span.marker {
+            Some(MarkerKind::Emoji { emoji }) => WidgetKind::Emoji { emoji },
+            _ if !shapes => continue,
             Some(MarkerKind::ListBullet) => WidgetKind::Bullet,
             Some(MarkerKind::TaskBox { checked }) => WidgetKind::TaskBox {
                 checked,
@@ -258,7 +274,9 @@ fn widgets(styled: &StyledLine) -> Vec<Widget> {
         };
         match widgets.last_mut() {
             Some(last)
-                if last.kind == WidgetKind::Bullet && last.columns.end == span.columns.start =>
+                if last.kind == WidgetKind::Bullet
+                    && matches!(kind, WidgetKind::TaskBox { .. })
+                    && last.columns.end == span.columns.start =>
             {
                 last.kind = kind;
                 last.columns.end = span.columns.end;
@@ -279,6 +297,8 @@ struct Run {
     columns: Range<usize>,
     style: SpanStyle,
     marker: bool,
+    /// Drawn as a widget (a shape, label or emoji) rather than as its glyphs.
+    widget: bool,
     font: Font,
     size: Pixels,
     /// How far the baseline is moved down (up if negative): superscript and subscript.
@@ -303,7 +323,7 @@ enum Shape {
         /// Buffer column of the box's `[`.
         column: usize,
     },
-    /// Text that is not in the buffer: a callout's label. `bounds` is its row's box.
+    /// Text that is not in the buffer: a callout's label or an emoji. `bounds` is its row's box.
     Label {
         bounds: Bounds<Pixels>,
         baseline: Pixels,
@@ -379,7 +399,11 @@ impl Shape {
                     for glyph in &run.glyphs {
                         let at = origin + point(glyph.position.x, px(0.));
                         // A glyph that fails to rasterise is skipped rather than failing the frame.
-                        let _ = window.paint_glyph(at, run.font_id, glyph.id, font_size, color);
+                        let _ = if glyph.is_emoji {
+                            window.paint_emoji(at, run.font_id, glyph.id, font_size)
+                        } else {
+                            window.paint_glyph(at, run.font_id, glyph.id, font_size, color)
+                        };
                     }
                 }
             }
@@ -475,11 +499,7 @@ impl LineLayout {
         if key.grid.as_ref().map(|grid| grid.row) == Some(TableRowKind::Delimiter) {
             line_font.line_height = (base.font_size * table::DELIMITER_ROW_HEIGHT).round();
         }
-        let mut widgets = if key.widgets {
-            widgets(&key.styled)
-        } else {
-            Vec::new()
-        };
+        let mut widgets = widgets(&key.styled, key.widgets);
         let runs = runs(&key.styled, &widgets, &line_font, base);
         let mut display = String::with_capacity(text.len());
         for span in key.styled.spans.iter().filter(|span| !span.hidden) {
@@ -499,6 +519,12 @@ impl LineLayout {
                 WidgetKind::Callout { kind } => {
                     let label = callout_label(kind, &line_font, text_system);
                     let scale = label.width / line_font.size + CALLOUT_LABEL_GAP;
+                    widget.label = Some(label);
+                    scale
+                }
+                WidgetKind::Emoji { emoji } => {
+                    let label = emoji_label(emoji, line_font.size, text_system);
+                    let scale = label.width / line_font.size;
                     widget.label = Some(label);
                     scale
                 }
@@ -624,6 +650,25 @@ impl LineLayout {
         let font_size = self.font_size;
         let baseline = self.baseline();
 
+        // A highlighter's mark behind highlighted text (ADR 0190), its emoji included.
+        let (text_top, text_height) = self.text_extent();
+        let highlighted = merged(runs, |run| {
+            run.style.highlight && (!run.marker || run.widget)
+        });
+        for columns in highlighted {
+            for (row, x0, x1) in self.text_spans(display, columns) {
+                let bounds = Bounds::new(
+                    point(x0, self.row_top(row) + text_top),
+                    size(x1 - x0, text_height),
+                );
+                self.below.push(Shape::Rect {
+                    bounds,
+                    color: theme.highlight,
+                    radius: HIGHLIGHT_RADIUS,
+                });
+            }
+        }
+
         let code_size = font_size * CODE_SCALE;
         for columns in merged(runs, |run| run.style.code && !run.style.code_block) {
             for (row, x0, x1) in self.text_spans(display, columns) {
@@ -720,6 +765,18 @@ impl LineLayout {
                         shaped,
                         font_size,
                         color: theme.callouts.get(kind),
+                    }
+                }
+                WidgetKind::Emoji { .. } => {
+                    let Some(shaped) = widget.label.clone() else {
+                        continue;
+                    };
+                    Shape::Label {
+                        bounds: Bounds::new(point(x, top), size(shaped.width, self.line_height)),
+                        baseline,
+                        shaped,
+                        font_size,
+                        color: theme.foreground,
                     }
                 }
             });
@@ -1018,6 +1075,11 @@ fn runs(
         let mono = style.code || style.code_block;
         let mut font = if mono {
             font(base.mono_family.clone())
+        } else if style.math {
+            Font {
+                family: base.math_family.clone(),
+                ..line_font.font.clone()
+            }
         } else {
             line_font.font.clone()
         };
@@ -1049,6 +1111,8 @@ fn runs(
         // callouts, which are there to be read.
         let color = if in_widget {
             transparent_black()
+        } else if style.math && span.marker.is_none() {
+            theme.math
         } else if span.marker.is_some()
             || after_checked_box
             || style.strikethrough
@@ -1067,6 +1131,7 @@ fn runs(
             columns,
             style,
             marker: span.marker.is_some(),
+            widget: in_widget,
             font,
             size,
             shift,
@@ -1148,6 +1213,19 @@ fn callout_label(
     text_system.layout_line(label, line_font.size, &[run], None)
 }
 
+/// An emoji, e.g. `😄`, in Windows' colour emoji font at the line's size.
+fn emoji_label(emoji: &str, size: Pixels, text_system: &WindowTextSystem) -> Arc<gpui::LineLayout> {
+    let run = TextRun {
+        len: emoji.len(),
+        font: font(typography::EMOJI_FONT_FAMILY),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    text_system.layout_line(emoji, size, &[run], None)
+}
+
 /// Display ranges of consecutive runs for which `include` holds.
 fn merged(runs: &[Run], include: impl Fn(&Run) -> bool) -> Vec<Range<usize>> {
     let mut ranges: Vec<Range<usize>> = Vec::new();
@@ -1170,13 +1248,24 @@ pub(super) fn measure_cells(
     text_system: &WindowTextSystem,
     mut cell: impl FnMut(usize, Pixels),
 ) -> Pixels {
-    let runs = runs(styled, &[], &LineFont::new(styled.style, base), base);
+    let line_font = LineFont::new(styled.style, base);
+    let runs = runs(styled, &[], &line_font, base);
     let mut display = String::with_capacity(text.len());
     for span in styled.spans.iter().filter(|span| !span.hidden) {
         display.push_str(&text[span.columns.clone()]);
     }
     let (_, mut glyphs, width) = shape_runs(&display, &runs, text_system);
-    let width = expand_tabs(&display, &mut glyphs, width);
+    let mut width = expand_tabs(&display, &mut glyphs, width);
+    // An emoji shortcode in a cell takes the width of its emoji, as `LineLayout::shape` draws it.
+    for widget in widgets(styled, false) {
+        let WidgetKind::Emoji { emoji } = widget.kind else {
+            continue;
+        };
+        let columns =
+            styled.display_column(widget.columns.start)..styled.display_column(widget.columns.end);
+        let emoji_width = emoji_label(emoji, line_font.size, text_system).width;
+        width = set_span_width(&mut glyphs, columns, emoji_width.round(), width);
+    }
     for (column, columns) in table::cells(styled, &display) {
         let x = |column| unwrapped_x(&glyphs, column, width);
         cell(column, x(columns.end) - x(columns.start));

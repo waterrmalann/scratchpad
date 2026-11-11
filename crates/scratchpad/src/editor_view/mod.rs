@@ -104,8 +104,8 @@ pub struct EditorView {
     synced_version: u64,
     /// Buffer version and selection the cached layouts' keys were last checked against.
     styled_for: Option<(u64, Option<Selection>)>,
-    /// Looked up once: enumerating fonts takes about a millisecond.
-    mono_family: SharedString,
+    /// The monospace and math families, looked up once: enumerating fonts takes about a millisecond.
+    families: (SharedString, SharedString),
     scroll: ScrollAnchor,
     /// How far the text is scrolled left; always 0 with soft wrap.
     scroll_x: Pixels,
@@ -200,9 +200,10 @@ impl EditorView {
         let subscriptions = vec![cx.on_blur(&focus_handle, window, |this, _, _| {
             this.editor.break_undo_group();
         })];
-        let mono_family = SharedString::from(typography::mono_font_family(cx));
+        let (mono, math) = typography::mono_and_math_font_families(cx);
+        let families = (SharedString::from(mono), SharedString::from(math));
         // Replaced by the first layout, which knows the width.
-        let base_style = base_style(cx, typography::BODY_FONT_SIZE, px(0.), true, &mono_family);
+        let base_style = base_style(cx, typography::BODY_FONT_SIZE, px(0.), true, &families);
         let (editor, markdown) = open_document(text, MarkdownOptions::default());
         Self {
             editor,
@@ -216,7 +217,7 @@ impl EditorView {
             layouts: LayoutCache::new(base_style),
             synced_version: 0,
             styled_for: None,
-            mono_family,
+            families,
             scroll: ScrollAnchor::top(&viewport(None)),
             scroll_x: px(0.),
             autoscroll: None,
@@ -466,7 +467,7 @@ impl EditorView {
         !self.plain
     }
 
-    /// The optional Markdown syntax recognised (View > Markdown features, ADR 0185).
+    /// The optional Markdown syntax recognised (View > Markdown Extensions, ADR 0185, 0190).
     pub fn markdown_options(&self) -> MarkdownOptions {
         self.markdown.options()
     }
@@ -1614,11 +1615,12 @@ fn base_style(
     font_size: Pixels,
     width: Pixels,
     soft_wrap: bool,
-    mono_family: &SharedString,
+    (mono_family, math_family): &(SharedString, SharedString),
 ) -> BaseStyle {
     BaseStyle {
         font: font(typography::BODY_FONT_FAMILY),
         mono_family: mono_family.clone(),
+        math_family: math_family.clone(),
         font_size,
         line_height: font_size * typography::BODY_LINE_HEIGHT,
         theme: cx.theme().clone(),

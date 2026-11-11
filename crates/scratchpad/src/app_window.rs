@@ -11,11 +11,11 @@ use gpui::{
 use scratchpad_core::{NoteStore, PAGE_EXTENSIONS, PageIndex, fold_case};
 use scratchpad_editor::markdown::{MarkdownOptions, wikilink_page};
 
-use crate::actions::view::ToggleWikilinks;
 use crate::actions::view::{
     ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleCallouts, ToggleHeadingIds,
     ToggleSpellCheck, ToggleSubscript, ToggleSuperscript, ToggleWordWrap, ZoomIn, ZoomOut,
 };
+use crate::actions::view::{ToggleEmojiShortcodes, ToggleHighlights, ToggleMath, ToggleWikilinks};
 use crate::actions::{
     CloseWindow, NewNote, OpenFile, OpenSettings, SaveAs, SaveNote, SearchNotes, ToggleSidebar,
     ToggleStatusBar,
@@ -572,7 +572,7 @@ impl AppWindow {
         editor.update(cx, update);
     }
 
-    /// Turns one of the Markdown options (View > Markdown features) on or off in the note.
+    /// Turns one of the Markdown options (View > Markdown Extensions) on or off in the note.
     fn toggle_markdown_option(
         &self,
         cx: &mut Context<Self>,
@@ -895,6 +895,15 @@ impl Render for AppWindow {
             }))
             .on_action(cx.listener(|this, _: &ToggleWikilinks, _, cx| {
                 this.toggle_markdown_option(cx, |options| &mut options.wikilinks)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleHighlights, _, cx| {
+                this.toggle_markdown_option(cx, |options| &mut options.highlights)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleMath, _, cx| {
+                this.toggle_markdown_option(cx, |options| &mut options.math)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleEmojiShortcodes, _, cx| {
+                this.toggle_markdown_option(cx, |options| &mut options.emoji_shortcodes)
             }))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::save_as))

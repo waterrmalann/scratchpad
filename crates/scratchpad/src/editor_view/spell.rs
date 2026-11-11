@@ -545,7 +545,11 @@ fn prose_segments(
     for decoration in markdown.decorations(buffer, start..end) {
         let range = decoration.range.start.0..decoration.range.end.0;
         match &decoration.kind {
-            DecorationKind::CodeBlock { .. } | DecorationKind::InlineCode => excluded.push(range),
+            // Math is TeX and a shortcode a name, neither prose (ADR 0190).
+            DecorationKind::CodeBlock { .. }
+            | DecorationKind::InlineCode
+            | DecorationKind::Math { .. }
+            | DecorationKind::Emoji { .. } => excluded.push(range),
             DecorationKind::Link { destination } => {
                 // An autolink, `<https://...>`, shows its address as its text, and a bare
                 // address (no markers) is nothing but its address.
@@ -685,6 +689,8 @@ fn adjust(found: &mut Vec<Found>, change: &TextChange) {
 
 #[cfg(test)]
 mod tests {
+    use scratchpad_editor::markdown::MarkdownOptions;
+
     use super::*;
 
     fn segments(text: &str) -> Vec<(usize, String)> {
@@ -701,6 +707,23 @@ mod tests {
         let text = "# Title\n\nSee `cofe` and [the docs](https://exmaple.com) or https://x.io/a.\n\n```\nfn mian() {}\n```\n<https://auto.link>";
         let found: Vec<String> = segments(text).into_iter().map(|(_, text)| text).collect();
         assert_eq!(found, ["Title", "See ", " and ", "the docs", " or "]);
+    }
+
+    /// Math and emoji shortcodes are skipped like code; highlighted text is prose, without its `==`.
+    #[test]
+    fn math_and_emoji_shortcodes_are_left_out_and_highlights_checked() {
+        let text = "Tset $\\alpah + x$ and $$\\bteta$$ :thumbsup: ==hihglight== :unknwon: done";
+        let buffer = Buffer::from_text(text);
+        let mut markdown = MarkdownState::with_options(&buffer, MarkdownOptions::ALL);
+        let found: Vec<String> = prose_segments(&buffer, &mut markdown, 0..1)
+            .into_iter()
+            .map(|segment| segment.text)
+            .collect();
+        assert_eq!(found, ["Tset ", " and ", "hihglight", " :unknwon: done"]);
+        // With math off, `$` is a dollar and its words are prose.
+        let mut markdown = MarkdownState::new(&buffer);
+        let found = prose_segments(&buffer, &mut markdown, 0..1);
+        assert!(found.iter().any(|segment| segment.text.contains("alpah")));
     }
 
     #[test]

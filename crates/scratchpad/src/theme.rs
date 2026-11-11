@@ -57,6 +57,10 @@ pub struct Theme {
     /// Accents of Markdown callouts (GFM alerts), for their bar and label: blue, green, purple,
     /// amber and red, as on GitHub, and readable as text on the page.
     pub callouts: CalloutColors,
+    /// The highlighter background behind `==highlighted==` text, under the normal text colour.
+    pub highlight: Hsla,
+    /// Math text (`$x$`), readable on the page, the surface and a highlight.
+    pub math: Hsla,
 }
 
 /// One accent per [`CalloutKind`].
@@ -100,6 +104,8 @@ impl Theme {
                 warning: color(rgb(0x8a5d00)),
                 caution: color(rgb(0xcf222e)),
             },
+            highlight: color(rgb(0xfff3a0)),
+            math: color(rgb(0x007a6c)),
         }
     }
 
@@ -121,6 +127,8 @@ impl Theme {
                 warning: color(rgb(0xd29922)),
                 caution: color(rgb(0xf85149)),
             },
+            highlight: color(rgb(0x524800)),
+            math: color(rgb(0x5fd4bf)),
         }
     }
 
@@ -166,6 +174,26 @@ pub mod typography {
     pub const H2_SCALE: f32 = 1.5;
     pub const H3_SCALE: f32 = 1.25;
 
+    /// Math (ADR 0190): Cambria Math ships with Windows (since Vista), Cambria with Office. Where neither
+    /// is installed, math is set in the body font, still in its own colour.
+    pub const MATH_FONT_FAMILIES: [&str; 2] = ["Cambria Math", "Cambria"];
+
+    /// Emoji shortcodes are drawn in Windows' colour emoji font, which the body font lacks the glyphs of.
+    pub const EMOJI_FONT_FAMILY: &str = if cfg!(windows) {
+        "Segoe UI Emoji"
+    } else {
+        BODY_FONT_FAMILY
+    };
+
+    /// Picks the math family from the installed font names: the first of [`MATH_FONT_FAMILIES`]
+    /// installed, else the body font (GPUI would substitute the UI font for a missing family anyway).
+    pub fn pick_math_font_family<S: AsRef<str>>(installed: &[S]) -> &'static str {
+        MATH_FONT_FAMILIES
+            .into_iter()
+            .find(|family| installed.iter().any(|name| name.as_ref() == *family))
+            .unwrap_or(BODY_FONT_FAMILY)
+    }
+
     /// Preferred monospace families, best first. Cascadia Mono ships with Windows 11;
     /// Consolas with every Windows since Vista.
     pub const MONO_FONT_FAMILIES: [&str; 2] = ["Cascadia Mono", "Consolas"];
@@ -181,10 +209,14 @@ pub mod typography {
             .unwrap_or(MONO_FONT_FAMILIES[MONO_FONT_FAMILIES.len() - 1])
     }
 
-    /// The monospace family for this machine. Enumerates installed fonts (about 0.6 ms on a
-    /// typical Windows 11 machine), so call it once and keep the result.
-    pub fn mono_font_family(cx: &App) -> &'static str {
-        pick_mono_font_family(&cx.text_system().all_font_names())
+    /// The monospace and math families for this machine. Enumerates installed fonts (about 0.6 ms
+    /// on a typical Windows 11 machine), so call it once and keep the result.
+    pub fn mono_and_math_font_families(cx: &App) -> (&'static str, &'static str) {
+        let installed = cx.text_system().all_font_names();
+        (
+            pick_mono_font_family(&installed),
+            pick_math_font_family(&installed),
+        )
     }
 }
 
@@ -296,6 +328,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Highlighted text keeps body-text contrast on its highlighter background, which stands out
+    /// from the page; math is readable on the page, the surface and a highlight.
+    #[test]
+    fn highlights_and_math_are_readable_in_both_themes() {
+        for theme in [Theme::light(), Theme::dark()] {
+            let highlighted = contrast(theme.foreground, theme.highlight);
+            assert!(
+                highlighted >= 7.0,
+                "{:?} highlighted text contrast {highlighted}",
+                theme.appearance
+            );
+            let marked = contrast(theme.highlight, theme.background);
+            assert!(
+                marked >= 1.1,
+                "{:?} highlight hardly differs from the page: {marked}",
+                theme.appearance
+            );
+            for bg in [theme.background, theme.surface, theme.highlight] {
+                let math = contrast(theme.math, bg);
+                assert!(math >= 4.5, "{:?} math contrast {math}", theme.appearance);
+            }
+        }
+    }
+
+    #[test]
+    fn math_font_prefers_cambria_math_and_falls_back_to_the_body_font() {
+        use typography::pick_math_font_family;
+        assert_eq!(
+            pick_math_font_family(&["Cambria", "Cambria Math"]),
+            "Cambria Math"
+        );
+        assert_eq!(pick_math_font_family(&["Arial", "Cambria"]), "Cambria");
+        assert_eq!(
+            pick_math_font_family::<&str>(&[]),
+            typography::BODY_FONT_FAMILY
+        );
     }
 
     #[test]

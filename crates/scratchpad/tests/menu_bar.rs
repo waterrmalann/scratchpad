@@ -8,7 +8,9 @@ use gpui::{
     size,
 };
 use scratchpad::AppWindow;
-use scratchpad::actions::view::{ToggleSuperscript, ToggleWordWrap};
+use scratchpad::actions::view::{
+    ToggleEmojiShortcodes, ToggleHighlights, ToggleMath, ToggleSuperscript, ToggleWordWrap,
+};
 use scratchpad::app_window::{AUTO_COLLAPSE_WIDTH, SidebarMode};
 use scratchpad::editor_view::SEARCH_DEBOUNCE;
 use scratchpad::file_dialogs::PickFileForTests;
@@ -16,6 +18,7 @@ use scratchpad::find_bar::ReplaceInNote;
 use scratchpad::menu_bar::{MenuBar, ShownItem};
 use scratchpad::settings::SAVE_DELAY;
 use scratchpad_core::Config;
+use scratchpad_editor::markdown::MarkdownOptions;
 
 fn menu_bar(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Entity<MenuBar> {
     root.read_with(cx, |root, _| root.menu_bar().clone())
@@ -115,7 +118,7 @@ fn each_menu_lists_its_commands_with_the_keys_from_the_keymap(cx: &mut TestAppCo
             "Spell check",
             "Autocorrect",
             "Auto-replace symbols",
-            "Markdown features",
+            "Markdown Extensions",
             "Source mode Ctrl+/",
             "Sidebar Ctrl+\\"
         ]
@@ -545,7 +548,9 @@ fn open_and_save_as_run_from_the_file_menu(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn markdown_features_are_ticked_while_on_apply_at_once_and_are_remembered(cx: &mut TestAppContext) {
+fn markdown_extensions_are_ticked_while_on_apply_at_once_and_are_remembered(
+    cx: &mut TestAppContext,
+) {
     let notes_dir = tempfile::tempdir().unwrap();
     let data_dir = tempfile::tempdir().unwrap();
     let storage = common::storage(notes_dir.path(), data_dir.path());
@@ -555,7 +560,7 @@ fn markdown_features_are_ticked_while_on_apply_at_once_and_are_remembered(cx: &m
     let options = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.markdown_options());
 
     click("menu:View", cx);
-    hover("menu-item:Markdown features", cx);
+    hover("menu-item:Markdown Extensions", cx);
     assert_eq!(
         labels(&root, true, cx),
         [
@@ -563,7 +568,10 @@ fn markdown_features_are_ticked_while_on_apply_at_once_and_are_remembered(cx: &m
             "Superscript",
             "Subscript",
             "Heading IDs",
-            "Wikilinks"
+            "Wikilinks",
+            "Highlights",
+            "Math",
+            "Emoji shortcodes"
         ]
     );
     let checked: Vec<_> = items(&root, true, cx).iter().map(|i| i.checked).collect();
@@ -574,6 +582,9 @@ fn markdown_features_are_ticked_while_on_apply_at_once_and_are_remembered(cx: &m
             Some(false),
             Some(false),
             Some(false),
+            Some(true),
+            Some(true),
+            Some(false),
             Some(true)
         ]
     );
@@ -582,7 +593,7 @@ fn markdown_features_are_ticked_while_on_apply_at_once_and_are_remembered(cx: &m
     assert_eq!(open_menu(&root, cx), None);
     assert!(options(cx).superscript);
     click("menu:View", cx);
-    hover("menu-item:Markdown features", cx);
+    hover("menu-item:Markdown Extensions", cx);
     click("menu-item:Callouts", cx);
     assert!(!options(cx).callouts);
     common::wait(SAVE_DELAY, cx);
@@ -606,4 +617,47 @@ fn markdown_features_are_ticked_while_on_apply_at_once_and_are_remembered(cx: &m
     );
     common::close(cx);
     assert_eq!(Config::load(&config_path).markdown_superscript, Some(false));
+}
+
+/// Highlights, math and emoji shortcodes (ADR 0190) toggle from the submenu and the actions, apply
+/// to the open note at once and are remembered like the other extensions.
+#[gpui::test]
+fn highlights_math_and_emoji_shortcodes_toggle_and_are_remembered(cx: &mut TestAppContext) {
+    let notes_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let storage = common::storage(notes_dir.path(), data_dir.path());
+    let config_path = storage.config_path.clone().unwrap();
+    let (root, cx) = common::open_with(storage.clone(), cx);
+    let editor = common::editor(&root, cx);
+    let options = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.markdown_options());
+    let defaults = options(cx);
+    assert!(defaults.highlights && !defaults.math && defaults.emoji_shortcodes);
+
+    click("menu:View", cx);
+    hover("menu-item:Markdown Extensions", cx);
+    click("menu-item:Math", cx);
+    assert!(options(cx).math);
+    click("menu:View", cx);
+    hover("menu-item:Markdown Extensions", cx);
+    click("menu-item:Highlights", cx);
+    cx.dispatch_action(ToggleEmojiShortcodes);
+    let changed = options(cx);
+    assert!(changed.math && !changed.highlights && !changed.emoji_shortcodes);
+    common::wait(SAVE_DELAY, cx);
+    let config = Config::load(&config_path);
+    assert_eq!(config.markdown_math, Some(true));
+    assert_eq!(config.markdown_highlights, Some(false));
+    assert_eq!(config.markdown_emoji_shortcodes, Some(false));
+    common::close(cx);
+
+    let (root, cx) = common::open_with(storage, cx);
+    let editor = common::editor(&root, cx);
+    let options = editor.read_with(cx, |e, _| e.markdown_options());
+    assert!(options.math && !options.highlights && !options.emoji_shortcodes);
+    cx.dispatch_action(ToggleHighlights);
+    cx.dispatch_action(ToggleMath);
+    cx.dispatch_action(ToggleEmojiShortcodes);
+    let options = editor.read_with(cx, |e, _| e.markdown_options());
+    assert_eq!(options, MarkdownOptions::default());
+    common::close(cx);
 }

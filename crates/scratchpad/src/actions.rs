@@ -140,6 +140,12 @@ pub mod view {
             ToggleHeadingIds,
             /// Turns wikilinks to other notes (`[[Page]]`) on or off (ADR 0188).
             ToggleWikilinks,
+            /// Turns Markdown highlights (`==text==`) on or off (ADR 0190).
+            ToggleHighlights,
+            /// Turns Markdown math (`$x$`, `$$x$$`) on or off (ADR 0190).
+            ToggleMath,
+            /// Turns showing emoji shortcodes (`:smile:`) as their emoji on or off (ADR 0190).
+            ToggleEmojiShortcodes,
         ]
     );
 

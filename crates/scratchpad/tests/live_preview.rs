@@ -868,3 +868,72 @@ fn superscript_and_subscript_are_set_smaller_once_turned_on(cx: &mut TestAppCont
         4. * ADVANCE + 0.75 * ADVANCE + ADVANCE
     );
 }
+
+#[gpui::test]
+fn an_emoji_shortcode_shows_its_emoji_until_the_cursor_is_on_it(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "a :smile: b :tada:\nnext");
+    let shortcode_width = |cx: &mut VisualTestContext| {
+        f32::from(bounds(&editor, 9..9, cx).left() - bounds(&editor, 2..2, cx).left())
+    };
+    cx.simulate_keystrokes("ctrl-end");
+    // The test platform draws an emoji (a char outside the BMP) 2 em wide.
+    assert_eq!(shortcode_width(cx), 2. * ADVANCE);
+    assert_eq!(x_of(&editor, 10, 0, cx), 3. * ADVANCE + 2. * ADVANCE);
+
+    // A click on the emoji never lands inside the shortcode: it puts the cursor at one end of it,
+    // where the shortcode shows as typed and the other one stays an emoji.
+    let line = bounds(&editor, 0..0, cx);
+    click(
+        point(line.left() + px(2. * ADVANCE + 14.), line.center().y),
+        Modifiers::none(),
+        cx,
+    );
+    assert!(
+        [2, 9].contains(&cursor(&editor, cx)),
+        "{}",
+        cursor(&editor, cx)
+    );
+    assert_eq!(shortcode_width(cx), 7. * ADVANCE);
+    assert_eq!(
+        f32::from(bounds(&editor, 18..18, cx).left() - bounds(&editor, 12..12, cx).left()),
+        2. * ADVANCE
+    );
+    assert_eq!(
+        text(&editor, cx),
+        "a :smile: b :tada:\nnext",
+        "the text is unchanged"
+    );
+
+    // Turned off, shortcodes are text.
+    cx.simulate_keystrokes("ctrl-end");
+    editor.update(cx, |editor, cx| {
+        let mut options = editor.markdown_options();
+        options.emoji_shortcodes = false;
+        editor.set_markdown_options(options, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(shortcode_width(cx), 7. * ADVANCE);
+}
+
+#[gpui::test]
+fn highlight_and_math_markers_hide_away_from_the_cursor(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "a ==b== $c$\nnext");
+    cx.simulate_keystrokes("ctrl-end");
+    // "a b $c$": the `==` are hidden; with Math off by default, `$` is text.
+    assert_eq!(x_of(&editor, 4, 0, cx), 2. * ADVANCE);
+    assert_eq!(x_of(&editor, 9, 0, cx), 5. * ADVANCE);
+    editor.update(cx, |editor, cx| {
+        let mut options = editor.markdown_options();
+        options.math = true;
+        editor.set_markdown_options(options, cx);
+    });
+    cx.run_until_parked();
+    // "a b c".
+    assert_eq!(x_of(&editor, 9, 0, cx), 4. * ADVANCE);
+    cx.simulate_keystrokes("ctrl-home right right right right");
+    assert_eq!(
+        x_of(&editor, 4, 0, cx),
+        4. * ADVANCE,
+        "on the highlight its markers show"
+    );
+}

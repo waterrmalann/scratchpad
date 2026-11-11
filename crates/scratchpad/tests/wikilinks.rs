@@ -1,5 +1,5 @@
 //! Wikilinks to pages in the note's folder: Ctrl+click opens the page, or creates it first, and the
-//! View > Markdown features toggle (ADR 0188).
+//! View > Markdown Extensions toggle (ADR 0188).
 
 mod common;
 

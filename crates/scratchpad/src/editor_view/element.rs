@@ -140,13 +140,8 @@ impl EditorView {
         let font_size = self.font_size();
         let (column_left, width) = text_column(bounds, font_size);
         let soft_wrap = self.soft_wrap;
-        self.layouts.set_style(base_style(
-            cx,
-            font_size,
-            width,
-            soft_wrap,
-            &self.mono_family,
-        ));
+        self.layouts
+            .set_style(base_style(cx, font_size, width, soft_wrap, &self.families));
         let vp = self.viewport();
         let margin = self.layouts.style().line_height * AUTOSCROLL_MARGIN_ROWS;
         let mut scroll_x = self.scroll_x;
