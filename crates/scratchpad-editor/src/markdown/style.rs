@@ -26,6 +26,9 @@ pub struct SpanStyle {
     pub code_block: bool,
     pub superscript: bool,
     pub subscript: bool,
+    /// A wikilink (set with `link`) whose page does not exist; only
+    /// [`MarkdownState::styled_lines_with_pages`] sets it.
+    pub missing_page: bool,
 }
 
 /// Which syntax a marker span belongs to.
@@ -38,7 +41,8 @@ pub enum MarkerKind {
     Emphasis,
     /// Backticks around inline code.
     Code,
-    /// `[`, `](destination)`, `<` or `>` of a link, or `![` and `](source)` of an image.
+    /// `[`, `](destination)`, `<` or `>` of a link, `![` and `](source)` of an image, or `[[`, `target|` and
+    /// `]]` of a wikilink.
     Link,
     /// `>` and the space after it.
     Quote,
@@ -156,6 +160,46 @@ impl MarkdownState {
         lines
             .map(|line| style_line(buffer, &decorations, line, selection.clone()))
             .collect()
+    }
+
+    /// [`MarkdownState::styled_lines`], with [`SpanStyle::missing_page`] set on the wikilinks whose target
+    /// `page_exists` says has no page. It is asked only about the wikilinks on lines that have links.
+    pub fn styled_lines_with_pages(
+        &mut self,
+        buffer: &Buffer,
+        lines: Range<usize>,
+        selection: Option<Selection>,
+        page_exists: impl Fn(&str) -> bool,
+    ) -> Vec<StyledLine> {
+        let mut styled = self.styled_lines(buffer, lines.clone(), selection);
+        if !styled
+            .iter()
+            .any(|line| line.spans.iter().any(|span| span.style.link))
+        {
+            return styled;
+        }
+        let first = lines.start;
+        let range = buffer.line_start(first)..buffer.line_end(first + styled.len() - 1);
+        for d in self.decorations(buffer, range) {
+            let DecorationKind::WikiLink { target } = &d.kind else {
+                continue;
+            };
+            if page_exists(target) {
+                continue;
+            }
+            let (start, end) = (buffer.line_of(d.range.start), buffer.line_of(d.range.end));
+            for line in start.max(first)..=end.min(first + styled.len() - 1) {
+                let line_start = buffer.line_start(line).0;
+                let columns =
+                    d.range.start.0.saturating_sub(line_start)..d.range.end.0 - line_start;
+                for span in &mut styled[line - first].spans {
+                    if columns.start <= span.columns.start && span.columns.end <= columns.end {
+                        span.style.missing_page = true;
+                    }
+                }
+            }
+        }
+        styled
     }
 }
 
@@ -280,6 +324,7 @@ fn apply(kind: &DecorationKind, style: &mut SpanStyle) {
         DecorationKind::ListItem { .. }
         | DecorationKind::Task { .. }
         | DecorationKind::ThematicBreak => {}
+        DecorationKind::WikiLink { .. } => style.link = true,
     }
 }
 
@@ -300,6 +345,7 @@ fn marker_kind(kind: &DecorationKind) -> MarkerKind {
         DecorationKind::Task { checked } => MarkerKind::TaskBox { checked: *checked },
         DecorationKind::ThematicBreak => MarkerKind::ThematicBreak,
         DecorationKind::CodeBlock { .. } => MarkerKind::CodeFence,
+        DecorationKind::WikiLink { .. } => MarkerKind::Link,
     }
 }
 
@@ -341,6 +387,7 @@ fn reveals(
         DecorationKind::Heading { .. }
         | DecorationKind::ThematicBreak
         | DecorationKind::CodeBlock { .. } => lines_of(&decoration.range),
+        DecorationKind::WikiLink { .. } => decoration.range.clone(),
     };
     selection.start <= scope.end && scope.start <= selection.end
 }

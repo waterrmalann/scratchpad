@@ -1,6 +1,6 @@
 # 0072. Markdown shortcuts, task boxes and links
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted; amended by 0188
 
 ## Context
 Milestone 4 asks for formatting shortcuts, Markdown-aware Enter and pairing (PLAN §36, §49, §50),

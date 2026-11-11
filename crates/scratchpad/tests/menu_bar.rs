@@ -558,10 +558,25 @@ fn markdown_features_are_ticked_while_on_apply_at_once_and_are_remembered(cx: &m
     hover("menu-item:Markdown features", cx);
     assert_eq!(
         labels(&root, true, cx),
-        ["Callouts", "Superscript", "Subscript", "Heading IDs"]
+        [
+            "Callouts",
+            "Superscript",
+            "Subscript",
+            "Heading IDs",
+            "Wikilinks"
+        ]
     );
     let checked: Vec<_> = items(&root, true, cx).iter().map(|i| i.checked).collect();
-    assert_eq!(checked, [Some(true), Some(false), Some(false), Some(false)]);
+    assert_eq!(
+        checked,
+        [
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(false),
+            Some(true)
+        ]
+    );
 
     click("menu-item:Superscript", cx);
     assert_eq!(open_menu(&root, cx), None);

@@ -363,3 +363,70 @@ fn callout_tags_are_never_hidden_and_every_line_of_the_quote_has_its_kind() {
     );
     assert_eq!(styled(&ed, 4, None).style.callout, None);
 }
+
+#[test]
+fn wikilinks_show_only_their_label_or_page_away_from_the_cursor() {
+    // `|` marks the cursor in `shown`, so these texts place it themselves.
+    let shown_at = |text: &str, cursor: usize| {
+        let ed = Editor::from_text(text);
+        let buffer = ed.buffer();
+        let at = scratchpad_editor::ByteOffset(cursor);
+        MarkdownState::new(buffer)
+            .styled_lines(buffer, 0..usize::MAX, Some(Selection::new(at, at)))
+            .iter()
+            .enumerate()
+            .map(|(i, line)| line.display_text(&buffer.line_text(i)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = "[[Page]] and [[Page|label]] and [[Page#Top]]\n";
+    assert_eq!(shown_at(text, text.len()), "Page and label and Page#Top\n");
+    assert_eq!(
+        shown_at(text, 16),
+        "Page and [[Page|label]] and Page#Top\n",
+        "the cursor on the link reveals its markers"
+    );
+    let off = MarkdownOptions {
+        wikilinks: false,
+        ..MarkdownOptions::default()
+    };
+    assert_eq!(shown_with("[[Page]]\n|", off), "[[Page]]\n");
+}
+
+#[test]
+fn wikilinks_to_missing_pages_are_marked_and_only_links_are_asked_about() {
+    let ed = Editor::from_text("[[Here]] [[Gone|g]] **b**\n\nplain\n[[Gone]]");
+    let buffer = ed.buffer();
+    let asked = std::cell::RefCell::new(Vec::new());
+    let lines = MarkdownState::new(buffer).styled_lines_with_pages(buffer, 0..4, None, |target| {
+        asked.borrow_mut().push(target.to_owned());
+        target == "Here"
+    });
+    let missing = |line: usize| -> Vec<String> {
+        let text = buffer.line_text(line).into_owned();
+        lines[line]
+            .spans
+            .iter()
+            .filter(|span| span.style.missing_page)
+            .map(|span| text[span.columns.clone()].to_owned())
+            .collect()
+    };
+    assert_eq!(missing(0), ["[[Gone|", "g", "]]"]);
+    assert!(
+        lines[0]
+            .spans
+            .iter()
+            .all(|s| !s.style.missing_page || s.style.link)
+    );
+    assert_eq!(missing(2), Vec::<String>::new());
+    assert_eq!(missing(3), ["[[", "Gone", "]]"]);
+    assert_eq!(*asked.borrow(), ["Here", "Gone", "Gone"]);
+
+    // Lines without links ask nothing.
+    asked.borrow_mut().clear();
+    MarkdownState::new(buffer).styled_lines_with_pages(buffer, 1..3, None, |target| {
+        asked.borrow_mut().push(target.to_owned());
+        false
+    });
+    assert!(asked.borrow().is_empty());
+}

@@ -1,12 +1,15 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseDownEvent, Pixels,
     Subscription, Task, Window, div, prelude::*, px,
 };
 use scratchpad_core::NoteStore;
+use scratchpad_core::{PageIndex, is_plain_stem};
 use scratchpad_editor::markdown::MarkdownOptions;
 
+use crate::actions::view::ToggleWikilinks;
 use crate::actions::view::{
     ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleCallouts, ToggleHeadingIds,
     ToggleSpellCheck, ToggleSubscript, ToggleSuperscript, ToggleWordWrap, ZoomIn, ZoomOut,
@@ -17,16 +20,26 @@ use crate::actions::{
 };
 use crate::app::{Storage, WINDOW_TITLE};
 use crate::editor_pane::EditorPane;
-use crate::editor_view::{Direction, EditorView};
+use crate::editor_view::{Direction, EditorView, OpenPage};
 use crate::find_bar::{FindInNote, FindNext, FindPrevious, ReplaceInNote};
 use crate::go_to_line::GoToLine;
 use crate::menu_bar::{MenuBar, OpenEditMenu, OpenFileMenu, OpenViewMenu};
-use crate::notes::{Notes, NotesLocation, Selection, folder_name};
+use crate::notes::{Notes, NotesLocation, Selection, folder_name, same_file};
 use crate::session::Session;
 use crate::settings_panel::{SettingsPanel, SettingsPanelEvent};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::theme::{self, ActiveTheme, typography};
 use crate::{file_dialogs, settings, toast};
+
+/// The open document and its folder if it is a file from outside the notes folder: its
+/// wikilinks resolve there (ADR 0145, 0188).
+fn outside_folder(notes: &Notes) -> Option<(PathBuf, PathBuf)> {
+    let Selection::File(path) = notes.selection() else {
+        return None;
+    };
+    let dir = path.parent()?;
+    (!same_file(dir, &notes.location().dir)).then(|| (path.clone(), dir.to_owned()))
+}
 
 /// Narrower windows do not dock the sidebar, so the note keeps a comfortable width: at this
 /// width a sidebar of the default 260 px leaves
@@ -67,6 +80,12 @@ pub struct AppWindow {
     /// What the title bar says: the name of a file opened from outside the notes folder.
     window_title: String,
     _subscriptions: Vec<Subscription>,
+    /// The file from outside the notes folder whose folder's pages the editor's wikilinks
+    /// resolve against, while it is open, and the reading of those pages (ADR 0188).
+    pages_file: Option<PathBuf>,
+    pages_task: Option<Task<()>>,
+    /// Finding or creating the page of a wikilink that was Ctrl+clicked.
+    open_page_task: Option<Task<()>>,
 }
 
 /// The settings panel while it is shown.
@@ -155,7 +174,11 @@ impl AppWindow {
                     window.focus(&this.editor_pane.focus_handle(cx))
                 })
             }),
+            cx.subscribe(&editor, |this, _, OpenPage(page), cx| {
+                this.open_page(page.clone(), cx)
+            }),
             cx.observe_in(&notes, window, |this, notes, window, cx| {
+                this.update_pages(cx);
                 this.remember_pins(cx);
                 let selection = notes.read(cx).selection().clone();
                 this.show_file_name(&selection, window);
@@ -239,7 +262,97 @@ impl AppWindow {
             folder_change: None,
             window_title: WINDOW_TITLE.to_owned(),
             _subscriptions: subscriptions,
+            pages_file: None,
+            pages_task: None,
+            open_page_task: None,
         }
+    }
+
+    /// Gives the editor the pages its wikilinks resolve against (ADR 0188): the notes model's
+    /// index of the notes folder, kept in step with the note list, or for a file from another
+    /// folder that folder's pages, read in the background each time a file from it opens.
+    fn update_pages(&mut self, cx: &mut Context<Self>) {
+        let editor = self.editor_pane.read(cx).editor().clone();
+        let notes = self.notes.read(cx);
+        let Some((file, dir)) = outside_folder(notes) else {
+            self.pages_file = None;
+            self.pages_task = None;
+            // Until the folder is listed every page would look missing.
+            let pages = notes.is_loaded().then(|| notes.pages().clone());
+            editor.update(cx, |editor, cx| editor.set_pages(pages, cx));
+            return;
+        };
+        if self.pages_file.as_ref() == Some(&file) {
+            return;
+        }
+        self.pages_file = Some(file);
+        editor.update(cx, |editor, cx| editor.set_pages(None, cx));
+        let reading = cx.background_spawn(async move { PageIndex::read(&dir) });
+        self.pages_task = Some(cx.spawn(async move |_, cx| match reading.await {
+            Ok(pages) => {
+                editor
+                    .update(cx, |editor, cx| editor.set_pages(Some(Arc::new(pages)), cx))
+                    .ok();
+            }
+            Err(error) => tracing::warn!(%error, "not resolving wikilinks"),
+        }));
+    }
+
+    /// Ctrl+click on a wikilink: opens the page in the folder of the open document as choosing
+    /// it in the sidebar or with File > Open would; a page that does not exist is created there
+    /// first, as a note named after it starting with it as its heading.
+    fn open_page(&mut self, page: String, cx: &mut Context<Self>) {
+        if !is_plain_stem(&page) {
+            return;
+        }
+        let notes = self.notes.read(cx);
+        let outside = outside_folder(notes);
+        let known = match &outside {
+            None => notes.is_loaded().then(|| notes.pages().clone()),
+            Some(_) => self.editor_pane.read(cx).editor().read(cx).pages().cloned(),
+        };
+        if let Some(path) = known.as_ref().and_then(|pages| pages.resolve(&page)) {
+            let path = path.to_owned();
+            self.notes
+                .update(cx, |notes, cx| notes.open_file(&path, cx));
+            return;
+        }
+        // Not known to exist: look on the disk, which may have changed since it was listed, and
+        // create the note only if it is still missing there.
+        let dir = outside
+            .clone()
+            .map_or_else(|| notes.location().dir.clone(), |(_, dir)| dir);
+        let store = outside.is_none().then(|| notes.store().cloned()).flatten();
+        let name = page.clone();
+        let finding = cx.background_spawn(async move {
+            if let Some(path) = PageIndex::read(&dir)?.resolve(&name) {
+                return Ok((path.to_owned(), None));
+            }
+            let store = match store {
+                Some(store) => store,
+                None => NoteStore::open(&dir)?,
+            };
+            let note = store.create(Some(&name))?;
+            store.save(&note.path, &format!("# {name}\n"))?;
+            let note = store.note(&note.path)?;
+            scratchpad_core::Result::Ok((note.path.clone(), Some(note)))
+        });
+        self.open_page_task = Some(cx.spawn(async move |this, cx| {
+            let found = finding.await;
+            this.update(cx, |this, cx| match found {
+                Ok((path, created)) => {
+                    this.notes.update(cx, |notes, cx| {
+                        if let Some(note) = created {
+                            // Lists a note of the notes folder; ignores any other file.
+                            notes.note_saved(note, cx);
+                        }
+                        notes.open_file(&path, cx);
+                    });
+                }
+                Err(error) => toast::show_file_error(&page, &error, cx),
+            })
+            .ok();
+        }));
     }
 
     /// Writes the pinned notes to the settings, keeping the pins of other folders.
@@ -698,6 +811,9 @@ impl Render for AppWindow {
             }))
             .on_action(cx.listener(|this, _: &ToggleHeadingIds, _, cx| {
                 this.toggle_markdown_option(cx, |options| &mut options.heading_ids)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleWikilinks, _, cx| {
+                this.toggle_markdown_option(cx, |options| &mut options.wikilinks)
             }))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::save_as))

@@ -51,6 +51,7 @@ fn save_and_load_round_trip_every_field() {
         markdown_superscript: Some(true),
         markdown_subscript: Some(true),
         markdown_heading_ids: None,
+        markdown_wikilinks: Some(false),
     };
 
     config.save(&path).unwrap();
@@ -96,6 +97,7 @@ fn loads_the_documented_file_format() {
             "markdown_superscript": true,
             "markdown_subscript": "yes",
             "markdown_heading_ids": true,
+            "markdown_wikilinks": false,
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -127,6 +129,7 @@ fn loads_the_documented_file_format() {
             // The wrong type falls back to the default.
             markdown_subscript: None,
             markdown_heading_ids: Some(true),
+            markdown_wikilinks: Some(false),
         }
     );
 }

@@ -18,6 +18,7 @@ use gpui::{
 };
 
 use crate::actions::editor::{Copy, Cut, Delete, Paste, Redo, SelectAll, ToggleSourceMode, Undo};
+use crate::actions::view::ToggleWikilinks;
 use crate::actions::view::{
     ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleCallouts, ToggleHeadingIds,
     ToggleSpellCheck, ToggleSubscript, ToggleSuperscript, ToggleWordWrap, ZoomIn, ZoomOut,
@@ -314,6 +315,9 @@ impl MenuBar {
                                 .into(),
                             item("Heading IDs", ToggleHeadingIds)
                                 .checked(options.heading_ids)
+                                .into(),
+                            item("Wikilinks", ToggleWikilinks)
+                                .checked(options.wikilinks)
                                 .into(),
                         ],
                     )

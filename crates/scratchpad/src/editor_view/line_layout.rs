@@ -13,6 +13,8 @@ use gpui::{
     Bounds, Font, FontStyle, FontWeight, Hsla, PathBuilder, Pixels, Point, SharedString, TextRun,
     Window, WindowTextSystem, fill, font, point, px, quad, size, transparent_black,
 };
+use scratchpad_core::PageIndex;
+use scratchpad_editor::markdown::wikilink_page;
 use scratchpad_editor::markdown::{
     CalloutKind, MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan,
 };
@@ -50,6 +52,9 @@ const QUOTE_BAR_WIDTH: Pixels = px(3.);
 const SCRIPT_SCALE: f32 = 0.75;
 const SUPERSCRIPT_RISE: f32 = 0.33;
 const SUBSCRIPT_DROP: f32 = 0.15;
+/// Length of the dashes (and of the gaps between them) under a wikilink to a missing page, in
+/// multiples of the font size.
+const MISSING_PAGE_DASH: f32 = 0.2;
 /// Room after a callout's label, in multiples of the font size.
 const CALLOUT_LABEL_GAP: f32 = 0.5;
 /// Width of a bullet, and of a task box, with the space after it, in multiples of the font size.
@@ -96,14 +101,21 @@ impl LineKey {
     /// How `line` looks with `selection`. In live preview (`Some`) markers away from the selection
     /// are hidden, and bullets and task boxes are drawn as shapes unless the selection reaches inside
     /// them; in source mode (`None`) everything shows as typed.
+    /// Wikilinks whose page is not in `pages` are drawn as missing; with no `pages`, none is.
     pub fn new(
         markdown: &mut MarkdownState,
+        pages: Option<&PageIndex>,
         buffer: &Buffer,
         line: usize,
         selection: Option<Selection>,
     ) -> Self {
+        let page_exists = |target: &str| {
+            pages.is_none_or(|pages| {
+                wikilink_page(target).is_some_and(|page| pages.resolve(page).is_some())
+            })
+        };
         let styled = markdown
-            .styled_lines(buffer, line..line + 1, selection)
+            .styled_lines_with_pages(buffer, line..line + 1, selection, page_exists)
             .pop()
             .unwrap_or_default();
         let line_start = buffer.line_start(line).0;
@@ -556,7 +568,9 @@ impl LineLayout {
                 theme.muted,
             ),
             (
-                merged(runs, |run| run.style.link && !run.marker),
+                merged(runs, |run| {
+                    run.style.link && !run.marker && !run.style.missing_page
+                }),
                 baseline + (font_size * 0.15).round(),
                 theme.accent,
             ),
@@ -569,6 +583,23 @@ impl LineLayout {
                         Bounds::new(origin, size(x1 - x0, px(1.))),
                         color,
                     ));
+                }
+            }
+        }
+        // A wikilink to a page that does not exist yet is underlined with dashes (ADR 0188).
+        let dash = (font_size * MISSING_PAGE_DASH).round().max(px(1.));
+        let missing = merged(runs, |run| run.style.missing_page && !run.marker);
+        for columns in missing {
+            for (row, x0, x1) in self.text_spans(display, columns) {
+                let y = self.row_top(row) + baseline + (font_size * 0.15).round();
+                let mut x = x0;
+                while x < x1 {
+                    let width = dash.min(x1 - x);
+                    self.above.push(Shape::rect(
+                        Bounds::new(point(x, y), size(width, px(1.))),
+                        theme.muted,
+                    ));
+                    x += dash * 2.;
                 }
             }
         }
@@ -932,6 +963,7 @@ fn runs(key: &LineKey, widgets: &[Widget], line_font: &LineFont, base: &BaseStyl
             || style.strikethrough
             || style.quote && style.callout.is_none()
             || style.heading == 6
+            || style.missing_page
         {
             theme.muted
         } else {

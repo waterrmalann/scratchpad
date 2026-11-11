@@ -555,6 +555,10 @@ fn prose_segments(
                     excluded.extend(decoration.markers.iter().map(|m| m.start.0..m.end.0));
                 }
             }
+            // A wikilink without a label shows its page's name, which is not prose.
+            DecorationKind::WikiLink { .. } if decoration.markers.len() == 2 => {
+                excluded.push(range)
+            }
             _ => excluded.extend(decoration.markers.iter().map(|m| m.start.0..m.end.0)),
         }
     }

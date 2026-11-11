@@ -17,6 +17,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 
 - **Live preview** — Headings, bold, italic, strikethrough, inline code, code blocks, quotes, lists, task boxes, rules and links are drawn as you type. The Markdown markers show only where the cursor is. `Ctrl+/` shows all of them.
 - **Markdown extras** — GitHub callouts (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) get a coloured bar and a label. Images (`![alt](src)`) look and open like links; nothing is downloaded. Superscript (`^x^`), subscript (`~x~`) and heading IDs (`# Title {#id}`) can be turned on, and callouts off, in View > Markdown features.
+- **Wikilinks** — `[[Page]]`, `[[Page|label]]` and `[[Page#Heading]]` link to another note in the same folder, found by name ignoring case (`.md` first, then `.txt`). `Ctrl`+click opens it, or creates it if it does not exist yet; links to missing pages are dimmed with a dashed underline. View > Markdown features turns them off.
 - **Markdown-aware editing** — Enter continues a list or quote, Tab nests a list item, `Ctrl+B`/`I`/`E`/`K` format the selection, and clicking a task box ticks it. `Ctrl`+click opens a link.
 - **Typing helpers** — A new note starts with a `# ` heading for its title (Backspace removes it). Brackets and quotes pair up conservatively. Typing a bracket, quote, `*`, `~` or `_` over a selection wraps it (twice for `**bold**` or `~~strikethrough~~`; `_` only where it makes emphasis, so `foo_bar`, spaces and code are still replaced), and a third backtick alone on a line opens a code block and closes it for you.
 - **Symbols as you type** — `->` becomes →, and likewise `<-` ←, `<->` ↔, `=>` ⇒, `<=` ≤, `<=>` ⇔, `>=` ≥, `!=` ≠, `--` —, `...` …, `(c)` ©, `(r)` ®, `(tm)` ™ and `+-` ±. Backspace right after one (or `Ctrl+Z`) brings back what you typed. Code, front matter, HTML comments, link addresses, web addresses and paths, and pasted text are left alone; a line of dashes stays a rule (`- --` becomes `- —` once text follows), table delimiter rows keep their dashes, and `--flag` and `C++-style` stay as typed. View > Auto-replace symbols turns it off.
@@ -87,7 +88,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 | Ctrl+/ | Show all Markdown markers (View > Source mode) |
 | Ctrl+= / Ctrl+-, Ctrl+wheel | Make the note's text larger / smaller (50% to 400%) |
 | Ctrl+0 | Normal text size |
-| Ctrl+click | Open a link |
+| Ctrl+click | Open a link or a wikilink's page |
 | Right-click a note | Pin or unpin, rename, delete, show in folder |
 | Right-click in the note, Shift+F10, Menu key | Undo, cut, copy, paste, delete, select all and formatting; on an underlined word, its spelling suggestions, add to dictionary and ignore first |
 | Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete (asks first) |
