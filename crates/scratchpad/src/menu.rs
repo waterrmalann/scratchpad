@@ -49,7 +49,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 }
 
 const ITEM_HEIGHT: gpui::Pixels = px(28.);
-const MENU_MIN_WIDTH: gpui::Pixels = px(220.);
+pub const MENU_MIN_WIDTH: gpui::Pixels = px(220.);
 /// Segoe MDL2 Assets "CheckMark" and "ChevronRight"; plain characters elsewhere.
 const CHECK_ICON: &str = if cfg!(windows) {
     "\u{E73E}"

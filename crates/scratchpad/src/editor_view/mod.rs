@@ -278,8 +278,12 @@ impl EditorView {
     }
 
     /// While set, edits from the keyboard, IME and clipboard are ignored.
-    pub fn set_read_only(&mut self, read_only: bool) {
-        self.read_only = read_only;
+    pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        if read_only != self.read_only {
+            self.read_only = read_only;
+            // What the context menu offers no longer applies.
+            self.close_context_menu(cx);
+        }
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -345,6 +349,8 @@ impl EditorView {
         }
         let scale = f32::from(percent) / f32::from(self.zoom);
         self.zoom = percent;
+        // The text moves from under it.
+        self.close_context_menu(cx);
         self.scroll_x *= scale;
         self.keep_place(scale);
         cx.notify();

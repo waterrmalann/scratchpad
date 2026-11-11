@@ -267,7 +267,7 @@ fn commands_that_cannot_apply_are_disabled_as_in_the_edit_menu(cx: &mut TestAppC
 
     // A read-only note can be copied from but not changed.
     let editor = editor(&root, cx);
-    editor.update(cx, |editor, _| editor.set_read_only(true));
+    editor.update(cx, |editor, cx| editor.set_read_only(true, cx));
     cx.simulate_keystrokes("ctrl-a");
     right_click("abcd", &root, cx);
     assert_eq!(enabled(&root, cx), ["Copy", "Select all"]);
@@ -275,7 +275,7 @@ fn commands_that_cannot_apply_are_disabled_as_in_the_edit_menu(cx: &mut TestAppC
 
     // Plain text has no Markdown formatting.
     editor.update(cx, |editor, cx| {
-        editor.set_read_only(false);
+        editor.set_read_only(false, cx);
         editor.set_markdown(false, cx);
     });
     right_click("abcd", &root, cx);
@@ -453,4 +453,124 @@ fn a_misspelled_word_has_its_corrections_first(cx: &mut TestAppContext) {
     assert_eq!(corrections(&root, cx)[0], "quick");
     cx.simulate_keystrokes("escape ctrl-end shift-f10");
     assert_eq!(corrections(&root, cx)[0], "Undo Ctrl+Z");
+}
+
+#[gpui::test]
+fn the_highlight_stays_on_its_item_while_suggestions_come_in(cx: &mut TestAppContext) {
+    let words = WordList::new(["the", "quick", "quirk", "fox"]);
+    let speller = Speller::inline(Box::new(words));
+    cx.update(|cx| spelling::set_speller(speller.clone(), cx));
+    let (root, cx) = open("the quikc quirc fox", cx);
+    let misspelled = |root: &Entity<AppWindow>, cx: &mut VisualTestContext| {
+        editor(root, cx).read_with(cx, |editor, _| editor.misspelled_words())
+    };
+    assert_eq!(misspelled(&root, cx), ["quikc", "quirc"]);
+
+    // Add to dictionary is highlighted while the suggestions are looked for; two come in above
+    // it, and Enter still adds the word.
+    speller.hold();
+    cx.simulate_keystrokes("ctrl-home right right right right right shift-f10");
+    speller.release();
+    cx.run_until_parked();
+    assert_eq!(labels(&root, false, cx)[..2], ["quick", "quirk"]);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(text(&root, cx), "the quikc quirc fox");
+    assert_eq!(misspelled(&root, cx), ["quirc"]);
+
+    // The keyboard in the Formatting submenu stays there too.
+    speller.hold();
+    cx.simulate_keystrokes("ctrl-end left left left left left left shift-f10 up right");
+    speller.release();
+    cx.run_until_parked();
+    assert_eq!(items(&root, true, cx).map(|items| items.len()), Some(5));
+    cx.simulate_keystrokes("enter");
+    assert_eq!(text(&root, cx), "the quikc **quirc** fox");
+}
+
+#[gpui::test]
+fn changes_under_the_menu_close_it(cx: &mut TestAppContext) {
+    let (root, cx) = open("one two", cx);
+    let editor = editor(&root, cx);
+
+    // The note turning read-only, as when it turns out not to be UTF-8.
+    right_click("two", &root, cx);
+    editor.update(cx, |editor, cx| editor.set_read_only(true, cx));
+    cx.run_until_parked();
+    assert!(!is_open(&root, cx));
+    assert!(note_focused(&root, cx));
+    editor.update(cx, |editor, cx| editor.set_read_only(false, cx));
+
+    // Another note opened, or this one changed by another program.
+    right_click("two", &root, cx);
+    editor.update(cx, |editor, cx| editor.set_text("three four", cx));
+    cx.run_until_parked();
+    assert!(!is_open(&root, cx));
+    right_click("four", &root, cx);
+    editor.update(cx, |editor, cx| editor.reload_text("three four five", cx));
+    cx.run_until_parked();
+    assert!(!is_open(&root, cx));
+    assert!(note_focused(&root, cx));
+
+    // Zooming and the sidebar key move the text from under it.
+    right_click("four", &root, cx);
+    cx.simulate_keystrokes("ctrl-=");
+    assert!(!is_open(&root, cx));
+    right_click("four", &root, cx);
+    cx.simulate_keystrokes("ctrl-\\");
+    assert!(!is_open(&root, cx));
+}
+
+#[gpui::test]
+fn a_right_click_on_the_scrollbar_opens_no_menu(cx: &mut TestAppContext) {
+    let (root, cx) = open(&"a line of the note\n".repeat(200), cx);
+    let note = cx.debug_bounds("note-area").unwrap();
+    right_click_at(gpui::point(note.right() - px(6.), note.center().y), cx);
+    assert!(!is_open(&root, cx));
+    // Beside it, in the text, it does.
+    right_click_at(gpui::point(note.right() - px(40.), note.center().y), cx);
+    assert!(is_open(&root, cx));
+}
+
+#[gpui::test]
+fn the_submenu_stays_in_the_window(cx: &mut TestAppContext) {
+    let (_root, cx) = open("one two", cx);
+    let note = cx.debug_bounds("note-area").unwrap();
+    let window = cx.update(|window, _| window.viewport_size());
+    let inside = |bounds: Bounds<Pixels>| {
+        bounds.left() >= px(0.)
+            && bounds.top() >= px(0.)
+            && bounds.right() <= window.width
+            && bounds.bottom() <= window.height
+    };
+
+    // Near the bottom: both move up.
+    right_click_at(
+        gpui::point(note.left() + px(60.), note.bottom() - px(10.)),
+        cx,
+    );
+    hover("context-menu:Formatting", cx);
+    let submenu = cx.debug_bounds("context-submenu").unwrap();
+    let panel = cx.debug_bounds("context-menu").unwrap();
+    assert!(inside(panel), "{panel:?}");
+    assert!(inside(submenu), "{submenu:?} in {window:?}");
+    assert!(
+        submenu.left() > panel.center().x,
+        "on the right, with room there"
+    );
+    cx.simulate_keystrokes("escape escape");
+
+    // Near the right edge: on the left of the menu.
+    right_click_at(
+        gpui::point(note.right() - px(30.), note.top() + px(60.)),
+        cx,
+    );
+    hover("context-menu:Formatting", cx);
+    let submenu = cx.debug_bounds("context-submenu").unwrap();
+    let panel = cx.debug_bounds("context-menu").unwrap();
+    assert!(inside(submenu), "{submenu:?}");
+    assert!(
+        submenu.right() < panel.center().x,
+        "{submenu:?} left of {panel:?}"
+    );
 }

@@ -8,9 +8,9 @@
 //! keys and a click anywhere else only closes it.
 
 use gpui::{
-    Action, AnyElement, AnyWindowHandle, Bounds, Context, EntityInputHandler, FocusHandle, Pixels,
-    Point, SharedString, Subscription, Window, anchored, deferred, div, point, prelude::*, px,
-    relative,
+    Action, AnyElement, AnyWindowHandle, Bounds, Context, Corner, EntityInputHandler, FocusHandle,
+    Pixels, Point, SharedString, Subscription, Window, anchored, canvas, deferred, div, point,
+    prelude::*, px, relative,
 };
 
 use super::spell::{Choice, SpellingSection, menu_choices};
@@ -25,19 +25,24 @@ use crate::menu::{
 };
 use crate::theme::{ActiveTheme, Theme};
 
-/// Room the menu and its submenu need side by side; nearer the window's right edge than this,
-/// the submenu opens to the left.
-const ROOM_FOR_SUBMENU: Pixels = px(460.);
+/// The gap between the menu and its submenu, and between a menu and the window's edges.
+const SUBMENU_GAP: Pixels = px(2.);
+const WINDOW_MARGIN: Pixels = px(8.);
 
 pub(super) struct ContextMenu {
     /// Where it opened, in window coordinates: the pointer, or below the cursor.
     position: Point<Pixels>,
     /// The corrections of the misspelled word it opened on.
     pub(super) spelling: Option<SpellingSection>,
-    /// By the pointer or the arrow keys.
-    highlighted: Option<usize>,
+    /// By the pointer or the arrow keys: an item, not a place in the list, which changes while
+    /// the menu is open (the suggestions come in).
+    highlighted: Option<Key>,
     /// The highlighted item's submenu is shown, with this item of it highlighted.
     submenu: Option<Option<usize>>,
+    /// The menu's and the submenu's bounds in the last frame, to open the submenu on the side
+    /// with room for it.
+    panel_bounds: Option<Bounds<Pixels>>,
+    submenu_width: Option<Pixels>,
     /// The menu's window and focus, to give the focus back to the note when it closes.
     window: AnyWindowHandle,
     focus: FocusHandle,
@@ -55,6 +60,35 @@ struct Item {
     label: SharedString,
     command: Command,
     enabled: bool,
+}
+
+/// Which item is highlighted. Spelling suggestions are words, which may be any label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Key {
+    spelling: bool,
+    label: SharedString,
+}
+
+impl Item {
+    fn key(&self) -> Key {
+        Key {
+            spelling: matches!(self.command, Command::Spelling(_)),
+            label: self.label.clone(),
+        }
+    }
+}
+
+fn key_at(entries: &[Entry], ix: usize) -> Option<Key> {
+    match entries.get(ix) {
+        Some(Entry::Item(item)) => Some(item.key()),
+        _ => None,
+    }
+}
+
+fn index_of(entries: &[Entry], key: &Key) -> Option<usize> {
+    entries
+        .iter()
+        .position(|entry| matches!(entry, Entry::Item(item) if item.key() == *key))
 }
 
 enum Entry {
@@ -241,13 +275,16 @@ impl EditorView {
             spelling,
             highlighted: None,
             submenu: None,
+            panel_bounds: None,
+            submenu_width: None,
             window: window.window_handle(),
             // Another window or a shortcut (Ctrl+N, Alt+E) took the focus.
             _blur: cx.on_blur(&focus, window, |this, _, cx| this.close_context_menu(cx)),
             focus,
         });
         if from_keyboard {
-            let first = next_enabled(&self.context_entries(), None, true);
+            let entries = self.context_entries();
+            let first = next_enabled(&entries, None, true).and_then(|ix| key_at(&entries, ix));
             if let Some(menu) = &mut self.context_menu {
                 menu.highlighted = first;
             }
@@ -257,7 +294,7 @@ impl EditorView {
 
     /// Closes the context menu. If it had the focus, the note gets it back once the current
     /// update is done, so this works where the window is not at hand (an edit, a setting).
-    pub(super) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+    pub fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         let Some(menu) = self.context_menu.take() else {
             return;
         };
@@ -286,6 +323,25 @@ impl EditorView {
         window.focus(&self.focus_handle);
         cx.notify();
         Some(menu)
+    }
+
+    /// Where the highlighted item is in `entries`.
+    fn highlighted_index(&self, entries: &[Entry]) -> Option<usize> {
+        let key = self.context_menu.as_ref()?.highlighted.as_ref()?;
+        index_of(entries, key)
+    }
+
+    /// Runs the item `key` of the menu (`sub` of its submenu) if it is enabled.
+    fn run_context_key(
+        &mut self,
+        key: &Key,
+        sub: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ix) = index_of(&self.context_entries(), key) {
+            self.run_context_item(ix, sub, window, cx);
+        }
     }
 
     /// Runs item `ix` of the menu (`sub` of its submenu) if it is enabled.
@@ -336,7 +392,7 @@ impl EditorView {
         let Some(menu) = self.context_menu.as_mut().filter(|_| has_submenu) else {
             return;
         };
-        menu.highlighted = Some(ix);
+        menu.highlighted = key_at(&entries, ix);
         menu.submenu = Some(
             from_keyboard
                 .then(|| next_enabled(&formatting_entries(), None, true))
@@ -357,6 +413,7 @@ impl EditorView {
     fn move_context_highlight(&mut self, forward: bool, cx: &mut Context<Self>) {
         let entries = self.context_entries();
         let in_submenu = self.in_context_submenu();
+        let from = self.highlighted_index(&entries);
         let Some(menu) = &mut self.context_menu else {
             return;
         };
@@ -366,7 +423,8 @@ impl EditorView {
             }
         } else {
             menu.submenu = None;
-            menu.highlighted = next_enabled(&entries, menu.highlighted, forward);
+            menu.highlighted =
+                next_enabled(&entries, from, forward).and_then(|ix| key_at(&entries, ix));
         }
         cx.notify();
     }
@@ -390,7 +448,7 @@ impl EditorView {
 
     /// Right enters the highlighted item's submenu.
     fn context_right(&mut self, _: &NextMenu, _: &mut Window, cx: &mut Context<Self>) {
-        let highlighted = self.context_menu.as_ref().and_then(|menu| menu.highlighted);
+        let highlighted = self.highlighted_index(&self.context_entries());
         if let Some(ix) = highlighted.filter(|_| !self.in_context_submenu()) {
             self.enter_context_submenu(ix, true, cx);
         }
@@ -400,10 +458,10 @@ impl EditorView {
         let Some(menu) = &self.context_menu else {
             return;
         };
-        let Some(ix) = menu.highlighted else {
+        let sub = menu.submenu.flatten();
+        let Some(ix) = self.highlighted_index(&self.context_entries()) else {
             return;
         };
-        let sub = menu.submenu.flatten();
         if self.in_context_submenu() {
             self.run_context_item(ix, sub, window, cx);
         } else if enabled_item(&self.context_entries(), ix)
@@ -427,16 +485,19 @@ impl EditorView {
 
     // --- Pointer ---
 
-    fn hover_context_item(&mut self, ix: usize, hovered: bool, cx: &mut Context<Self>) {
-        let has_submenu = enabled_item(&self.context_entries(), ix)
+    fn hover_context_item(&mut self, key: &Key, hovered: bool, cx: &mut Context<Self>) {
+        let entries = self.context_entries();
+        let has_submenu = index_of(&entries, key)
+            .and_then(|ix| enabled_item(&entries, ix))
             .is_some_and(|item| matches!(item.command, Command::Formatting));
         let Some(menu) = &mut self.context_menu else {
             return;
         };
-        if hovered && menu.highlighted != Some(ix) {
-            menu.highlighted = Some(ix);
+        let is_highlighted = menu.highlighted.as_ref() == Some(key);
+        if hovered && !is_highlighted {
+            menu.highlighted = Some(key.clone());
             menu.submenu = has_submenu.then_some(None);
-        } else if !hovered && menu.highlighted == Some(ix) && menu.submenu.is_none() {
+        } else if !hovered && is_highlighted && menu.submenu.is_none() {
             // A submenu stays while the pointer moves over to it.
             menu.highlighted = None;
         }
@@ -467,38 +528,49 @@ impl EditorView {
         };
         let theme = cx.theme().clone();
         let entries = self.context_entries();
-        let submenu_left = menu.position.x + ROOM_FOR_SUBMENU > window.viewport_size().width;
+        let submenu_left = self.submenu_on_the_left(window);
+        let this = cx.entity().downgrade();
         let rows: Vec<AnyElement> = entries
             .iter()
-            .enumerate()
-            .map(|(ix, entry)| {
+            .map(|entry| {
                 let item = match entry {
                     Entry::Item(item) => item,
                     Entry::Separator => return menu::separator(&theme).into_any_element(),
                     Entry::Note(text) => return menu::note(text, &theme).into_any_element(),
                 };
-                let highlighted = menu.highlighted == Some(ix);
+                let key = item.key();
+                let highlighted = menu.highlighted.as_ref() == Some(&key);
                 let formatting = matches!(item.command, Command::Formatting);
+                let (hover_key, click_key) = (key.clone(), key.clone());
                 self.context_row(item, highlighted, &theme, window)
                     .when(item.enabled, |row| {
                         row.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                            this.hover_context_item(ix, *hovered, cx)
+                            this.hover_context_item(&hover_key, *hovered, cx)
                         }))
                         .on_click(cx.listener(
-                            move |this, _, window, cx| this.run_context_item(ix, None, window, cx),
+                            move |this, _, window, cx| {
+                                this.run_context_key(&click_key, None, window, cx)
+                            },
                         ))
                     })
                     .when_some(
                         menu.submenu.filter(|_| highlighted && formatting),
                         |row, sub| {
-                            let side = div().absolute().top(px(-5.));
-                            let side = if submenu_left {
-                                side.right(relative(1.)).mr(px(2.))
+                            // Its own anchor, so that it moves up from the window's bottom edge
+                            // as the menu does.
+                            let (side, corner) = if submenu_left {
+                                (div().left(-SUBMENU_GAP), Corner::TopRight)
                             } else {
-                                side.left(relative(1.)).ml(px(2.))
+                                (div().left(relative(1.)).ml(SUBMENU_GAP), Corner::TopLeft)
                             };
+                            let submenu = self.render_formatting(&key, sub, &theme, window, cx);
                             row.child(
-                                side.child(self.render_formatting(ix, sub, &theme, window, cx)),
+                                side.absolute().top(px(-5.)).child(
+                                    anchored()
+                                        .anchor(corner)
+                                        .snap_to_window_with_margin(WINDOW_MARGIN)
+                                        .child(submenu),
+                                ),
                             )
                         },
                     )
@@ -515,6 +587,9 @@ impl EditorView {
             .on_action(cx.listener(Self::context_right))
             .on_action(cx.listener(Self::context_activate))
             .on_action(cx.listener(Self::context_close))
+            .child(measure(this, |menu, bounds| {
+                menu.panel_bounds = Some(bounds)
+            }))
             .children(rows);
         let backdrop = div()
             .id("context-menu-backdrop")
@@ -534,7 +609,7 @@ impl EditorView {
             deferred(
                 anchored()
                     .position(menu.position)
-                    .snap_to_window_with_margin(px(8.))
+                    .snap_to_window_with_margin(WINDOW_MARGIN)
                     .child(panel),
             )
             .with_priority(2)
@@ -542,14 +617,30 @@ impl EditorView {
         ]
     }
 
+    /// The submenu opens on the right of the menu, unless it does not fit there and there is
+    /// more room on the left.
+    fn submenu_on_the_left(&self, window: &Window) -> bool {
+        let Some(menu) = &self.context_menu else {
+            return false;
+        };
+        let Some(panel) = menu.panel_bounds else {
+            return false;
+        };
+        let width = menu.submenu_width.unwrap_or(menu::MENU_MIN_WIDTH) + SUBMENU_GAP;
+        let right = window.viewport_size().width - WINDOW_MARGIN - panel.right();
+        let left = panel.left() - WINDOW_MARGIN;
+        right < width && left > right
+    }
+
     fn render_formatting(
         &self,
-        parent: usize,
+        parent: &Key,
         highlighted: Option<usize>,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let this = cx.entity().downgrade();
         let rows: Vec<AnyElement> = formatting_entries()
             .iter()
             .enumerate()
@@ -562,14 +653,20 @@ impl EditorView {
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         this.hover_context_submenu_item(ix, *hovered, cx)
                     }))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.run_context_item(parent, Some(ix), window, cx)
-                    }));
+                    .on_click({
+                        let parent = parent.clone();
+                        cx.listener(move |this, _, window, cx| {
+                            this.run_context_key(&parent, Some(ix), window, cx)
+                        })
+                    });
                 Some(row.into_any_element())
             })
             .collect();
         menu::panel("context-submenu", theme)
             .debug_selector(|| "context-submenu".into())
+            .child(measure(this, |menu, bounds| {
+                menu.submenu_width = Some(bounds.size.width)
+            }))
             .children(rows)
     }
 
@@ -597,4 +694,27 @@ impl EditorView {
         };
         menu::row(row, highlighted, false, theme)
     }
+}
+
+/// An empty element filling its parent that hands the parent's bounds to `record` as it is laid
+/// out, for the next frame.
+fn measure(
+    this: gpui::WeakEntity<EditorView>,
+    record: impl Fn(&mut ContextMenu, Bounds<Pixels>) + 'static,
+) -> impl IntoElement {
+    canvas(
+        move |bounds, _, cx| {
+            this.update(cx, |this, _| {
+                if let Some(menu) = &mut this.context_menu {
+                    record(menu, bounds);
+                }
+            })
+            .ok();
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }

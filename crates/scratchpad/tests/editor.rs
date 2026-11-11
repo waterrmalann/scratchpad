@@ -518,7 +518,7 @@ fn replacing_the_text_keeps_the_old_text_one_undo_away(cx: &mut TestAppContext) 
         })
     });
     cx.simulate_keystrokes("down end");
-    editor.update(cx, |editor, _| editor.set_read_only(true));
+    editor.update(cx, |editor, cx| editor.set_read_only(true, cx));
 
     editor.update(cx, |editor, cx| {
         editor.replace_text("theirs\nother two", cx)
@@ -527,7 +527,7 @@ fn replacing_the_text_keeps_the_old_text_one_undo_away(cx: &mut TestAppContext) 
     assert_eq!(text(&editor, cx), "theirs\nother two");
     assert_eq!(cursor(&editor, cx), "theirs\nline two".len());
     assert!(events.borrow().is_empty(), "not reported as an edit");
-    editor.update(cx, |editor, _| editor.set_read_only(false));
+    editor.update(cx, |editor, cx| editor.set_read_only(false, cx));
     cx.simulate_keystrokes("ctrl-z");
     assert_eq!(text(&editor, cx), "mine\nline two");
 }
@@ -536,7 +536,7 @@ fn replacing_the_text_keeps_the_old_text_one_undo_away(cx: &mut TestAppContext) 
 fn a_read_only_editor_moves_the_cursor_but_ignores_edits(cx: &mut TestAppContext) {
     let (editor, cx) = open_editor(cx, "fixed");
     cx.write_to_clipboard(ClipboardItem::new_string("pasted".into()));
-    editor.update(cx, |editor, _| editor.set_read_only(true));
+    editor.update(cx, |editor, cx| editor.set_read_only(true, cx));
 
     cx.simulate_input("typed");
     cx.simulate_keystrokes("end backspace enter ctrl-v ctrl-x home shift-end");
@@ -546,7 +546,7 @@ fn a_read_only_editor_moves_the_cursor_but_ignores_edits(cx: &mut TestAppContext
 
     assert_eq!(text(&editor, cx), "fixed");
     assert_eq!(selection(&editor, cx), (0, 5));
-    editor.update(cx, |editor, _| editor.set_read_only(false));
+    editor.update(cx, |editor, cx| editor.set_read_only(false, cx));
     cx.simulate_input("x");
     assert_eq!(text(&editor, cx), "x");
 }

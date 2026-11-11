@@ -436,6 +436,9 @@ impl AppWindow {
             // E.g. the window was widened while the sidebar was shown over the note.
             self.sidebar_overlay = false;
         }
+        // The note moves from under its context menu.
+        let editor = self.editor_pane.read(cx).editor().clone();
+        editor.update(cx, |editor, cx| editor.close_context_menu(cx));
         let hidden = mode == SidebarMode::Hidden;
         if hidden && self.sidebar.read(cx).contains_focus(window, cx) {
             window.focus(&self.editor_pane.focus_handle(cx));

@@ -281,7 +281,7 @@ fn a_long_line_is_checked_in_pieces_up_to_a_limit(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_read_only_note_offers_no_corrections(cx: &mut TestAppContext) {
     let (editor, cx) = open(cx, "The quikc fox jumps jumps");
-    editor.update(cx, |editor, _| editor.set_read_only(true));
+    editor.update(cx, |editor, cx| editor.set_read_only(true, cx));
     right_click("quikc", &editor, cx);
     assert_eq!(
         menu(&editor, cx),

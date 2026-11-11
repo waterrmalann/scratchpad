@@ -36,9 +36,16 @@ look.
   skipping disabled items), Right/Left go into and out of Formatting, Enter or Space choose,
   Escape leaves the submenu, then the menu. The menu is drawn beside the note's element tree,
   not inside its `Editor` key context, so the note's keys (Delete, Tab, Ctrl+V) do nothing while
-  it is open. Window-wide keys still work and close it, by taking the focus.
-- **Closing.** Escape, a command, the focus going elsewhere (another window, Alt+E, Ctrl+N) or
-  an edit to the note (the corrections and the history may no longer apply) close it. A click
+  it is open. Window-wide keys still work: those that take the focus (Ctrl+N, Alt+E) close it
+  that way, and zooming and Ctrl+\ (the sidebar), which move the text from under it, close it
+  too.
+- **The highlight is an item, not a row number.** The list changes while the menu is open: the
+  suggestions arrive after it opens. The highlighted item is kept by what it is (its label, and
+  whether it is a correction), so Enter on Add to dictionary still adds the word after
+  suggestions appear above it, and the keyboard stays in Formatting.
+- **Closing.** Escape, a command, the focus going elsewhere (another window, Alt+E, Ctrl+N), a
+  change to the text (an edit, another note, a change from another program: the corrections and
+  the history may no longer apply) or the note turning read-only close it. A click
   anywhere else only closes it: a backdrop over the window takes the click, as the menu bar's
   does (ADR 0150), so it neither moves the cursor nor opens another menu.
 
@@ -47,7 +54,9 @@ look.
 - Nothing runs while the menu is closed; opening it costs one hit test and, on a misspelled
   word, one request to the checker.
 - Redo is not in the menu, as in Notepad; it stays in the Edit menu.
-- A submenu near the window's right edge opens to the left; neither menu nor submenu scrolls,
+- The submenu has its own anchor, so near the window's bottom it moves up as the menu does. It
+  opens on the right of the menu, or on the left when it does not fit on the right and there is
+  more room on the left, judged from both menus' sizes in the last frame. Neither scrolls,
   which their few items do not need.
 - The sidebar's note menu still has its own rows and no arrow keys; moving it onto `menu` is
   left for later.

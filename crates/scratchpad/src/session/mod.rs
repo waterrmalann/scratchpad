@@ -206,7 +206,7 @@ impl Session {
         cx: &mut Context<Self>,
     ) -> Self {
         // Nothing is open until the notes model opens something.
-        editor.update(cx, |editor, _| editor.set_read_only(true));
+        editor.update(cx, |editor, cx| editor.set_read_only(true, cx));
         let subscriptions = vec![
             cx.subscribe_in(&notes, window, Self::on_notes_event),
             cx.subscribe(&editor, |this, _, event: &EditorEvent, cx| match event {
@@ -349,7 +349,7 @@ impl Session {
         self.save_as = None;
         self.watch_file(external.then_some(&path), cx);
         self.editor
-            .update(cx, |editor, _| editor.set_read_only(true));
+            .update(cx, |editor, cx| editor.set_read_only(true, cx));
         self.enqueue(Job::Load(path), cx);
         cx.notify();
     }
@@ -378,7 +378,7 @@ impl Session {
                 self.editor.update(cx, |editor, cx| {
                     editor.set_markdown(!external || is_markdown_file(&path), cx);
                     editor.set_text(&note.text, cx);
-                    editor.set_read_only(note.lossy);
+                    editor.set_read_only(note.lossy, cx);
                 });
                 self.doc = Document {
                     title: self.current_title(cx),
@@ -419,7 +419,7 @@ impl Session {
             // A new note starts as a heading, which the user can backspace away.
             editor.set_text(NEW_NOTE_TEXT, cx);
             editor.move_cursor_to_end(cx);
-            editor.set_read_only(false);
+            editor.set_read_only(false, cx);
         });
         window.focus(&self.editor.focus_handle(cx));
         if let Some(restore) = self.restore.take_if(|restore| !restore.into_note) {
@@ -439,7 +439,7 @@ impl Session {
         self.autosave = None;
         self.editor.update(cx, |editor, cx| {
             editor.set_text("", cx);
-            editor.set_read_only(true);
+            editor.set_read_only(true, cx);
         });
         self.notes
             .update(cx, |notes, cx| notes.set_open_title(None, cx));
@@ -834,7 +834,7 @@ impl Session {
         } else {
             self.editor.update(cx, |editor, cx| {
                 editor.reload_text(&disk_text, cx);
-                editor.set_read_only(disk.lossy);
+                editor.set_read_only(disk.lossy, cx);
             });
             self.doc.disk_text = disk_text;
             self.doc.title = self.current_title(cx);
@@ -881,7 +881,7 @@ impl Session {
             (Choice::EditAnyway, Some(DocumentNotice::NotUtf8)) => {
                 self.doc.notice = None;
                 self.editor
-                    .update(cx, |editor, _| editor.set_read_only(false));
+                    .update(cx, |editor, cx| editor.set_read_only(false, cx));
             }
             (Choice::KeepMine, Some(DocumentNotice::Conflict { disk, .. })) => {
                 // Their version stays one undo away.
@@ -900,7 +900,7 @@ impl Session {
                 // My version stays one undo away.
                 self.editor.update(cx, |editor, cx| {
                     editor.replace_text(&disk, cx);
-                    editor.set_read_only(lossy);
+                    editor.set_read_only(lossy, cx);
                 });
                 self.doc.disk_text = disk;
                 self.doc.title = self.current_title(cx);
@@ -1006,7 +1006,7 @@ impl Session {
         // What it replaces stays one undo away.
         self.editor.update(cx, |editor, cx| {
             editor.replace_text(&restore.offer.text, cx);
-            editor.set_read_only(false);
+            editor.set_read_only(false, cx);
         });
         self.doc.notice = None;
         self.doc.dirty = true;
@@ -1224,7 +1224,7 @@ impl Session {
         self.save_as = Some(SaveAs::Writing(path.clone()));
         // Text typed now would belong to neither file.
         self.editor
-            .update(cx, |editor, _| editor.set_read_only(true));
+            .update(cx, |editor, cx| editor.set_read_only(true, cx));
         let text = SaveText::snapshot(self.text_snapshot(cx));
         self.enqueue(Job::SaveAs { path, text }, cx);
         cx.notify();
@@ -1275,7 +1275,7 @@ impl Session {
         };
         self.editor.update(cx, |editor, cx| {
             editor.set_markdown(!external || is_markdown_file(&path), cx);
-            editor.set_read_only(false);
+            editor.set_read_only(false, cx);
         });
         self.watch_file(external.then_some(&path), cx);
         self.notes.update(cx, |notes, cx| notes.saved_as(note, cx));
@@ -1286,7 +1286,7 @@ impl Session {
     fn end_writing(&mut self, cx: &mut Context<Self>) {
         let not_utf8 = self.doc.notice == Some(DocumentNotice::NotUtf8);
         self.editor
-            .update(cx, |editor, _| editor.set_read_only(not_utf8));
+            .update(cx, |editor, cx| editor.set_read_only(not_utf8, cx));
         if self.doc.dirty {
             self.schedule_autosave(cx);
         }
