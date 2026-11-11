@@ -60,7 +60,7 @@ A Windows notes app for people who want Notepad's speed and simplicity, with Mar
 <details>
 <summary><b>Keyboard shortcuts</b></summary>
 
-The menu bar under the title bar has File (new note, open, save, save as, settings, exit), Edit (undo, redo, clipboard, delete, find, find next and previous, replace, go to line, select all) and View (zoom, and ticks for the status bar, word wrap, spell check, autocorrect, source mode and the sidebar). Each command shows its key. Alt+F, Alt+E, Alt+V or F10 open a menu from the keyboard.
+The menu bar under the title bar has File (new note, open, save, save as, settings, exit), Edit (undo, redo, clipboard, delete, find, find next and previous, replace, go to line, select all) and View (zoom, and ticks for the status bar, word wrap, spell check, autocorrect, source mode and the sidebar). Each command shows its key. Alt+F, Alt+E, Alt+V or F10 open a menu from the keyboard. Right-clicking in the note (or Shift+F10, or the Menu key) opens its own menu, as in Notepad: undo, cut, copy, paste, delete, select all and a Formatting submenu, with the spelling suggestions first on a misspelled word.
 
 The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows, Shift to select, Ctrl+Backspace/Delete, Ctrl+Insert/Shift+Insert/Shift+Delete.
 
@@ -86,7 +86,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 | Ctrl+0 | Normal text size |
 | Ctrl+click | Open a link |
 | Right-click a note | Pin or unpin, rename, delete, show in folder |
-| Right-click an underlined word | Spelling suggestions, add to dictionary, ignore |
+| Right-click in the note, Shift+F10, Menu key | Undo, cut, copy, paste, delete, select all and formatting; on an underlined word, its spelling suggestions, add to dictionary and ignore first |
 | Up/Down, Enter, F2, Delete | In the note list: open the previous/next note, go to the note, rename, delete (asks first) |
 | Ctrl+, | Settings |
 | Ctrl+W, Ctrl+Q | Close the window, quit |

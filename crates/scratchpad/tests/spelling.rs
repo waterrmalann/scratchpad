@@ -1,5 +1,6 @@
 //! End-to-end tests of spell checking (ADR 0170): misspelled words in the note's prose, the
-//! menu of corrections, autocorrect and the View menu's switches.
+//! corrections at the top of the context menu (ADR 0175), autocorrect and the View menu's
+//! switches.
 //!
 //! The system's checker is replaced by a word list, answering on the test's own thread (or
 //! holding its answers back, as a busy checker would).
@@ -400,14 +401,20 @@ fn a_repeated_word_can_be_deleted(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_right_click_elsewhere_opens_no_menu(cx: &mut TestAppContext) {
+fn a_right_click_elsewhere_offers_no_corrections(cx: &mut TestAppContext) {
     let (editor, cx) = open(cx, "the quikc fox");
     right_click("fox", &editor, cx);
+    let context_menu_open = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| editor.read(cx).context_menu_items(false, window).is_some())
+    };
+    assert!(context_menu_open(cx), "the context menu opens all the same");
     assert_eq!(menu(&editor, cx), None);
+    cx.simulate_keystrokes("escape");
     right_click("quikc", &editor, cx);
     assert!(menu(&editor, cx).is_some());
     cx.simulate_keystrokes("escape");
     assert_eq!(menu(&editor, cx), None);
+    assert!(!context_menu_open(cx));
 }
 
 #[gpui::test]

@@ -1,6 +1,6 @@
 //! Spell checking in the open note (ADR 0170): the misspelled words around the screen, kept up
-//! to date with the text, the menu of corrections on right-click, and autocorrect as the user
-//! types.
+//! to date with the text, the corrections at the top of the context menu (ADR 0175), and
+//! autocorrect as the user types.
 //!
 //! Only prose is checked: front matter, code blocks, inline code, link addresses and other
 //! Markdown markers, and web addresses are left out. Plain text files (logs, settings files)
@@ -9,17 +9,13 @@
 use std::ops::Range;
 use std::time::Duration;
 
-use gpui::{
-    AnyWindowHandle, ClickEvent, Context, FocusHandle, KeyDownEvent, MouseDownEvent, Pixels, Point,
-    Subscription, Task, Window, anchored, deferred, div, prelude::*, px,
-};
+use gpui::{Context, Task};
 use scratchpad_editor::markdown::{DecorationKind, MarkdownState};
 use scratchpad_editor::{Bias, Buffer, ByteOffset, TextChange};
 use scratchpad_spell::{Action, Checked, Segment};
 
 use super::EditorView;
 use crate::spelling;
-use crate::theme::ActiveTheme;
 
 /// How long the text must stay unchanged before it is checked again, so a word being typed is
 /// not checked at every letter.
@@ -61,7 +57,6 @@ pub(super) struct Spell {
     /// The cursor after the last typed character. The word there is still being typed and is
     /// not underlined while the cursor stays there.
     pub(super) typed_at: Option<ByteOffset>,
-    menu: Option<SpellMenu>,
 }
 
 impl Default for Spell {
@@ -75,33 +70,47 @@ impl Default for Spell {
             task: None,
             autocorrect_task: None,
             typed_at: None,
-            menu: None,
         }
     }
 }
 
-/// The corrections offered for a word, open after a right-click on it.
-pub(super) struct SpellMenu {
+/// The corrections offered for a word: the top of the context menu opened on it.
+pub(super) struct SpellingSection {
     found: Found,
     word: String,
     /// The buffer version `found` is for: an edit while the menu is open closes it.
     version: u64,
     /// `None` until the checker has answered.
     suggestions: Option<Vec<String>>,
-    position: Point<Pixels>,
-    /// The menu's window and focus, to give the focus back to the note when it closes.
-    window: AnyWindowHandle,
-    focus: FocusHandle,
-    _blur: Subscription,
     _suggest: Option<Task<()>>,
 }
 
+impl SpellingSection {
+    /// A line shown above the corrections while there are none to offer.
+    pub(super) fn note(&self) -> Option<&'static str> {
+        match &self.suggestions {
+            None => Some("Looking for suggestions\u{2026}"),
+            Some(suggestions) if suggestions.is_empty() && self.found.action == Action::Suggest => {
+                Some("No suggestions")
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Choice {
+pub(super) enum Choice {
     Replace(String),
     DeleteRepeated,
     Add,
     Ignore,
+}
+
+impl Choice {
+    /// A change to the text, drawn in semibold above what to do with the word.
+    pub(super) fn is_correction(&self) -> bool {
+        matches!(self, Choice::Replace(_) | Choice::DeleteRepeated)
+    }
 }
 
 impl EditorView {
@@ -118,7 +127,7 @@ impl EditorView {
         self.spell.found.clear();
         self.spell.checked = 0..0;
         self.spell.task = None;
-        self.close_spelling_menu(cx);
+        self.close_context_menu(cx);
         if enabled {
             self.schedule_spell_check(false, cx);
         }
@@ -147,35 +156,17 @@ impl EditorView {
             .collect()
     }
 
-    /// The items of the spelling menu while it is open, for tests.
+    /// The spelling items at the top of the context menu while it is open on a misspelled
+    /// word, for tests.
     #[doc(hidden)]
     pub fn spelling_menu_items(&self) -> Option<Vec<String>> {
-        let menu = self.spell.menu.as_ref()?;
+        let section = self.context_menu.as_ref()?.spelling.as_ref()?;
         Some(
-            menu_choices(menu, self.read_only)
+            menu_choices(section, self.read_only)
                 .into_iter()
                 .map(|(_, label)| label)
                 .collect(),
         )
-    }
-
-    /// Picks the spelling menu item labelled `label`, for tests.
-    #[doc(hidden)]
-    pub fn choose_spelling_menu_item(
-        &mut self,
-        label: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let choice = self.spell.menu.as_ref().and_then(|menu| {
-            menu_choices(menu, self.read_only)
-                .into_iter()
-                .find(|(_, item)| item == label)
-                .map(|(choice, _)| choice)
-        });
-        if let Some(choice) = choice {
-            self.choose_spelling(choice, window, cx);
-        }
     }
 
     /// Spell checking applies: on, in Markdown, with a checker (or one starting).
@@ -186,8 +177,9 @@ impl EditorView {
     /// Called after every change to the text: moves the misspellings along with it and checks
     /// again once typing pauses. A `new_document` has nothing in common with the old ones.
     pub(super) fn spell_text_changed(&mut self, new_document: bool, cx: &mut Context<Self>) {
-        // Its word may have changed or moved.
-        self.close_spelling_menu(cx);
+        // The word its corrections are for, the selection it cuts and the history it undoes may
+        // have changed.
+        self.close_context_menu(cx);
         let spell = &mut self.spell;
         if new_document {
             spell.typed_at = None;
@@ -398,27 +390,20 @@ impl EditorView {
         in_prose.then_some((range, word))
     }
 
-    // --- The menu ---
+    // --- The context menu's corrections ---
 
-    /// A right-click on a misspelled word opens its menu of corrections; elsewhere it does
-    /// nothing.
-    pub(super) fn spelling_mouse_down(
+    /// The corrections for the misspelled word at `offset`, if there is one there, for the top of
+    /// the context menu. Suggestions are asked for meanwhile and fill in when they come.
+    pub(super) fn spelling_section_at(
         &mut self,
-        event: &MouseDownEvent,
-        window: &mut Window,
+        offset: ByteOffset,
         cx: &mut Context<Self>,
-    ) -> bool {
-        let offset = self.offset_at(event.position, window);
-        let Some(found) = self
+    ) -> Option<SpellingSection> {
+        let found = self
             .visible_misspellings()
             .find(|found| found.range.start <= offset && offset <= found.range.end)
-            .cloned()
-        else {
-            return false;
-        };
-        let Some(speller) = spelling::speller(cx) else {
-            return false;
-        };
+            .cloned()?;
+        let speller = spelling::speller(cx)?;
         let word = self
             .editor
             .buffer()
@@ -430,8 +415,9 @@ impl EditorView {
                 let task = cx.spawn(async move |this, cx| {
                     let suggestions = reply.await;
                     this.update(cx, |this, cx| {
-                        if let Some(menu) = &mut this.spell.menu {
-                            menu.suggestions = Some(suggestions);
+                        let menu = this.context_menu.as_mut();
+                        if let Some(section) = menu.and_then(|menu| menu.spelling.as_mut()) {
+                            section.suggestions = Some(suggestions);
                             cx.notify();
                         }
                     })
@@ -442,52 +428,25 @@ impl EditorView {
             Action::Replace(correction) => (Some(vec![correction.clone()]), None),
             Action::Delete => (Some(Vec::new()), None),
         };
-        let focus = cx.focus_handle();
-        window.focus(&focus);
-        self.spell.menu = Some(SpellMenu {
+        Some(SpellingSection {
             found,
             word,
             version: self.editor.buffer().version(),
             suggestions,
-            position: event.position,
-            window: window.window_handle(),
-            _blur: cx.on_blur(&focus, window, |this, _, cx| this.close_spelling_menu(cx)),
-            focus,
             _suggest: task,
-        });
-        cx.notify();
-        true
+        })
     }
 
-    /// Closes the spelling menu. If it had the focus, the note gets it back once the current
-    /// update is done, so this works where the window is not at hand (an edit, a setting).
-    fn close_spelling_menu(&mut self, cx: &mut Context<Self>) {
-        let Some(menu) = self.spell.menu.take() else {
-            return;
-        };
-        let (window, focus, note) = (menu.window, menu.focus.clone(), self.focus_handle.clone());
-        drop(menu);
-        cx.defer(move |cx| {
-            window
-                .update(cx, |_, window, _| {
-                    if focus.is_focused(window) {
-                        window.focus(&note);
-                    }
-                })
-                .ok();
-        });
-        cx.notify();
-    }
-
-    fn choose_spelling(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(menu) = self.spell.menu.take() else {
-            return;
-        };
-        window.focus(&self.focus_handle);
-        cx.notify();
+    /// Applies `choice` from the context menu, which has closed, to the word of `section`.
+    pub(super) fn choose_spelling(
+        &mut self,
+        section: SpellingSection,
+        choice: Choice,
+        cx: &mut Context<Self>,
+    ) {
         let buffer = self.editor.buffer();
-        let current = menu.version == buffer.version();
-        let range = menu.found.range.clone();
+        let current = section.version == buffer.version();
+        let range = section.found.range.clone();
         match choice {
             Choice::Replace(replacement) if current => {
                 self.edit(cx, |editor| editor.replace_range(range, &replacement));
@@ -503,105 +462,27 @@ impl EditorView {
             Choice::Add | Choice::Ignore => {
                 if let Some(speller) = spelling::speller(cx) {
                     if choice == Choice::Add {
-                        speller.add(&menu.word);
+                        speller.add(&section.word);
                     } else {
-                        speller.ignore(&menu.word);
+                        speller.ignore(&section.word);
                     }
                 }
                 // Every other place the word is underlined goes at once; the check confirms it.
                 let buffer = self.editor.buffer();
                 self.spell
                     .found
-                    .retain(|found| buffer.text_for_range(found.range.clone()) != menu.word);
+                    .retain(|found| buffer.text_for_range(found.range.clone()) != section.word);
                 self.spell.checked = 0..0;
                 self.schedule_spell_check(false, cx);
             }
             Choice::Replace(_) | Choice::DeleteRepeated => {}
         }
     }
-
-    pub(super) fn render_spelling_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let menu = self.spell.menu.as_ref()?;
-        let theme = cx.theme().clone();
-        let choices = menu_choices(menu, self.read_only);
-        let note = match &menu.suggestions {
-            None => Some("Looking for suggestions\u{2026}"),
-            Some(suggestions) if suggestions.is_empty() && menu.found.action == Action::Suggest => {
-                Some("No suggestions")
-            }
-            _ => None,
-        };
-        let mut element = div()
-            .id("spelling-menu")
-            .debug_selector(|| "spelling-menu".into())
-            .track_focus(&menu.focus)
-            .occlude()
-            .min_w(px(170.))
-            .p_1()
-            .flex()
-            .flex_col()
-            .rounded_md()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.background)
-            .text_color(theme.foreground)
-            .shadow_lg()
-            .on_mouse_down_out(
-                cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_spelling_menu(cx)),
-            )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    this.close_spelling_menu(cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .children(note.map(|note| div().px_3().py_1().text_color(theme.muted).child(note)));
-        let mut separated = false;
-        for (index, (choice, label)) in choices.into_iter().enumerate() {
-            let suggestion = matches!(choice, Choice::Replace(_) | Choice::DeleteRepeated);
-            if !suggestion && !separated {
-                separated = true;
-                if index > 0 || note.is_some() {
-                    element = element.child(div().my_1().h(px(1.)).bg(theme.border));
-                }
-            }
-            let selection = theme.selection;
-            element = element.child(
-                div()
-                    .id(index)
-                    .debug_selector({
-                        let label = label.clone();
-                        move || format!("spelling:{label}")
-                    })
-                    .px_3()
-                    .py_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .when(suggestion, |item| {
-                        item.font_weight(gpui::FontWeight::SEMIBOLD)
-                    })
-                    .hover(move |style| style.bg(selection))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.choose_spelling(choice.clone(), window, cx)
-                    }))
-                    .child(label),
-            );
-        }
-        Some(
-            deferred(
-                anchored()
-                    .position(menu.position)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(element),
-            )
-            .with_priority(1),
-        )
-    }
 }
 
-/// The menu's items and their labels, in order: the corrections, then what to do with the word.
-/// A read-only note offers no corrections.
-fn menu_choices(menu: &SpellMenu, read_only: bool) -> Vec<(Choice, String)> {
+/// The section's items and their labels, in order: the corrections, then what to do with the
+/// word. A read-only note offers no corrections.
+pub(super) fn menu_choices(menu: &SpellingSection, read_only: bool) -> Vec<(Choice, String)> {
     let mut choices = Vec::new();
     if !read_only {
         match &menu.found.action {

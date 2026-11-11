@@ -5,6 +5,7 @@
 //! presentation: the scroll position, shaped line layouts, caret blinking, mouse drags and the
 //! matches of the find bar. [`element::EditorElement`] lays out and paints the visible lines.
 
+mod context_menu;
 mod element;
 mod find;
 mod geometry;
@@ -116,8 +117,10 @@ pub struct EditorView {
     read_only: bool,
     /// The find bar's query and its matches while the bar is open.
     find: Option<find::Find>,
-    /// Misspelled words, autocorrect and the spelling menu (ADR 0170).
+    /// Misspelled words and autocorrect (ADR 0170).
     spell: spell::Spell,
+    /// Open after a right-click, Shift+F10 or the Menu key (ADR 0175).
+    context_menu: Option<context_menu::ContextMenu>,
     /// The match highlights painted in the last frame.
     #[cfg(feature = "test-support")]
     match_highlights: Vec<Bounds<Pixels>>,
@@ -211,6 +214,7 @@ impl EditorView {
             read_only: false,
             find: None,
             spell: spell::Spell::default(),
+            context_menu: None,
             #[cfg(feature = "test-support")]
             match_highlights: Vec::new(),
             _subscriptions: subscriptions,
@@ -1046,8 +1050,10 @@ impl EditorView {
 }
 
 impl Render for EditorView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The context menu is beside the text, not inside it: while it has the focus, the note's
+        // keys (Delete, Tab, Ctrl+V) do not reach the note.
+        let editor = div()
             .key_context("Editor")
             .track_focus(&self.focus_handle)
             .size_full()
@@ -1193,8 +1199,14 @@ impl Render for EditorView {
                 this.markdown_command(cx, |editor, _| editor.insert_link())
             }))
             .on_action(cx.listener(|this, _: &ToggleSourceMode, _, cx| this.toggle_source_mode(cx)))
-            .child(EditorElement::new(cx.entity()))
-            .children(self.render_spelling_menu(cx))
+            .on_action(cx.listener(|this, _: &OpenContextMenu, window, cx| {
+                this.open_context_menu_at_cursor(window, cx)
+            }))
+            .child(EditorElement::new(cx.entity()));
+        div()
+            .size_full()
+            .child(editor)
+            .children(self.render_context_menu(window, cx))
     }
 }
 

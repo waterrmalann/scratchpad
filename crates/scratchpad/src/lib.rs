@@ -12,6 +12,7 @@ pub mod file_dialogs;
 pub mod find_bar;
 pub mod go_to_line;
 mod logging;
+mod menu;
 pub mod menu_bar;
 pub mod notes;
 pub mod session;

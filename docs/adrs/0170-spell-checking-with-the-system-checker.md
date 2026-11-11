@@ -1,6 +1,6 @@
 # 0170. Spell checking with the system's checker
 Date: 2026-11-06
-Status: Accepted
+Status: Accepted; amended by 0175
 
 ## Context
 Notes are prose, and typos in them go unnoticed. Every Windows app that checks spelling (Edge,
@@ -53,7 +53,8 @@ miss the user's words.
 - A right-click on an underlined word opens a menu: the suggestions (or the autocorrect
   replacement, or "Delete repeated word"), then Add to dictionary and Ignore (until the app
   quits). A correction is one undo step. A read-only note offers only Add and Ignore.
-  Right-clicks elsewhere still do nothing.
+  Right-clicks elsewhere still do nothing. (Amended by ADR 0175: these are now the first
+  section of the note's context menu, which every right-click, Shift+F10 and the Menu key open.)
 - Autocorrect: typing a space or `.,;:!?` after a prose word asks the checker about it, and
   typing goes on. If the answer is a sure replacement and the note has not changed since, the
   word is corrected, as its own undo step, so Ctrl+Z right after brings back what was typed.
@@ -70,7 +71,8 @@ miss the user's words.
 - Only one language at a time, the user's. Windows users change it in Windows' settings.
   Picking the language in Scratchpad's settings, which the issue asked for, is deferred: it
   needs a list of the languages the system has checkers for and a setting to keep the choice.
-- There is no keyboard way to open the corrections menu yet, nor a "next misspelling" command.
+- There is no "next misspelling" command. (The corrections open from the keyboard since ADR
+  0175: Shift+F10 or the Menu key on the word.)
 - The end-to-end tests use a word list in place of the system checker, which can hold its
   answers back to play a busy checker (replies after an edit, two windows' checks). Unit tests
   cover pure functions only (which text is prose, how misspellings follow edits); the Windows

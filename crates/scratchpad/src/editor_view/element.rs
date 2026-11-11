@@ -631,16 +631,16 @@ impl EditorElement {
             if phase != DispatchPhase::Bubble {
                 return;
             }
-            // A right-click on a misspelled word opens its corrections (ADR 0170).
+            // A right-click in the text opens the context menu (ADR 0175).
             if event.button == MouseButton::Right {
                 let over_scrollbar = [&scrollbar, &hscrollbar]
                     .into_iter()
                     .flatten()
                     .any(|hitbox| hitbox.is_hovered(window));
-                if hitbox.is_hovered(window)
-                    && !over_scrollbar
-                    && view.update(cx, |view, cx| view.spelling_mouse_down(event, window, cx))
-                {
+                if hitbox.is_hovered(window) && !over_scrollbar {
+                    view.update(cx, |view, cx| {
+                        view.context_menu_mouse_down(event.position, window, cx)
+                    });
                     // Or the click would take focus from the menu.
                     window.prevent_default();
                     cx.stop_propagation();

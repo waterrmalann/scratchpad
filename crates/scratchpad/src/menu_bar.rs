@@ -27,7 +27,12 @@ use crate::actions::{
 use crate::editor_view::EditorView;
 use crate::find_bar::{FindInNote, FindNext, FindPrevious, ReplaceInNote};
 use crate::go_to_line::GoToLine;
-use crate::theme::{ActiveTheme, Theme, typography};
+pub use crate::menu::ShownItem;
+use crate::menu::{
+    self, ActivateItem, CloseMenu, MENU_BAR_CONTEXT as CONTEXT, NextMenu, PreviousMenu,
+    SelectNextItem, SelectPreviousItem, panel, separator,
+};
+use crate::theme::{ActiveTheme, Theme};
 use crate::{settings, spelling};
 
 actions!(
@@ -39,53 +44,21 @@ actions!(
         OpenEditMenu,
         /// Opens the View menu (Alt+V).
         OpenViewMenu,
-        SelectPreviousItem,
-        SelectNextItem,
-        /// Leaves the submenu, or opens the menu to the left.
-        PreviousMenu,
-        /// Enters the highlighted item's submenu, or opens the menu to the right.
-        NextMenu,
-        /// Runs the highlighted item, or enters its submenu.
-        ActivateItem,
-        /// Leaves the submenu, or closes the menu.
-        CloseMenu,
     ]
 );
 
-const CONTEXT: &str = "MenuBar";
-
+/// The keys that open the menus; those inside an open menu are [`menu::key_bindings`].
 pub fn key_bindings() -> Vec<KeyBinding> {
-    let menu = Some(CONTEXT);
     vec![
         KeyBinding::new("alt-f", OpenFileMenu, None),
         KeyBinding::new("f10", OpenFileMenu, None),
         KeyBinding::new("alt-e", OpenEditMenu, None),
         KeyBinding::new("alt-v", OpenViewMenu, None),
-        KeyBinding::new("up", SelectPreviousItem, menu),
-        KeyBinding::new("down", SelectNextItem, menu),
-        KeyBinding::new("left", PreviousMenu, menu),
-        KeyBinding::new("right", NextMenu, menu),
-        KeyBinding::new("enter", ActivateItem, menu),
-        KeyBinding::new("space", ActivateItem, menu),
-        KeyBinding::new("escape", CloseMenu, menu),
     ]
 }
 
 const BAR_HEIGHT: Pixels = px(30.);
 const TITLES: [&str; 3] = ["File", "Edit", "View"];
-const ITEM_HEIGHT: Pixels = px(28.);
-const MENU_MIN_WIDTH: Pixels = px(220.);
-/// Segoe MDL2 Assets "CheckMark" and "ChevronRight"; plain characters elsewhere.
-const CHECK_ICON: &str = if cfg!(windows) {
-    "\u{E73E}"
-} else {
-    "\u{2713}"
-};
-const SUBMENU_ICON: &str = if cfg!(windows) {
-    "\u{E76C}"
-} else {
-    "\u{203A}"
-};
 
 /// One line of a menu.
 enum Entry {
@@ -160,25 +133,9 @@ fn enabled_item(entries: &[Entry], ix: usize) -> Option<&Item> {
 
 /// The enabled item after (or before) `from`, wrapping around; the first (or last) without one.
 fn next_enabled(entries: &[Entry], from: Option<usize>, forward: bool) -> Option<usize> {
-    let count = entries.len();
-    (1..=count)
-        .map(|step| match (from, forward) {
-            (Some(from), true) => (from + step) % count,
-            (Some(from), false) => (from + count - step) % count,
-            (None, true) => step - 1,
-            (None, false) => count - step,
-        })
-        .find(|&ix| enabled_item(entries, ix).is_some())
-}
-
-/// A menu item as shown, for tests.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShownItem {
-    pub label: &'static str,
-    /// The key that runs the command, e.g. `Ctrl+Shift+S`.
-    pub shortcut: Option<String>,
-    pub enabled: bool,
-    pub checked: Option<bool>,
+    menu::next_enabled(entries.len(), from, forward, |ix| {
+        enabled_item(entries, ix).is_some()
+    })
 }
 
 /// The bar and, while one is open, its menu.
@@ -247,7 +204,7 @@ impl MenuBar {
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Item(item) => Some(ShownItem {
-                    label: item.label,
+                    label: item.label.to_owned(),
                     shortcut: self.shortcut(item, window, cx),
                     enabled: item.enabled,
                     checked: item.checked,
@@ -340,28 +297,12 @@ impl MenuBar {
     }
 
     /// The key bound to the item's action where the note has focus (window-wide keys work there
-    /// too), as Windows writes it. Of several keys, the one with the fewest modifiers, then a
-    /// character rather than a named key: Ctrl+Y over Ctrl+Shift+Z, Ctrl+C over Ctrl+Insert.
+    /// too), as Windows writes it.
     fn shortcut(&self, item: &Item, window: &Window, cx: &App) -> Option<String> {
         let Command::Action(action) = &item.command else {
             return None;
         };
-        let target = self.editor.focus_handle(cx);
-        window
-            .bindings_for_action_in(action.as_ref(), &target)
-            .iter()
-            .min_by_key(|binding| {
-                let keystrokes = binding.keystrokes();
-                let modifiers = keystrokes
-                    .iter()
-                    .map(|keystroke| keystroke.modifiers().number_of_modifiers())
-                    .sum::<u8>();
-                let named_key = keystrokes
-                    .iter()
-                    .any(|keystroke| keystroke.key().chars().count() > 1);
-                (keystrokes.len(), modifiers, named_key)
-            })
-            .map(shortcut_text)
+        menu::shortcut(action.as_ref(), &self.editor.focus_handle(cx), window)
     }
 
     // --- Opening and closing ---
@@ -668,7 +609,7 @@ impl MenuBar {
         let check_column = has_checks(&entries);
         let rows = entries.iter().enumerate().map(|(ix, entry)| {
             let Entry::Item(item) = entry else {
-                return separator(theme);
+                return separator(theme).into_any_element();
             };
             let highlighted = open.highlighted == Some(ix);
             self.render_item(item, highlighted, check_column, theme, window, cx)
@@ -727,7 +668,7 @@ impl MenuBar {
         let check_column = has_checks(entries);
         let rows = entries.iter().enumerate().map(|(ix, entry)| {
             let Entry::Item(item) = entry else {
-                return separator(theme);
+                return separator(theme).into_any_element();
             };
             let highlighted = state.highlighted == Some(ix);
             self.render_item(item, highlighted, check_column, theme, window, cx)
@@ -754,77 +695,18 @@ impl MenuBar {
         cx: &App,
     ) -> Stateful<gpui::Div> {
         let label = item.label;
-        let shortcut = self.shortcut(item, window, cx);
-        let (text, secondary) = if item.enabled {
-            (theme.foreground, theme.muted)
-        } else {
-            let disabled = theme.muted.opacity(0.6);
-            (disabled, disabled)
+        let row = menu::Row {
+            id: label.into(),
+            selector: format!("menu-item:{label}"),
+            label: label.into(),
+            shortcut: self.shortcut(item, window, cx),
+            enabled: item.enabled,
+            checked: item.checked,
+            submenu: item.submenu().is_some(),
+            strong: false,
         };
-        let icon = |glyph: &'static str| {
-            div()
-                .font_family(typography::ICON_FONT_FAMILY)
-                .text_size(px(10.))
-                .child(glyph)
-        };
-        div()
-            .id(label)
-            .debug_selector(move || format!("menu-item:{label}"))
-            .relative()
-            .flex_none()
-            .h(ITEM_HEIGHT)
-            .pl_3()
-            .pr_2()
-            .flex()
-            .items_center()
-            .rounded(px(4.))
-            .text_color(text)
-            .when(highlighted && item.enabled, |row| {
-                row.bg(theme.foreground.opacity(0.06))
-            })
-            .when(check_column, |row| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .w(px(22.))
-                        .when(item.checked == Some(true), |column| {
-                            column.child(icon(CHECK_ICON))
-                        }),
-                )
-            })
-            .child(div().flex_1().pr_2().child(label))
-            .children(shortcut.map(|keys| div().pl_6().pr_1().text_color(secondary).child(keys)))
-            .when(item.submenu().is_some(), |row| {
-                row.child(icon(SUBMENU_ICON).pr_1().text_color(secondary))
-            })
+        menu::row(row, highlighted, check_column, theme)
     }
-}
-
-/// The box a menu or submenu is drawn in.
-fn panel(id: &'static str, theme: &Theme) -> Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .occlude()
-        .min_w(MENU_MIN_WIDTH)
-        .p_1()
-        .flex()
-        .flex_col()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.background)
-        .shadow_lg()
-        .text_color(theme.foreground)
-}
-
-fn separator(theme: &Theme) -> AnyElement {
-    div()
-        .flex_none()
-        .mx_1()
-        .my_1()
-        .h(px(1.))
-        .bg(theme.border)
-        .into_any_element()
 }
 
 /// Menus with ticks keep a column for them, so that the labels line up.
@@ -832,47 +714,6 @@ fn has_checks(entries: &[Entry]) -> bool {
     entries
         .iter()
         .any(|entry| matches!(entry, Entry::Item(item) if item.checked.is_some()))
-}
-
-/// `Ctrl+Shift+S`, `Ctrl+Plus`, `Del`, `Shift+F3`: as Windows writes keys in menus.
-fn shortcut_text(binding: &KeyBinding) -> String {
-    let keystrokes = binding.keystrokes().iter().map(|keystroke| {
-        let modifiers = keystroke.modifiers();
-        let mut parts: Vec<String> = [
-            (modifiers.control, "Ctrl"),
-            (modifiers.alt, "Alt"),
-            (modifiers.shift, "Shift"),
-            (modifiers.platform, "Win"),
-        ]
-        .into_iter()
-        .filter(|&(held, _)| held)
-        .map(|(_, name)| name.to_owned())
-        .collect();
-        parts.push(key_name(keystroke.key()));
-        parts.join("+")
-    });
-    keystrokes.collect::<Vec<_>>().join(", ")
-}
-
-fn key_name(key: &str) -> String {
-    match key {
-        // Windows calls the =/+ key "Plus" (VK_OEM_PLUS), as Notepad's Zoom menu shows.
-        "=" | "+" => "Plus".into(),
-        "-" => "Minus".into(),
-        "delete" => "Del".into(),
-        "insert" => "Ins".into(),
-        "escape" => "Esc".into(),
-        "pageup" => "PgUp".into(),
-        "pagedown" => "PgDn".into(),
-        _ => {
-            // `a` -> `A`, `f3` -> `F3`, `home` -> `Home`.
-            let mut chars = key.chars();
-            chars
-                .next()
-                .map(|first| first.to_uppercase().chain(chars).collect())
-                .unwrap_or_default()
-        }
-    }
 }
 
 impl Render for MenuBar {
@@ -919,29 +760,5 @@ impl Render for MenuBar {
                     .with_priority(1),
                 )
             })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn text(keys: &str) -> String {
-        shortcut_text(&KeyBinding::new(keys, SaveNote, None))
-    }
-
-    #[test]
-    fn keys_are_written_as_in_windows_menus() {
-        assert_eq!(text("secondary-shift-s"), "Ctrl+Shift+S");
-        assert_eq!(text("secondary-="), "Ctrl+Plus");
-        assert_eq!(text("secondary-+"), "Ctrl+Plus");
-        assert_eq!(text("secondary--"), "Ctrl+Minus");
-        assert_eq!(text("secondary-0"), "Ctrl+0");
-        assert_eq!(text("secondary-,"), "Ctrl+,");
-        assert_eq!(text("secondary-\\"), "Ctrl+\\");
-        assert_eq!(text("delete"), "Del");
-        assert_eq!(text("shift-f3"), "Shift+F3");
-        assert_eq!(text("ctrl-alt-enter"), "Ctrl+Alt+Enter");
-        assert_eq!(text("ctrl-k ctrl-s"), "Ctrl+K, Ctrl+S");
     }
 }

@@ -10,7 +10,7 @@
 
 use gpui::{App, KeyBinding, actions};
 
-use crate::{find_bar, go_to_line, menu_bar, settings_panel, text_input};
+use crate::{find_bar, go_to_line, menu, menu_bar, settings_panel, text_input};
 
 actions!(
     scratchpad,
@@ -75,8 +75,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     bindings.extend(find_bar::key_bindings());
     bindings.extend(view::key_bindings());
     bindings.extend(go_to_line::key_bindings());
-    // The menu bar (ADR 0150).
+    // The menu bar (ADR 0150), and the keys inside it and the note's context menu (ADR 0175).
     bindings.extend(menu_bar::key_bindings());
+    bindings.extend(menu::key_bindings());
     bindings
 }
 
@@ -207,6 +208,8 @@ pub mod editor {
             InsertLink,
             /// Switches between live preview and showing every Markdown marker.
             ToggleSourceMode,
+            /// Opens the note's context menu below the cursor (Shift+F10, the Menu key).
+            OpenContextMenu,
         ]
     );
 
@@ -265,6 +268,8 @@ pub mod editor {
             KeyBinding::new("secondary-e", ToggleInlineCode, context),
             KeyBinding::new("secondary-k", InsertLink, context),
             KeyBinding::new("secondary-/", ToggleSourceMode, context),
+            KeyBinding::new("shift-f10", OpenContextMenu, context),
+            KeyBinding::new("menu", OpenContextMenu, context),
         ]
     }
 }

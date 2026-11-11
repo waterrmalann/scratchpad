@@ -209,7 +209,7 @@ fn commands_that_cannot_apply_are_disabled_and_do_nothing(cx: &mut TestAppContex
     let file = std::fs::File::options().write(true).open(&legacy).unwrap();
     file.set_modified(days_ago(1, 10)).unwrap();
     let (root, cx) = common::open_main_window_in(dir.path(), cx);
-    let enabled = |root: &Entity<AppWindow>, cx: &mut VisualTestContext| -> Vec<&'static str> {
+    let enabled = |root: &Entity<AppWindow>, cx: &mut VisualTestContext| -> Vec<String> {
         items(root, false, cx)
             .into_iter()
             .filter(|item| item.enabled)
