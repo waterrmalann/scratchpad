@@ -13,6 +13,7 @@ use pulldown_cmark::{
     BlockQuoteKind, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd,
 };
 
+use super::table::{self, TableState};
 use super::{CalloutKind, Decoration, DecorationKind, MarkdownOptions};
 use crate::coords::ByteOffset;
 
@@ -26,6 +27,7 @@ pub(super) fn parse(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
         quotes: Vec::new(),
         items: Vec::new(),
         links: Vec::new(),
+        table: TableState::default(),
     };
     for (event, range) in Parser::new_ext(text, pulldown_options(options)).into_offset_iter() {
         builder.event(event, range);
@@ -46,6 +48,8 @@ fn pulldown_options(options: MarkdownOptions) -> Options {
     pulldown.set(Options::ENABLE_SUPERSCRIPT, options.superscript);
     pulldown.set(Options::ENABLE_SUBSCRIPT, options.subscript);
     pulldown.set(Options::ENABLE_HEADING_ATTRIBUTES, options.heading_ids);
+    // GFM tables are always on (ADR 0186).
+    pulldown |= Options::ENABLE_TABLES;
     pulldown
 }
 
@@ -60,6 +64,8 @@ struct Builder<'a> {
     /// Open links and images: the index of their decoration (`None` for unsupported link types) and the furthest
     /// end of the events inside them so far, which is where their text ends.
     links: Vec<(Option<usize>, usize)>,
+    /// The open table's row and cells.
+    table: TableState,
 }
 
 impl Builder<'_> {
@@ -93,6 +99,9 @@ impl Builder<'_> {
                     end..end,
                     vec![range],
                 );
+            }
+            Event::End(TagEnd::TableHead | TagEnd::TableRow) => {
+                self.table.end_row(self.text, &mut self.decorations);
             }
             _ => {}
         }
@@ -136,6 +145,10 @@ impl Builder<'_> {
                 dest_url,
                 ..
             } => self.link(link_type, dest_url, range, 2),
+            Tag::Table(alignments) => self.table_start(range, table::Start::Table(&alignments)),
+            Tag::TableHead => self.table_start(range, table::Start::Row { header: true }),
+            Tag::TableRow => self.table_start(range, table::Start::Row { header: false }),
+            Tag::TableCell => self.table_start(range, table::Start::Cell),
             _ => {}
         }
     }
@@ -474,6 +487,11 @@ impl Builder<'_> {
     fn skip_back(&self, from: usize, limit: usize, set: &[u8]) -> usize {
         let bytes = &self.text.as_bytes()[limit.min(from)..from];
         from - bytes.iter().rev().take_while(|b| set.contains(b)).count()
+    }
+
+    fn table_start(&mut self, range: Range<usize>, start: table::Start) {
+        self.table
+            .start(self.text, &mut self.decorations, range, start);
     }
 }
 

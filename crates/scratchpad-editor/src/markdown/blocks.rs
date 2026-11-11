@@ -32,6 +32,9 @@ pub(super) struct Scanner {
     /// Where constructs end could not be told without parsing (see [`Open`]), so no more regions start. Only
     /// documents with unusual nesting get here; they are parsed in larger pieces.
     uncertain: bool,
+    /// A line since the last blank line or region start was a table's delimiter row (ADR 0186), so a table may
+    /// be open: it is never cut after [`MAX_REGION_LINES`].
+    table: bool,
 }
 
 /// A construct that continues across blank lines.
@@ -92,7 +95,11 @@ impl Scanner {
                     || is_bullet_item(line)
                     || ordered
                         .is_some_and(|(one, delimiter)| one || self.ordered == Some(delimiter));
-                let long = self.lines > MAX_REGION_LINES;
+                // A delimiter row under a header (`- | -` is one) belongs to the header's table.
+                let table_delimiter = !first && !self.previous_blank && is_delimiter_row(line);
+                let begins_block = begins_block && !table_delimiter;
+                let in_table = self.table || table_delimiter;
+                let long = self.lines > MAX_REGION_LINES && !in_table;
                 let starts = column == 0
                     && !blank
                     && (self.previous_blank || (!self.html && (begins_block || long)));
@@ -121,6 +128,7 @@ impl Scanner {
                     ..open
                 });
                 self.uncertain |= maybe_text && self.open.is_some();
+                self.table = in_table && !blank && !starts && self.open.is_none();
                 starts
             }
         };
@@ -184,6 +192,18 @@ fn opens(line: &str) -> Option<Open> {
         ambiguous_below: 0,
         in_html: false,
     })
+}
+
+/// Whether `line` may be a GFM table delimiter row: after any indentation and quote markers, only `|`, `-`, `:`
+/// and whitespace, with at least one `|` and one `-`. pulldown-cmark accepts more than GFM's `:?-+:?` cells
+/// (`- - -|---` is one), so this errs on the side of a delimiter row, which only keeps a region from starting.
+fn is_delimiter_row(line: &str) -> bool {
+    let row = line.trim_start_matches([' ', '\t', '>']);
+    row.contains('|')
+        && row.contains('-')
+        && row
+            .bytes()
+            .all(|b| matches!(b, b'|' | b'-' | b':' | b' ' | b'\t'))
 }
 
 /// `#` to `######` at the line start, followed by a space, a tab or the line end.
@@ -351,5 +371,31 @@ mod tests {
         // A fence line in an HTML block is HTML, which ends at a blank line; outside one it opens a fence.
         assert_eq!(starts("<div>\n```\n```\n\nb"), [4]);
         assert_eq!(starts("<div>\n```\n\n```\n\nb\n\nc"), []);
+    }
+
+    #[test]
+    fn a_delimiter_row_that_looks_like_a_list_item_stays_with_its_header() {
+        assert_eq!(starts("a | b\n- | -\nc | d\n- item"), [3]);
+        // Without a header line before it, it is a list item.
+        assert_eq!(starts("a\n\n- | -\n- x"), [2, 3]);
+        assert!(is_delimiter_row("|:--|--:|"));
+        assert!(is_delimiter_row("> | :-: | - |"));
+        assert!(is_delimiter_row("- | -"));
+        assert!(is_delimiter_row("- - -|---"));
+        for not in ["---", "| a |", "|", "- x | -", "|-|a"] {
+            assert!(!is_delimiter_row(not), "{not:?}");
+        }
+    }
+
+    #[test]
+    fn long_tables_are_not_cut() {
+        let rows = vec!["| x | y |"; 600].join("\n");
+        assert_eq!(starts(&format!("| a | b |\n|---|---|\n{rows}")), []);
+        // A blank line ends the table, and the count goes on from the next region start.
+        let text = format!(
+            "| a | b |\n|---|---|\n{rows}\n\n{}",
+            vec!["t"; 300].join("\n")
+        );
+        assert_eq!(starts(&text), [603, 603 + 256]);
     }
 }

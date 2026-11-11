@@ -7,6 +7,7 @@ use gpui::WindowTextSystem;
 use scratchpad_editor::{Buffer, TextChange};
 
 use super::line_layout::{BaseStyle, LineKey, LineLayout};
+use super::table::TableCache;
 
 /// Lines kept when the cache is trimmed, on each side of the line it is trimmed around. Several
 /// screens' worth, so scrolling back and forth and moving the cursor never re-shape, while memory
@@ -30,6 +31,8 @@ pub(crate) struct LayoutCache {
     generation: u64,
     /// Lines shaped so far, for tests that check what a change re-shapes.
     shaped: u64,
+    /// Column widths of the tables laid out as grids (ADR 0186), dropped with the layouts of their lines.
+    tables: TableCache,
 }
 
 impl LayoutCache {
@@ -39,6 +42,7 @@ impl LayoutCache {
             lines: HashMap::new(),
             generation: 0,
             shaped: 0,
+            tables: TableCache::default(),
         }
     }
 
@@ -50,31 +54,38 @@ impl LayoutCache {
         if style != self.style {
             self.style = style;
             self.lines.clear();
+            self.tables.clear();
         }
     }
 
     /// The layout of `line`, shaping it if it is not cached or `key` (called only if the line's key
-    /// may have changed) differs from the one it was shaped for.
+    /// may have changed, with the table widths and the style) differs from the one it was shaped for.
     pub fn line(
         &mut self,
         line: usize,
         buffer: &Buffer,
         text_system: &WindowTextSystem,
-        key: impl FnOnce() -> LineKey,
+        key: impl FnOnce(&mut TableCache, &BaseStyle) -> LineKey,
     ) -> Arc<LineLayout> {
         let generation = self.generation;
-        if let Some(entry) = self.lines.get_mut(&line) {
-            if entry.checked == generation {
-                return entry.layout.clone();
-            }
-            let key = key();
-            if entry.key == key {
-                entry.checked = generation;
-                return entry.layout.clone();
-            }
-            return self.shape(line, buffer, text_system, key);
+        if let Some(entry) = self.lines.get(&line)
+            && entry.checked == generation
+        {
+            return entry.layout.clone();
         }
-        self.shape(line, buffer, text_system, key())
+        let key = key(&mut self.tables, &self.style);
+        if let Some(entry) = self.lines.get_mut(&line)
+            && entry.key == key
+        {
+            entry.checked = generation;
+            return entry.layout.clone();
+        }
+        self.shape(line, buffer, text_system, key)
+    }
+
+    /// The table widths, for computing a key outside [`line`](Self::line), with the style.
+    pub fn tables(&mut self) -> (&mut TableCache, &BaseStyle) {
+        (&mut self.tables, &self.style)
     }
 
     /// The layout `line` has with `key` rather than its current key, e.g. with the cursor moved
@@ -125,6 +136,7 @@ impl LayoutCache {
 
     /// Drops the layouts of lines touched by `change` and renumbers the lines after it.
     pub fn apply_change(&mut self, change: &TextChange) {
+        self.tables.apply_change(change);
         let first = change.start_point.line;
         let old_last = change.old_end_point.line;
         let new_last = change.new_end_point.line;
@@ -146,6 +158,7 @@ impl LayoutCache {
 
     pub fn clear(&mut self) {
         self.lines.clear();
+        self.tables.clear();
     }
 
     /// Bounds memory by dropping layouts far from `line`.
@@ -162,5 +175,10 @@ impl LayoutCache {
 
     pub fn shaped(&self) -> u64 {
         self.shaped
+    }
+
+    /// Tables measured so far, for tests.
+    pub fn tables_measured(&self) -> u64 {
+        self.tables.measured()
     }
 }

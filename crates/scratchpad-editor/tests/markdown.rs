@@ -283,11 +283,10 @@ fn malformed_markdown_degrades_to_plain_text() {
 }
 
 #[test]
-fn escapes_html_and_tables_stay_plain_text() {
+fn escapes_and_html_stay_plain_text() {
     for text in [
         r"\*not emphasis\* \`not code\` \[not](a link)",
         "<!-- *hidden* -->",
-        "| a | b |\n| --- | --- |\n| 1 | 2 |",
         "bare a@b.c www.x.y http://plain.url",
     ] {
         assert_eq!(describe(text), [], "{text:?}");

@@ -215,3 +215,32 @@ fn shift_tab_on_a_whole_long_list() {
     });
     assert_under("Shift+Tab on 5,000 items", time, Duration::from_millis(300));
 }
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing limits are for release builds")]
+fn typing_in_a_200_row_table() {
+    // A keystroke in the middle of a 200-row table, then what the view does for a screen of its lines:
+    // style each one and look up its table (ADR 0186). The whole table is one region, so this reparses it.
+    let mut text = String::from("| Name | **Status** | Notes |\n|:--|:-:|--:|\n");
+    for row in 0..200 {
+        text.push_str(&format!(
+            "| item {row} | *open* | a `note` with \\| a pipe |\n"
+        ));
+    }
+    let mut editor = Editor::from_text(&text);
+    editor.move_to(ByteOffset(editor.buffer().line_start(100).0 + 4), false);
+    let mut markdown = MarkdownState::new(editor.buffer());
+    let time = median(51, || {
+        editor.insert_text("x");
+        for line in 75..125 {
+            let selection = Some(editor.selection());
+            markdown.styled_lines(editor.buffer(), line..line + 1, selection);
+            assert!(markdown.table(editor.buffer(), line, selection).is_some());
+        }
+    });
+    assert_under(
+        "a keystroke in a 200-row table",
+        time,
+        Duration::from_millis(3),
+    );
+}

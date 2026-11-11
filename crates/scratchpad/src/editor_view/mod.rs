@@ -13,6 +13,7 @@ mod layout_cache;
 mod line_layout;
 mod scroll;
 mod spell;
+mod table;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -323,6 +324,13 @@ impl EditorView {
     #[doc(hidden)]
     pub fn shaped_line_count(&self) -> u64 {
         self.layouts.shaped()
+    }
+
+    /// Number of times a table's column widths have been measured, for tests of what input
+    /// re-measures (ADR 0186).
+    #[doc(hidden)]
+    pub fn measured_table_count(&self) -> u64 {
+        self.layouts.tables_measured()
     }
 
     /// The search match highlights painted in the last frame, in window coordinates.
@@ -1393,9 +1401,20 @@ impl Lines<'_> {
     fn layout(&mut self, line: usize) -> Arc<LineLayout> {
         let (buffer, markdown, selection) =
             (self.buffer, self.markdown.as_deref_mut(), self.selection);
+        let text_system = self.text_system;
         self.cache
-            .line(line, buffer, self.text_system, || match markdown {
-                Some(markdown) => LineKey::new(markdown, buffer, line, selection),
+            .line(line, buffer, text_system, |tables, style| match markdown {
+                Some(markdown) => {
+                    let mut key = LineKey::new(markdown, buffer, line, selection);
+                    let source = table::Source {
+                        markdown,
+                        buffer,
+                        selection,
+                        text_system,
+                    };
+                    tables.fill(&mut key, line, style, source);
+                    key
+                }
                 None => LineKey::plain(buffer, line),
             })
     }
@@ -1406,7 +1425,15 @@ impl Lines<'_> {
         let (Some(markdown), Some(_)) = (self.markdown.as_deref_mut(), self.selection) else {
             return self.layout(line);
         };
-        let key = LineKey::new(markdown, self.buffer, line, Some(selection));
+        let mut key = LineKey::new(markdown, self.buffer, line, Some(selection));
+        let (tables, style) = self.cache.tables();
+        let source = table::Source {
+            markdown,
+            buffer: self.buffer,
+            selection: Some(selection),
+            text_system: self.text_system,
+        };
+        tables.fill(&mut key, line, style, source);
         self.cache
             .line_with_key(line, self.buffer, self.text_system, key)
     }

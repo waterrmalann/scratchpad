@@ -116,6 +116,19 @@ code spans and 4 KB for an open HTML comment, the front matter above the cursor 
 most 64 KB; reading it a line at a time cost ~0.6 ms), and last asks the Markdown structure
 whether the text is code (parsing the edited region, which the next frame needs anyway).
 
+## Tables (ADR 0186)
+
+A note with a 200-row, 3-column table with bold, emphasis, code and escaped pipes in its cells
+(release, `cargo bench -p scratchpad-editor -- markdown_table`, 2026-11-11):
+
+| Work on the UI thread | When | Time |
+| --- | --- | --- |
+| Type a char in the middle row and delete it, each followed by styling 50 of the table's lines and looking up their table (two keystrokes) | typing in a table | ~1.16 ms (~0.58 ms per keystroke) |
+| Style all 200 rows away from the cursor, in chunks of 64 lines | the engine's share of measuring a grid, once per table after it changes | ~0.6 ms |
+
+The whole table is one region, so a keystroke in it reparses all of it; no grid is laid out while
+the cursor is in the table. Measuring a grid also shapes each row once.
+
 ## Binary
 
 `target/release/scratchpad.exe` is 8.0 MB (icon and version resource ~12 KB); the MSI is ~2.9 MB
