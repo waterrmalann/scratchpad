@@ -16,6 +16,7 @@ mod lists;
 mod parse;
 mod style;
 mod table;
+mod text_runs;
 mod wikilinks;
 
 pub use emoji::emoji_for_shortcode;

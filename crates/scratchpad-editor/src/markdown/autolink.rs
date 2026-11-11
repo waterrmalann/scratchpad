@@ -1,22 +1,21 @@
 //! Bare web and e-mail addresses in prose, styled and opened as links without a single character of Markdown
 //! around them (GFM "extended autolinks"; ADR 0187).
 //!
-//! [`Autolinks`] watches the events of a region's parse and scans only text: runs of consecutive `Text` events
-//! outside code blocks, links and images. Code spans, raw HTML and autolinks (`<...>`) are other events, so they
+//! [`Autolinks`] scans only text, as the walk shared with the other text scanners reports it (`text_runs`):
+//! runs of consecutive `Text` events outside code blocks, links and images, reference links read as text. Code spans, raw HTML and autolinks (`<...>`) are other events, so they
 //! are never scanned. What is found becomes a [`DecorationKind::Link`] with no markers, whose destination is
 //! the address made openable: `www.` addresses get `https://`, e-mail addresses `mailto:`.
 //!
 //! The rules are GFM's (spec 0.29, "Autolinks (extension)", as cmark-gfm implements them): `http://` and
 //! `https://` followed by a domain, `www.` followed by a domain with a period after start of line, whitespace
 //! or one of `*_~(`, and `local@domain.tld`. A domain is alphanumeric segments (`-` and `_` allowed, no `_` in
-//! the last two) separated by periods. The address runs to whitespace or `<`, then loses trailing punctuation
-//! (`?!.,:*_~'"`), an entity-like `&name;` and any `)` without a matching `(`. Every byte the rules look at or
+//! the last two) separated by periods. The address runs to whitespace, `<` or a `]` it did not open, then loses
+//! trailing punctuation (`?!.,:*_~'"`), an entity-like `&name;` and any `)` without a matching `(`. Every byte the rules look at or
 //! cut at is ASCII, so all ranges are char boundaries.
 
 use std::ops::Range;
 
-use pulldown_cmark::{Event, LinkType, Tag, TagEnd};
-
+use super::text_runs::Step;
 use super::{Decoration, DecorationKind, MAX_FRONT_MATTER_BYTES, MarkdownState, front_matter};
 use crate::buffer::Buffer;
 use crate::coords::ByteOffset;
@@ -94,164 +93,32 @@ impl MarkdownState {
     }
 }
 
-/// Whether links of `link_type` resolve against reference definitions, which may be in another region: those
-/// stay text (ADR 0040), so text scanners see through them, reading their brackets as text. Whether a definition
-/// exists then changes nothing found in the text around them, which a region's parse could not know.
-pub(super) fn is_reference(link_type: LinkType) -> bool {
-    matches!(
-        link_type,
-        LinkType::Reference
-            | LinkType::ReferenceUnknown
-            | LinkType::Collapsed
-            | LinkType::CollapsedUnknown
-            | LinkType::Shortcut
-            | LinkType::ShortcutUnknown
-    )
-}
-
-/// A link or image the next event is in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OpenLink {
-    Wiki,
-    Other,
-    /// A reference link (see [`is_reference`]), with where the events inside it end so far.
-    Reference(usize),
-}
-
-/// Collects the bare addresses of one region's text while its events go by.
+/// Collects the bare addresses of one region's text from the runs [`TextRuns`](super::text_runs::TextRuns)
+/// reports: runs outside links and images.
 #[derive(Debug, Default)]
 pub(super) struct Autolinks {
-    /// The run of consecutive text events seen last, not yet scanned.
-    run: Option<Range<usize>>,
-    /// Where text starts that is a text node of its own in GFM, as at the start of a line: a table cell's text,
-    /// and (an Obsidian addition) text right after a wikilink. `www.` may start an address there.
-    node_start: Option<usize>,
-    /// How many code blocks the next event is in.
-    code_blocks: usize,
-    /// The links and images the next event is in, innermost last.
-    links: Vec<OpenLink>,
-    /// How many of them are not reference links: text in those is not scanned.
-    opaque: usize,
     found: Vec<Decoration>,
 }
 
 impl Autolinks {
-    /// Takes the next event of the parse of `text`, with its range. Text from `text_end` on is not prose (a
-    /// heading's attribute block) and is not scanned.
-    pub(super) fn event(
-        &mut self,
-        event: &Event<'_>,
-        range: &Range<usize>,
-        text: &str,
-        text_end: Option<usize>,
-    ) {
-        let range = &(range.start..range.end.min(text_end.unwrap_or(usize::MAX)));
-        let link_end = matches!(event, Event::End(TagEnd::Link | TagEnd::Image));
-        if let Some(OpenLink::Reference(end)) = self.links.last_mut()
-            && !link_end
+    /// Takes the next step of the walk over the parse of `text`.
+    pub(super) fn step(&mut self, text: &str, step: &Step) {
+        if let Step::Run { range, context } = step
+            && !context.in_link
         {
-            *end = (*end).max(range.end);
-        }
-        let scanned = self.code_blocks == 0 && self.opaque == 0;
-        match event {
-            Event::Text(_) if scanned => {
-                self.text(text, range.clone());
-                return;
-            }
-            Event::Start(Tag::CodeBlock(_)) => self.code_blocks += 1,
-            Event::End(TagEnd::CodeBlock) => self.code_blocks = self.code_blocks.saturating_sub(1),
-            Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. })
-                if is_reference(*link_type) =>
-            {
-                // Its `[` or `![` is text, as without a definition.
-                let opener = if matches!(event, Event::Start(Tag::Image { .. })) {
-                    2
-                } else {
-                    1
-                };
-                let opener = range.start..(range.start + opener).min(range.end);
-                self.links.push(OpenLink::Reference(opener.end));
-                if scanned {
-                    self.text(text, opener);
-                }
-                return;
-            }
-            Event::Start(Tag::Link { link_type, .. }) => {
-                let wikilink = matches!(link_type, LinkType::WikiLink { .. });
-                self.links.push(if wikilink {
-                    OpenLink::Wiki
-                } else {
-                    OpenLink::Other
-                });
-                self.opaque += 1;
-            }
-            Event::Start(Tag::Image { .. }) => {
-                self.links.push(OpenLink::Other);
-                self.opaque += 1;
-            }
-            Event::End(TagEnd::Link | TagEnd::Image) => {
-                let open = self.links.pop();
-                if let Some(OpenLink::Reference(inner_end)) = open {
-                    // Its `]`, `][ref]` or `][]` is text too.
-                    if scanned {
-                        self.text(text, inner_end.min(range.end)..range.end);
-                    }
-                    return;
-                }
-                self.opaque = self.opaque.saturating_sub(1);
-                self.flush(text);
-                if open == Some(OpenLink::Wiki) {
-                    self.node_start = Some(range.end);
-                }
-                return;
-            }
-            Event::Start(Tag::TableCell) => {
-                self.flush(text);
-                self.node_start = Some(range.start);
-                return;
-            }
-            _ => {}
-        }
-        self.flush(text);
-    }
-
-    /// Adds `piece` of `text` to the run of text it follows, or scans that run and starts a new one.
-    fn text(&mut self, text: &str, piece: Range<usize>) {
-        if piece.is_empty() {
-            return;
-        }
-        match &mut self.run {
-            // Entities, escapes and unmatched delimiters split text into several events.
-            Some(run) if run.end == piece.start => run.end = piece.end,
-            _ => {
-                self.flush(text);
-                self.run = Some(piece);
-            }
+            scan(text, range.clone(), context.node_start, &mut self.found);
         }
     }
 
-    /// The addresses found so far, in document order. A text run is scanned when the event after it arrives, so
-    /// those of a run are here once [`Autolinks::event`] has taken the event that ends it.
+    /// The addresses found so far, in document order. Those of a run are here once [`Autolinks::step`] has
+    /// taken it.
     pub(super) fn found(&self) -> &[Decoration] {
         &self.found
     }
 
-    /// Scans the last text run; the addresses are then all in [`Autolinks::found`].
-    pub(super) fn flush_last(&mut self, text: &str) {
-        self.flush(text);
-    }
-
-    /// The decorations of the addresses found in `text`, in document order.
-    pub(super) fn finish(mut self, text: &str) -> Vec<Decoration> {
-        self.flush(text);
+    /// The decorations of the addresses found, in document order.
+    pub(super) fn finish(self) -> Vec<Decoration> {
         self.found
-    }
-
-    fn flush(&mut self, text: &str) {
-        if let Some(run) = self.run.take() {
-            let starts_node = self.node_start == Some(run.start);
-            scan(text, run, starts_node, &mut self.found);
-        }
     }
 }
 

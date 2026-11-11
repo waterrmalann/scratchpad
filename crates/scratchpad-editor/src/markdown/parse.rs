@@ -16,6 +16,7 @@ use pulldown_cmark::{
 use super::autolink::Autolinks;
 use super::highlight::TextMarks;
 use super::table::{self, TableState};
+use super::text_runs::TextRuns;
 use super::{CalloutKind, Decoration, DecorationKind, MarkdownOptions, wikilink_page};
 use crate::coords::ByteOffset;
 
@@ -32,6 +33,7 @@ pub(super) fn parse(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
         table: TableState::default(),
         heading: None,
     };
+    let mut runs = TextRuns::default();
     let mut autolinks = Autolinks::default();
     let mut marks = TextMarks::new(options);
     for (event, range) in Parser::new_ext(text, pulldown_options(options)).into_offset_iter() {
@@ -41,18 +43,22 @@ pub(super) fn parse(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
             .heading
             .as_ref()
             .map(|heading| heading.attributes.start);
-        autolinks.event(&event, &range, text, text_end);
-        // After the addresses: a text run is scanned for both when the event after it arrives, and highlights
-        // and shortcodes are not looked for inside an address.
-        marks.event(&event, &range, text, text_end, autolinks.found());
+        // Addresses first: highlights and shortcodes are not looked for inside one.
+        runs.event(&event, &range, text_end, |step| {
+            autolinks.step(text, &step);
+            marks.step(text, &step, autolinks.found());
+        });
         builder.event(event, range);
     }
     // Events come in document order except a task box, which follows the start of the item's first block, e.g.
     // a setext heading.
     let mut decorations = builder.decorations;
-    autolinks.flush_last(text);
-    decorations.extend(marks.finish(text, autolinks.found()));
-    decorations.extend(autolinks.finish(text));
+    runs.finish(|step| {
+        autolinks.step(text, &step);
+        marks.step(text, &step, autolinks.found());
+    });
+    decorations.extend(marks.finish());
+    decorations.extend(autolinks.finish());
     decorations.sort_by_key(|d| (d.range.start, std::cmp::Reverse(d.range.end)));
     decorations
 }

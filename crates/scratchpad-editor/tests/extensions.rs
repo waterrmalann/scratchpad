@@ -205,6 +205,9 @@ fn known_shortcodes_become_emoji_and_unknown_ones_stay_text() {
     ] {
         assert!(found(text).is_empty(), "{text:?}");
     }
+    // A reference link is text, so its shortcode is an emoji, defined or not; an inline link's is not.
+    assert_eq!(found("[:smile:][r]").len(), 1);
+    assert_eq!(found("[:smile:][r]\n\n[r]: https://u.v").len(), 1);
     let off = MarkdownOptions {
         emoji_shortcodes: false,
         ..MarkdownOptions::ALL
