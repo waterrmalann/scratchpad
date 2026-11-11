@@ -1,7 +1,7 @@
 //! Randomized Markdown: parsing never panics and decorations are always well formed.
 
 use proptest::prelude::*;
-use scratchpad_editor::markdown::{Decoration, MarkdownState};
+use scratchpad_editor::markdown::{Decoration, MarkdownOptions, MarkdownState};
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Selection};
 
 /// Markdown syntax fragments, prose and hostile Unicode that combine into well-formed and malformed documents.
@@ -49,7 +49,23 @@ const ATOMS: &[&str] = &[
     "\r\n",
     "\\",
     "!",
+    "^",
+    "[!NOTE]",
+    "[!tip]",
+    "{#a .b}",
+    "{",
+    "}",
 ];
+
+/// Any options, every one on in a third of the cases.
+fn options() -> impl Strategy<Value = MarkdownOptions> {
+    prop_oneof![
+        1 => Just(MarkdownOptions::ALL),
+        2 => any::<[bool; 4]>().prop_map(|[callouts, superscript, subscript, heading_ids]| {
+            MarkdownOptions { callouts, superscript, subscript, heading_ids }
+        }),
+    ]
+}
 
 fn markdown_text() -> impl Strategy<Value = String> {
     prop_oneof![
@@ -105,9 +121,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(1024))]
 
     #[test]
-    fn decorations_of_random_markdown_are_well_formed(text in markdown_text()) {
+    fn decorations_of_random_markdown_are_well_formed(text in markdown_text(), options in options()) {
         let buffer = Buffer::from_text(&text);
-        let decorations = MarkdownState::new(&buffer).decorations(&buffer, ByteOffset(0)..buffer.end());
+        let decorations = MarkdownState::with_options(&buffer, options).decorations(&buffer, ByteOffset(0)..buffer.end());
         check_well_formed(&buffer.normalized_text(), &decorations)?;
     }
 
@@ -118,13 +134,14 @@ proptest! {
         text in markdown_text(),
         anchor in 0..200usize,
         head in 0..200usize,
+        options in options(),
     ) {
         let buffer = Buffer::from_text(&text);
         let selection = Selection::new(
             buffer.clip_offset(ByteOffset(anchor), Bias::Left),
             buffer.clip_offset(ByteOffset(head), Bias::Left),
         );
-        let lines = MarkdownState::new(&buffer).styled_lines(&buffer, 0..buffer.line_count(), Some(selection));
+        let lines = MarkdownState::with_options(&buffer, options).styled_lines(&buffer, 0..buffer.line_count(), Some(selection));
         prop_assert_eq!(lines.len(), buffer.line_count());
         for (i, line) in lines.iter().enumerate() {
             let line_text = buffer.line_text(i);

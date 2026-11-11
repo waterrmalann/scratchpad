@@ -8,12 +8,13 @@ use gpui::{
     size,
 };
 use scratchpad::AppWindow;
-use scratchpad::actions::view::ToggleWordWrap;
+use scratchpad::actions::view::{ToggleSuperscript, ToggleWordWrap};
 use scratchpad::app_window::{AUTO_COLLAPSE_WIDTH, SidebarMode};
 use scratchpad::editor_view::SEARCH_DEBOUNCE;
 use scratchpad::file_dialogs::PickFileForTests;
 use scratchpad::find_bar::ReplaceInNote;
 use scratchpad::menu_bar::{MenuBar, ShownItem};
+use scratchpad::settings::SAVE_DELAY;
 use scratchpad_core::Config;
 
 fn menu_bar(root: &Entity<AppWindow>, cx: &mut VisualTestContext) -> Entity<MenuBar> {
@@ -114,6 +115,7 @@ fn each_menu_lists_its_commands_with_the_keys_from_the_keymap(cx: &mut TestAppCo
             "Spell check",
             "Autocorrect",
             "Auto-replace symbols",
+            "Markdown features",
             "Source mode Ctrl+/",
             "Sidebar Ctrl+\\"
         ]
@@ -540,4 +542,53 @@ fn open_and_save_as_run_from_the_file_menu(cx: &mut TestAppContext) {
     cx.update(|window, _| window.activate_window());
     cx.run_until_parked();
     assert_eq!(std::fs::read_to_string(&copy).unwrap(), "from elsewhere");
+}
+
+#[gpui::test]
+fn markdown_features_are_ticked_while_on_apply_at_once_and_are_remembered(cx: &mut TestAppContext) {
+    let notes_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let storage = common::storage(notes_dir.path(), data_dir.path());
+    let config_path = storage.config_path.clone().unwrap();
+    let (root, cx) = common::open_with(storage.clone(), cx);
+    let editor = common::editor(&root, cx);
+    let options = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.markdown_options());
+
+    click("menu:View", cx);
+    hover("menu-item:Markdown features", cx);
+    assert_eq!(
+        labels(&root, true, cx),
+        ["Callouts", "Superscript", "Subscript", "Heading IDs"]
+    );
+    let checked: Vec<_> = items(&root, true, cx).iter().map(|i| i.checked).collect();
+    assert_eq!(checked, [Some(true), Some(false), Some(false), Some(false)]);
+
+    click("menu-item:Superscript", cx);
+    assert_eq!(open_menu(&root, cx), None);
+    assert!(options(cx).superscript);
+    click("menu:View", cx);
+    hover("menu-item:Markdown features", cx);
+    click("menu-item:Callouts", cx);
+    assert!(!options(cx).callouts);
+    common::wait(SAVE_DELAY, cx);
+    let config = Config::load(&config_path);
+    assert_eq!(config.markdown_superscript, Some(true));
+    assert_eq!(config.markdown_callouts, Some(false));
+    assert_eq!(config.markdown_subscript, Some(false));
+    common::close(cx);
+
+    // The same after a restart, for the next note too; the action turns one back off.
+    let (root, cx) = common::open_with(storage, cx);
+    let editor = common::editor(&root, cx);
+    editor.update(cx, |editor, cx| editor.set_text("x", cx));
+    let options = editor.read_with(cx, |e, _| e.markdown_options());
+    assert!(options.superscript && !options.callouts && !options.subscript);
+    cx.dispatch_action(ToggleSuperscript);
+    assert!(
+        !editor
+            .read_with(cx, |e, _| e.markdown_options())
+            .superscript
+    );
+    common::close(cx);
+    assert_eq!(Config::load(&config_path).markdown_superscript, Some(false));
 }

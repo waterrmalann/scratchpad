@@ -130,6 +130,14 @@ pub mod view {
             ToggleAutocorrect,
             /// Turns replacing typed sequences such as `->` by their symbol on or off (ADR 0180).
             ToggleAutoReplace,
+            /// Turns Markdown callouts (GFM alerts such as `> [!NOTE]`) on or off (ADR 0185).
+            ToggleCallouts,
+            /// Turns Markdown superscript (`^x^`) on or off (ADR 0185).
+            ToggleSuperscript,
+            /// Turns Markdown subscript (`~x~`) on or off (ADR 0185).
+            ToggleSubscript,
+            /// Turns Markdown heading attribute blocks (`# Title {#id}`) on or off (ADR 0185).
+            ToggleHeadingIds,
         ]
     );
 

@@ -24,7 +24,7 @@ use gpui::{
     SharedString, Subscription, Task, UTF16Selection, Window, WindowTextSystem, div, font,
     prelude::*, px,
 };
-use scratchpad_editor::markdown::MarkdownState;
+use scratchpad_editor::markdown::{MarkdownOptions, MarkdownState};
 use scratchpad_editor::{Bias, Buffer, ByteOffset, Editor, Goal, Motion, Selection, Utf16Offset};
 
 use crate::actions::editor::*;
@@ -184,7 +184,7 @@ impl EditorView {
         let mono_family = SharedString::from(typography::mono_font_family(cx));
         // Replaced by the first layout, which knows the width.
         let base_style = base_style(cx, typography::BODY_FONT_SIZE, px(0.), true, &mono_family);
-        let (editor, markdown) = open_document(text);
+        let (editor, markdown) = open_document(text, MarkdownOptions::default());
         Self {
             editor,
             markdown,
@@ -225,7 +225,7 @@ impl EditorView {
     /// position at the start.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         let auto_replace = self.auto_replace();
-        (self.editor, self.markdown) = open_document(text);
+        (self.editor, self.markdown) = open_document(text, self.markdown.options());
         self.editor.set_typed_replacements(auto_replace);
         self.layouts.clear();
         self.synced_version = self.editor.buffer().version();
@@ -437,6 +437,22 @@ impl EditorView {
 
     pub fn is_markdown(&self) -> bool {
         !self.plain
+    }
+
+    /// The optional Markdown syntax recognised (View > Markdown features, ADR 0185).
+    pub fn markdown_options(&self) -> MarkdownOptions {
+        self.markdown.options()
+    }
+
+    /// Changes the optional syntax recognised, in this note and the ones opened after it. Only the
+    /// lines laid out next are parsed and restyled again.
+    pub fn set_markdown_options(&mut self, options: MarkdownOptions, cx: &mut Context<Self>) {
+        if self.markdown.set_options(options) {
+            self.styled_for = None;
+            // Markers are not spell checked, and an option changes what is a marker.
+            self.spell_text_changed(true, cx);
+            cx.notify();
+        }
     }
 
     // --- Engine plumbing ---
@@ -1528,9 +1544,9 @@ fn vertical_target(
 /// A new document's engine and Markdown structure. The only place either is created: a
 /// [`MarkdownState`] left over from another buffer could pass for current (same version and
 /// length) and style the new text with the old document's markers.
-fn open_document(text: &str) -> (Editor, MarkdownState) {
+fn open_document(text: &str, options: MarkdownOptions) -> (Editor, MarkdownState) {
     let editor = Editor::from_text(text);
-    let markdown = MarkdownState::new(editor.buffer());
+    let markdown = MarkdownState::with_options(editor.buffer(), options);
     (editor, markdown)
 }
 

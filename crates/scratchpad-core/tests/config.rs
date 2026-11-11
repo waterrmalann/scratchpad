@@ -47,6 +47,10 @@ fn save_and_load_round_trip_every_field() {
         spell_check: Some(false),
         autocorrect: Some(true),
         auto_replace: Some(false),
+        markdown_callouts: Some(false),
+        markdown_superscript: Some(true),
+        markdown_subscript: Some(true),
+        markdown_heading_ids: None,
     };
 
     config.save(&path).unwrap();
@@ -88,6 +92,10 @@ fn loads_the_documented_file_format() {
             "spell_check": true,
             "autocorrect": false,
             "auto_replace": false,
+            "markdown_callouts": false,
+            "markdown_superscript": true,
+            "markdown_subscript": "yes",
+            "markdown_heading_ids": true,
             "from_the_future": [1, 2, 3]
         }"#,
     );
@@ -114,6 +122,11 @@ fn loads_the_documented_file_format() {
             spell_check: Some(true),
             autocorrect: Some(false),
             auto_replace: Some(false),
+            markdown_callouts: Some(false),
+            markdown_superscript: Some(true),
+            // The wrong type falls back to the default.
+            markdown_subscript: None,
+            markdown_heading_ids: Some(true),
         }
     );
 }

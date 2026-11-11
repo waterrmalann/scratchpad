@@ -775,3 +775,70 @@ fn plain_text_shows_markdown_as_typed_and_edits_it_as_plain_text(cx: &mut TestAp
     editor.update(cx, |editor, cx| editor.set_markdown(true, cx));
     assert_eq!(x_of(&editor, 4, 0, cx), 2. * ADVANCE);
 }
+
+#[gpui::test]
+fn images_look_and_open_like_links_and_load_nothing(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(
+        cx,
+        "![pic](https://example.com/p.png) ![local](file:///C:/x.png)\nnext",
+    );
+    cx.simulate_keystrokes("ctrl-end");
+    // Displayed "pic local": `![` and `](...)` are hidden like a link's markers.
+    assert_eq!(x_of(&editor, 2, 0, cx), 0.);
+    assert_eq!(x_of(&editor, 36, 0, cx), 4. * ADVANCE);
+    let line = bounds(&editor, 0..0, cx);
+    let at_display = |column: f32| point(line.left() + px(column * ADVANCE + 4.), line.center().y);
+    click(at_display(6.), Modifiers::secondary_key(), cx);
+    assert_eq!(cx.opened_url(), None, "only web and mail links open");
+    click(at_display(1.), Modifiers::secondary_key(), cx);
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://example.com/p.png")
+    );
+}
+
+#[gpui::test]
+fn a_callout_shows_its_label_in_place_of_its_tag_until_the_cursor_is_on_it(
+    cx: &mut TestAppContext,
+) {
+    let (editor, cx) = open_editor(cx, "> [!NOTE]\n> body\n\nnext");
+    let tag_width = |cx: &mut VisualTestContext| {
+        f32::from(bounds(&editor, 9..9, cx).left() - bounds(&editor, 2..2, cx).left())
+    };
+    cx.simulate_keystrokes("ctrl-end");
+    // "Note" in semibold (4 × 9 px) and half an em of room after it.
+    assert_eq!(tag_width(cx), 4. * ADVANCE + 8.);
+    cx.simulate_keystrokes("ctrl-home");
+    assert_eq!(tag_width(cx), 7. * ADVANCE, "on its line the tag is text");
+
+    // Turned off, the quote is an ordinary one and the tag is text.
+    cx.simulate_keystrokes("ctrl-end");
+    editor.update(cx, |editor, cx| {
+        let mut options = editor.markdown_options();
+        options.callouts = false;
+        editor.set_markdown_options(options, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(tag_width(cx), 7. * ADVANCE);
+}
+
+#[gpui::test]
+fn superscript_and_subscript_are_set_smaller_once_turned_on(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "a ^2^ b ~3~\nnext");
+    cx.simulate_keystrokes("ctrl-end");
+    assert_eq!(bounds(&editor, 3..4, cx).size.width, px(ADVANCE));
+    editor.update(cx, |editor, cx| {
+        let mut options = editor.markdown_options();
+        options.superscript = true;
+        options.subscript = true;
+        editor.set_markdown_options(options, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(round(bounds(&editor, 3..4, cx).size.width), 0.75 * ADVANCE);
+    assert_eq!(round(bounds(&editor, 9..10, cx).size.width), 0.75 * ADVANCE);
+    // Their markers are hidden: "a 2 b 3".
+    assert_eq!(
+        x_of(&editor, 9, 0, cx),
+        4. * ADVANCE + 0.75 * ADVANCE + ADVANCE
+    );
+}

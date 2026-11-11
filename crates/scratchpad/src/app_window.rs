@@ -5,10 +5,11 @@ use gpui::{
     Subscription, Task, Window, div, prelude::*, px,
 };
 use scratchpad_core::NoteStore;
+use scratchpad_editor::markdown::MarkdownOptions;
 
 use crate::actions::view::{
-    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn,
-    ZoomOut,
+    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleCallouts, ToggleHeadingIds,
+    ToggleSpellCheck, ToggleSubscript, ToggleSuperscript, ToggleWordWrap, ZoomIn, ZoomOut,
 };
 use crate::actions::{
     CloseWindow, NewNote, OpenFile, OpenSettings, SaveAs, SaveNote, SearchNotes, ToggleSidebar,
@@ -95,6 +96,7 @@ impl AppWindow {
         let (zoom, word_wrap) = (config.zoom_percent, config.word_wrap);
         let (spell_check, autocorrect) = (config.spell_check, config.autocorrect);
         let auto_replace = config.auto_replace;
+        let markdown_options = settings::markdown_options(config);
         let notes = cx.new(|cx| Notes::new(storage.notes.clone(), reopen, cx));
         let editor = cx.new(|cx| {
             let mut editor = EditorView::new("", window, cx);
@@ -103,6 +105,7 @@ impl AppWindow {
             editor.set_spell_check(spell_check.unwrap_or(true), cx);
             editor.set_autocorrect(autocorrect.unwrap_or(true), cx);
             editor.set_auto_replace(auto_replace.unwrap_or(true), cx);
+            editor.set_markdown_options(markdown_options, cx);
             editor
         });
         let session =
@@ -174,19 +177,21 @@ impl AppWindow {
                 let width = f32::from(sidebar.read(cx).width());
                 settings::update(cx, |config| config.sidebar_width = Some(width));
             }),
-            // Zoom, word wrap and spelling belong to the editor; checked on each of its
-            // updates, written only when they change.
+            // Zoom, word wrap, spelling and Markdown options belong to the editor; checked on each
+            // of its updates, written only when they change.
             cx.observe(&editor, |_, editor, cx| {
                 let editor = editor.read(cx);
                 let (zoom, wrap) = (editor.zoom_percent(), editor.soft_wrap());
                 let (spell_check, autocorrect) = (editor.spell_check(), editor.autocorrect());
                 let auto_replace = editor.auto_replace();
+                let markdown_options = editor.markdown_options();
                 let config = settings::get(cx);
                 if config.zoom_percent.unwrap_or(100) != zoom
                     || config.word_wrap.unwrap_or(true) != wrap
                     || config.spell_check.unwrap_or(true) != spell_check
                     || config.autocorrect.unwrap_or(true) != autocorrect
                     || config.auto_replace.unwrap_or(true) != auto_replace
+                    || settings::markdown_options(config) != markdown_options
                 {
                     settings::update(cx, |config| {
                         config.zoom_percent = Some(zoom);
@@ -194,6 +199,7 @@ impl AppWindow {
                         config.spell_check = Some(spell_check);
                         config.autocorrect = Some(autocorrect);
                         config.auto_replace = Some(auto_replace);
+                        settings::store_markdown_options(config, markdown_options);
                     });
                 }
             }),
@@ -370,6 +376,20 @@ impl AppWindow {
     ) {
         let editor = self.editor_pane.read(cx).editor().clone();
         editor.update(cx, update);
+    }
+
+    /// Turns one of the Markdown options (View > Markdown features) on or off in the note.
+    fn toggle_markdown_option(
+        &self,
+        cx: &mut Context<Self>,
+        option: fn(&mut MarkdownOptions) -> &mut bool,
+    ) {
+        self.update_editor(cx, |editor, cx| {
+            let mut options = editor.markdown_options();
+            let on = option(&mut options);
+            *on = !*on;
+            editor.set_markdown_options(options, cx);
+        })
     }
 
     // On the root, not the editor pane, so that F3 (or a menu) also works from the sidebar.
@@ -666,6 +686,18 @@ impl Render for AppWindow {
                 this.update_editor(cx, |editor, cx| {
                     editor.set_auto_replace(!editor.auto_replace(), cx)
                 })
+            }))
+            .on_action(cx.listener(|this, _: &ToggleCallouts, _, cx| {
+                this.toggle_markdown_option(cx, |options| &mut options.callouts)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSuperscript, _, cx| {
+                this.toggle_markdown_option(cx, |options| &mut options.superscript)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSubscript, _, cx| {
+                this.toggle_markdown_option(cx, |options| &mut options.subscript)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleHeadingIds, _, cx| {
+                this.toggle_markdown_option(cx, |options| &mut options.heading_ids)
             }))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::save_as))

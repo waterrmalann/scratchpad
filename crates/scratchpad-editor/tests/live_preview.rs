@@ -4,15 +4,24 @@
 mod common;
 
 use common::editor;
-use scratchpad_editor::markdown::{MarkdownState, StyledLine};
+use scratchpad_editor::markdown::{
+    CalloutKind, MarkdownOptions, MarkdownState, MarkerKind, StyledLine,
+};
 use scratchpad_editor::{Bias, Editor, Selection};
 
 /// What live preview displays for marked text (`|` cursor, `^` anchor): every line without its hidden markers.
 fn shown(marked: &str) -> String {
+    shown_with(marked, MarkdownOptions::default())
+}
+
+fn shown_with(marked: &str, options: MarkdownOptions) -> String {
     let ed = editor(marked);
     let buffer = ed.buffer();
-    let lines =
-        MarkdownState::new(buffer).styled_lines(buffer, 0..usize::MAX, Some(ed.selection()));
+    let lines = MarkdownState::with_options(buffer, options).styled_lines(
+        buffer,
+        0..usize::MAX,
+        Some(ed.selection()),
+    );
     lines
         .iter()
         .enumerate()
@@ -255,4 +264,102 @@ fn styles_follow_edits() {
             .heading,
         0
     );
+}
+
+#[test]
+fn images_hide_their_markers_like_links() {
+    assert_eq!(
+        shown("See ![a plot](p.png) here\n\nx|"),
+        "See a plot here\n\nx"
+    );
+    assert_eq!(shown("See ![a pl|ot](p.png)"), "See ![a plot](p.png)");
+    let ed = Editor::from_text("![a](p.png)");
+    let line = styled(&ed, 0, None);
+    assert!(line.spans.iter().all(|span| span.style.link));
+    assert_eq!(line.spans[0].marker, Some(MarkerKind::Link));
+}
+
+#[test]
+fn superscript_and_subscript_hide_their_markers_and_style_their_text() {
+    // `^` marks the anchor in `shown`'s text, so these lines are styled directly. As pulldown-cmark reads them,
+    // neither works inside a word: `x^2^` is text.
+    let text = "x ^2^ H ~2~ O ~~no~~ y^3^";
+    let ed = Editor::from_text(text);
+    let buffer = ed.buffer();
+    let mut markdown = MarkdownState::with_options(buffer, MarkdownOptions::ALL);
+    let line = |markdown: &mut MarkdownState, cursor: usize| {
+        let selection = Selection::cursor(scratchpad_editor::ByteOffset(cursor));
+        markdown
+            .styled_lines(buffer, 0..1, Some(selection))
+            .remove(0)
+    };
+    assert_eq!(
+        line(&mut markdown, 0).display_text(text),
+        "x 2 H 2 O no y^3^"
+    );
+    assert_eq!(
+        line(&mut markdown, 3).display_text(text),
+        "x ^2^ H 2 O no y^3^"
+    );
+    let styles: Vec<(&str, bool, bool)> = line(&mut markdown, 0)
+        .spans
+        .iter()
+        .map(|span| {
+            let style = span.style;
+            (
+                &text[span.columns.clone()],
+                style.superscript,
+                style.subscript,
+            )
+        })
+        .collect();
+    assert_eq!(
+        &styles[..7],
+        [
+            ("x ", false, false),
+            ("^", true, false),
+            ("2", true, false),
+            ("^", true, false),
+            (" H ", false, false),
+            ("~", false, true),
+            ("2", false, true),
+        ]
+    );
+}
+
+#[test]
+fn heading_attribute_blocks_hide_until_the_cursor_is_on_the_heading() {
+    let ids = MarkdownOptions {
+        heading_ids: true,
+        ..MarkdownOptions::default()
+    };
+    assert_eq!(shown_with("# Title {#t}\n\nx|", ids), "Title\n\nx");
+    assert_eq!(shown_with("# Ti|tle {#t}\n\nx", ids), "# Title {#t}\n\nx");
+    assert_eq!(shown_with("Setext {#s}\n===\n\nx|", ids), "Setext\n\n\nx");
+}
+
+#[test]
+fn callout_tags_are_never_hidden_and_every_line_of_the_quote_has_its_kind() {
+    assert_eq!(
+        shown("> [!WARNING]\n>\n> body\n\nx|"),
+        "[!WARNING]\n\nbody\n\nx"
+    );
+    let ed = Editor::from_text("> [!WARNING]\n>\n> body\n\nx");
+    for line in 0..3 {
+        let styled = styled(&ed, line, None);
+        assert!(styled.style.quote, "{line}");
+        assert_eq!(styled.style.callout, Some(CalloutKind::Warning), "{line}");
+    }
+    let tag = styled(&ed, 0, Some(Selection::cursor(ed.buffer().end())));
+    let marker = tag.spans.iter().find(|span| span.columns == (2..12));
+    assert_eq!(
+        marker.map(|span| (span.marker, span.hidden)),
+        Some((
+            Some(MarkerKind::Callout {
+                kind: CalloutKind::Warning
+            }),
+            false
+        ))
+    );
+    assert_eq!(styled(&ed, 4, None).style.callout, None);
 }

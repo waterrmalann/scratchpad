@@ -3,7 +3,8 @@
 //!
 //! [`MarkdownState`] splits the document into block regions (ADR 0041) and parses a region with pulldown-cmark
 //! (ADR 0040) only when something asks for its decorations. A renderer asks for [`StyledLine`]s of the visible
-//! lines, which also say which syntax markers live preview hides around the selection (ADR 0042).
+//! lines, which also say which syntax markers live preview hides around the selection (ADR 0042). The optional
+//! syntax recognised is set by [`MarkdownOptions`] (ADR 0185).
 
 mod blocks;
 mod format;
@@ -45,11 +46,22 @@ pub enum DecorationKind {
     Emphasis,
     Strikethrough,
     InlineCode,
-    /// An inline link `[text](destination)` or an autolink `<destination>`.
+    /// An inline link `[text](destination)`, an autolink `<destination>` or an inline image `![alt](source)`,
+    /// which is styled and opened like a link and never loaded (ADR 0185).
     Link {
         destination: String,
     },
     BlockQuote,
+    /// A GFM alert, with [`MarkdownOptions::callouts`]: a block quote whose first line is only `[!NOTE]`,
+    /// `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]` (any case). It has the range of its quote, which
+    /// comes right before it, and one marker: the tag up to the end of its line.
+    Callout {
+        kind: CalloutKind,
+    },
+    /// `^text^` (or `^^text^^`), with [`MarkdownOptions::superscript`].
+    Superscript,
+    /// `~text~`, with [`MarkdownOptions::subscript`]; `~~text~~` stays strikethrough.
+    Subscript,
     /// A list item; its marker is the bullet or number with the spaces after it.
     ListItem {
         ordered: bool,
@@ -63,6 +75,66 @@ pub enum DecorationKind {
     CodeBlock {
         info: String,
     },
+}
+
+/// The kind of a GFM alert ([`DecorationKind::Callout`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CalloutKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl CalloutKind {
+    /// The name a renderer shows in place of the `[!TAG]`, e.g. `Note`.
+    pub fn label(self) -> &'static str {
+        match self {
+            CalloutKind::Note => "Note",
+            CalloutKind::Tip => "Tip",
+            CalloutKind::Important => "Important",
+            CalloutKind::Warning => "Warning",
+            CalloutKind::Caution => "Caution",
+        }
+    }
+}
+
+/// Optional Markdown syntax on top of CommonMark with GFM strikethrough and task lists, which the user turns on
+/// or off (View > Markdown features; ADR 0185). One field per extension, so adding one is adding a field;
+/// [`Default`] is what a new install gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MarkdownOptions {
+    /// GFM alerts ([`DecorationKind::Callout`]); without it they are plain block quotes. On by default.
+    pub callouts: bool,
+    /// `^x^` ([`DecorationKind::Superscript`]).
+    pub superscript: bool,
+    /// `~x~` ([`DecorationKind::Subscript`]); without it a single `~` is strikethrough, like `~~`.
+    pub subscript: bool,
+    /// A trailing `{#id .class}` attribute block on a heading's line is one of the heading's markers rather
+    /// than part of its text.
+    pub heading_ids: bool,
+}
+
+impl MarkdownOptions {
+    /// Every option on.
+    pub const ALL: Self = Self {
+        callouts: true,
+        superscript: true,
+        subscript: true,
+        heading_ids: true,
+    };
+}
+
+impl Default for MarkdownOptions {
+    fn default() -> Self {
+        Self {
+            callouts: true,
+            superscript: false,
+            subscript: false,
+            heading_ids: false,
+        }
+    }
 }
 
 impl Decoration {
@@ -93,18 +165,42 @@ pub struct MarkdownState {
     starts: Vec<usize>,
     /// Each region's decorations, parsed on first use, with offsets relative to its start.
     parsed: Vec<Option<Vec<Decoration>>>,
+    /// The syntax the regions are parsed with.
+    options: MarkdownOptions,
 }
 
 impl MarkdownState {
+    /// The structure of `buffer` with the default [`MarkdownOptions`].
     pub fn new(buffer: &Buffer) -> Self {
+        Self::with_options(buffer, MarkdownOptions::default())
+    }
+
+    pub fn with_options(buffer: &Buffer, options: MarkdownOptions) -> Self {
         let mut state = Self {
             version: buffer.version(),
             len: buffer.len(),
             starts: Vec::new(),
             parsed: Vec::new(),
+            options,
         };
         state.rescan_all(buffer);
         state
+    }
+
+    pub fn options(&self) -> MarkdownOptions {
+        self.options
+    }
+
+    /// Changes the syntax recognised from the next query on. If `options` differ from the current ones, every
+    /// region's parse is dropped, to be redone when something next asks for that region: nothing is parsed
+    /// here, and region boundaries do not depend on the options. Returns whether the options changed.
+    pub fn set_options(&mut self, options: MarkdownOptions) -> bool {
+        if options == self.options {
+            return false;
+        }
+        self.options = options;
+        self.parsed.fill(None);
+        true
     }
 
     /// Catches up with the edits made to `buffer` since the last call, rescanning only the regions around them
@@ -168,8 +264,8 @@ impl MarkdownState {
         })
     }
 
-    /// The destination of the link whose text or markers contain the char at `offset`, for opening it on
-    /// Ctrl+click.
+    /// The destination of the link (or image) whose text or markers contain the char at `offset`, for opening it
+    /// on Ctrl+click.
     pub fn link_at(&mut self, buffer: &Buffer, offset: ByteOffset) -> Option<String> {
         self.decorations(buffer, offset..offset)
             .into_iter()
@@ -236,8 +332,12 @@ impl MarkdownState {
     fn region_decorations(&mut self, buffer: &Buffer, index: usize) -> &[Decoration] {
         let start = self.starts[index];
         let end = self.starts.get(index + 1).copied().unwrap_or(self.len);
+        let options = self.options;
         self.parsed[index].get_or_insert_with(|| {
-            parse::parse(&buffer.text_for_range(ByteOffset(start)..ByteOffset(end)))
+            parse::parse(
+                &buffer.text_for_range(ByteOffset(start)..ByteOffset(end)),
+                options,
+            )
         })
     }
 }
@@ -294,8 +394,32 @@ mod tests {
 
     /// Fragments that open, close and separate regions, mixed with inline syntax and text.
     const ATOMS: &[&str] = &[
-        "```", "~~~", "\n", "\n\n", "**", "# ", "- ", "1. ", "2. ", "> ", "  ", "    ", "\t",
-        "<!--", "-->", "<p>", "a", "word ", "`", "*", "é",
+        "```",
+        "~~~",
+        "\n",
+        "\n\n",
+        "**",
+        "# ",
+        "- ",
+        "1. ",
+        "2. ",
+        "> ",
+        "  ",
+        "    ",
+        "\t",
+        "<!--",
+        "-->",
+        "<p>",
+        "a",
+        "word ",
+        "`",
+        "*",
+        "é",
+        "> [!NOTE]\n",
+        "^",
+        "~",
+        " {#a}",
+        "![x](y)",
     ];
 
     #[derive(Debug, Clone)]
@@ -307,10 +431,21 @@ mod tests {
         Redo,
         /// Queries the decorations near an offset, which syncs and parses the regions there.
         Query(usize),
+        SetOptions(MarkdownOptions),
     }
 
     fn atoms(max: usize) -> impl Strategy<Value = String> {
         prop::collection::vec(prop::sample::select(ATOMS), 0..max).prop_map(|atoms| atoms.concat())
+    }
+
+    /// Any options, every one on in a third of the cases.
+    fn options() -> impl Strategy<Value = MarkdownOptions> {
+        prop_oneof![
+            1 => Just(MarkdownOptions::ALL),
+            2 => any::<[bool; 4]>().prop_map(|[callouts, superscript, subscript, heading_ids]| {
+                MarkdownOptions { callouts, superscript, subscript, heading_ids }
+            }),
+        ]
     }
 
     fn replacement() -> impl Strategy<Value = (usize, usize, String)> {
@@ -324,6 +459,7 @@ mod tests {
             1 => Just(Op::Undo),
             1 => Just(Op::Redo),
             3 => (0..200usize).prop_map(Op::Query),
+            1 => options().prop_map(Op::SetOptions),
         ]
     }
 
@@ -331,14 +467,15 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(2048))]
 
         /// Incremental updates, with parse results kept across edits, give exactly the regions and decorations
-        /// of parsing the edited document from scratch.
+        /// of parsing the edited document from scratch, also when the options change in between.
         #[test]
         fn incremental_updates_equal_a_full_reparse(
             text in atoms(40),
+            options in options(),
             ops in prop::collection::vec(op(), 0..20),
         ) {
             let mut editor = Editor::from_text(&text);
-            let mut markdown = MarkdownState::new(editor.buffer());
+            let mut markdown = MarkdownState::with_options(editor.buffer(), options);
             markdown.decorations(editor.buffer(), ByteOffset(0)..editor.buffer().end());
             for op in &ops {
                 match op {
@@ -357,12 +494,15 @@ mod tests {
                     Op::Query(at) => {
                         markdown.decorations(editor.buffer(), ByteOffset(*at)..ByteOffset(at + 30));
                     }
+                    Op::SetOptions(options) => {
+                        markdown.set_options(*options);
+                    }
                 }
             }
             let buffer = editor.buffer();
             let all = ByteOffset(0)..buffer.end();
             let incremental = markdown.decorations(buffer, all.clone());
-            let mut fresh = MarkdownState::new(buffer);
+            let mut fresh = MarkdownState::with_options(buffer, markdown.options());
             prop_assert_eq!(&markdown.starts, &fresh.starts);
             prop_assert_eq!(markdown.parsed.len(), markdown.starts.len());
             prop_assert_eq!(incremental, fresh.decorations(buffer, all));
@@ -371,14 +511,50 @@ mod tests {
 
     /// How lines may start: containers, block openers and their lookalikes, at various indentations.
     const LINE_STARTS: &[&str] = &[
-        "", "", "", "  ", "    ", "\t", "# ", "## ", "- ", "* ", "+ ", "1. ", "2. ", "1) ", "3) ",
-        "> ", "> > ", "- [ ] ", "```", "~~~", "````", "   ```", "<!--", "<div>", "===", "---",
-        "- - -", "-", "1.", "> - ", "- > ", "  - ", "   1. ", "-     ",
+        "",
+        "",
+        "",
+        "  ",
+        "    ",
+        "\t",
+        "# ",
+        "## ",
+        "- ",
+        "* ",
+        "+ ",
+        "1. ",
+        "2. ",
+        "1) ",
+        "3) ",
+        "> ",
+        "> > ",
+        "- [ ] ",
+        "```",
+        "~~~",
+        "````",
+        "   ```",
+        "<!--",
+        "<div>",
+        "===",
+        "---",
+        "- - -",
+        "-",
+        "1.",
+        "> - ",
+        "- > ",
+        "  - ",
+        "   1. ",
+        "-     ",
+        "> [!NOTE]",
+        "> [!tip] ",
+        ">[!WARNING]",
+        "> > [!CAUTION]",
+        "- > [!IMPORTANT]",
     ];
     /// What follows on the line: text, inline syntax and fragments that open or close blocks.
     const LINE_REST: &[&str] = &[
         "a", "word", "**", "*", "_", "`", "~~", "-->", "```", "é", "[x](y)", "<b>", " ", "#",
-        "1. ", "- ", "> ",
+        "1. ", "- ", "> ", "^", "~", "{#a}", " {.b}", "![x](y)", "[!NOTE]",
     ];
 
     fn line() -> impl Strategy<Value = String> {
@@ -393,14 +569,18 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(4096))]
 
         /// Region boundaries never change the meaning of the document: parsing region by region gives the
-        /// decorations of parsing the whole text at once.
+        /// decorations of parsing the whole text at once, whatever the options.
         #[test]
-        fn regions_parse_like_the_whole_document(lines in prop::collection::vec(line(), 0..14)) {
+        fn regions_parse_like_the_whole_document(
+            lines in prop::collection::vec(line(), 0..14),
+            options in options(),
+        ) {
             let text = lines.join("\n");
             let buffer = Buffer::from_text(&text);
-            let mut markdown = MarkdownState::new(&buffer);
+            let mut markdown = MarkdownState::with_options(&buffer, options);
             let by_region = markdown.decorations(&buffer, ByteOffset(0)..buffer.end());
-            prop_assert_eq!(by_region, parse::parse(&text), "{:?} split at {:?}", text, markdown.starts);
+            let whole = parse::parse(&text, options);
+            prop_assert_eq!(by_region, whole, "{:?} split at {:?}", text, markdown.starts);
         }
     }
 

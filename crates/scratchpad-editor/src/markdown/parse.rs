@@ -9,22 +9,25 @@
 
 use std::ops::Range;
 
-use pulldown_cmark::{CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    BlockQuoteKind, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd,
+};
 
-use super::{Decoration, DecorationKind};
+use super::{CalloutKind, Decoration, DecorationKind, MarkdownOptions};
 use crate::coords::ByteOffset;
 
-/// Parses `text` and returns its decorations ordered by start, enclosing decorations before enclosed ones.
-pub(super) fn parse(text: &str) -> Vec<Decoration> {
+/// Parses `text` with `options` and returns its decorations ordered by start, enclosing decorations before enclosed
+/// ones.
+pub(super) fn parse(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
     let mut builder = Builder {
         text,
+        options,
         decorations: Vec::new(),
         quotes: Vec::new(),
         items: Vec::new(),
         links: Vec::new(),
     };
-    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    for (event, range) in Parser::new_ext(text, options).into_offset_iter() {
+    for (event, range) in Parser::new_ext(text, pulldown_options(options)).into_offset_iter() {
         builder.event(event, range);
     }
     // Events come in document order except a task box, which follows the start of the item's first block, e.g.
@@ -34,22 +37,36 @@ pub(super) fn parse(text: &str) -> Vec<Decoration> {
     decorations
 }
 
+/// The pulldown-cmark options for `options`. In pulldown-cmark 0.13, `ENABLE_GFM` only adds the alert tags of
+/// block quotes; check its documentation when upgrading, since anything else it turns on would change the meaning
+/// of notes with callouts on (ADR 0185).
+fn pulldown_options(options: MarkdownOptions) -> Options {
+    let mut pulldown = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    pulldown.set(Options::ENABLE_GFM, options.callouts);
+    pulldown.set(Options::ENABLE_SUPERSCRIPT, options.superscript);
+    pulldown.set(Options::ENABLE_SUBSCRIPT, options.subscript);
+    pulldown.set(Options::ENABLE_HEADING_ATTRIBUTES, options.heading_ids);
+    pulldown
+}
+
 struct Builder<'a> {
     text: &'a str,
+    options: MarkdownOptions,
     decorations: Vec<Decoration>,
     /// Indices of the decorations of the open block quotes, innermost last.
     quotes: Vec<usize>,
     /// Ranges of the open list items, innermost last.
     items: Vec<Range<usize>>,
-    /// Open links: the index of their decoration (`None` for unsupported link types) and the furthest end of the
-    /// events inside them so far, which is where their text ends.
+    /// Open links and images: the index of their decoration (`None` for unsupported link types) and the furthest
+    /// end of the events inside them so far, which is where their text ends.
     links: Vec<(Option<usize>, usize)>,
 }
 
 impl Builder<'_> {
     fn event(&mut self, event: Event<'_>, range: Range<usize>) {
+        let link_end = matches!(event, Event::End(TagEnd::Link | TagEnd::Image));
         if let Some((_, text_end)) = self.links.last_mut()
-            && event != Event::End(TagEnd::Link)
+            && !link_end
         {
             *text_end = (*text_end).max(range.end);
         }
@@ -61,7 +78,7 @@ impl Builder<'_> {
             Event::End(TagEnd::Item) => {
                 self.items.pop();
             }
-            Event::End(TagEnd::Link) => self.end_link(),
+            _ if link_end => self.end_link(),
             Event::Code(_) => {
                 let ticks = self.run_len(range.start, b'`');
                 self.delimited(DecorationKind::InlineCode, range, ticks);
@@ -84,37 +101,66 @@ impl Builder<'_> {
     fn start(&mut self, tag: Tag<'_>, range: Range<usize>) {
         match tag {
             Tag::Heading { level, .. } => self.heading(level as u8, range),
-            Tag::BlockQuote(_) => self.block_quote(range),
+            Tag::BlockQuote(kind) => self.block_quote(range, kind),
             Tag::CodeBlock(kind) => self.code_block(kind, range),
             Tag::Item => self.item(range),
             Tag::Emphasis => self.delimited(DecorationKind::Emphasis, range, 1),
             Tag::Strong => self.delimited(DecorationKind::Strong, range, 2),
             Tag::Strikethrough => {
-                // GFM accepts `~x~` as well as `~~x~~`.
+                // GFM accepts `~x~` as well as `~~x~~`. A run of tildes closes only a run as long, so the run is
+                // the marker; with subscript on, a single `~` is subscript instead and the run is always `~~`.
                 let tildes = self.run_len(range.start, b'~').min(2);
                 self.delimited(DecorationKind::Strikethrough, range, tildes);
+            }
+            Tag::Superscript => {
+                // `^^x^^` is superscript too, and `^^^x^^^` a `^` around a `^^`: of a run of carets, inner
+                // elements take two each and the outermost one takes the odd one left.
+                let carets = match self.run_len(range.start, b'^') {
+                    0 => 0,
+                    run => 2 - run % 2,
+                };
+                self.delimited(DecorationKind::Superscript, range, carets);
+            }
+            Tag::Subscript => {
+                let tildes = self.run_len(range.start, b'~').min(1);
+                self.delimited(DecorationKind::Subscript, range, tildes);
             }
             Tag::Link {
                 link_type,
                 dest_url,
                 ..
-            } => {
-                // Reference links resolve against definitions anywhere in the document, which a region parsed on
-                // its own cannot see, so they stay plain text everywhere rather than only sometimes (ADR 0040).
-                let supported = matches!(
-                    link_type,
-                    LinkType::Inline | LinkType::Autolink | LinkType::Email
-                );
-                let index = supported.then(|| {
-                    let kind = DecorationKind::Link {
-                        destination: dest_url.to_string(),
-                    };
-                    self.push(kind, range.clone(), range.clone(), Vec::new())
-                });
-                self.links.push((index, range.start + 1));
-            }
+            } => self.link(link_type, dest_url, range, 1),
+            // Styled and opened like a link; nothing is loaded (ADR 0185).
+            Tag::Image {
+                link_type,
+                dest_url,
+                ..
+            } => self.link(link_type, dest_url, range, 2),
             _ => {}
         }
+    }
+
+    /// A link, or an image with `opener` 2 for its `![`.
+    fn link(
+        &mut self,
+        link_type: LinkType,
+        destination: CowStr<'_>,
+        range: Range<usize>,
+        opener: usize,
+    ) {
+        // Reference links resolve against definitions anywhere in the document, which a region parsed on its own
+        // cannot see, so they stay plain text everywhere rather than only sometimes (ADR 0040).
+        let supported = matches!(
+            link_type,
+            LinkType::Inline | LinkType::Autolink | LinkType::Email
+        );
+        let index = supported.then(|| {
+            let kind = DecorationKind::Link {
+                destination: destination.to_string(),
+            };
+            self.push(kind, range.clone(), range.clone(), Vec::new())
+        });
+        self.links.push((index, range.start + opener));
     }
 
     fn push(
@@ -157,31 +203,59 @@ impl Builder<'_> {
             let underline = self.text[last_line..range.end]
                 .find(['=', '-'])
                 .map_or(range.end, |i| last_line + i);
-            let content = range.start..last_line - 1;
-            self.push(kind, range.clone(), content, vec![underline..range.end]);
+            let mut content = range.start..last_line - 1;
+            let mut markers = vec![underline..range.end];
+            if let Some(attributes) = self.attributes(content.clone()) {
+                markers.insert(0, attributes.start..content.end);
+                content.end = attributes.start;
+            }
+            self.push(kind, range.clone(), content, markers);
             return;
         }
 
         let hashes_end = self.skip(hashes_start, range.end, b"#");
         let open_end = self.skip(hashes_end, range.end, b" \t");
         let mut markers = vec![range.start..open_end];
+        // An attribute block comes last, even after a closing sequence (`# Title ## {#id}`).
+        let attributes = self.attributes(open_end..range.end);
+        let end = attributes.as_ref().map_or(range.end, |a| a.start);
         // An optional closing sequence: spaces, then `#`s, then only spaces (`# Title ##`).
-        let trimmed_end = self.skip_back(range.end, open_end, b" \t");
+        let trimmed_end = self.skip_back(end, open_end, b" \t");
         let closing_start = self.skip_back(trimmed_end, open_end, b"#");
         let content_end = if closing_start < trimmed_end
             && (closing_start == open_end
                 || matches!(self.byte(closing_start - 1), Some(b' ' | b'\t')))
         {
             let content_end = self.skip_back(closing_start, open_end, b" \t");
-            markers.push(content_end..range.end);
+            markers.push(content_end..end);
             content_end
         } else {
             trimmed_end
         };
+        markers.extend(attributes.map(|a| a.start..range.end));
         self.push(kind, range, open_end..content_end, markers);
     }
 
-    fn block_quote(&mut self, range: Range<usize>) {
+    /// With [`MarkdownOptions::heading_ids`], the trailing attribute block (`{#id .class}`) of the heading text
+    /// `text`, from the whitespace before it to its `}`. The rule is pulldown-cmark's: the last non-whitespace
+    /// byte is `}` and the nearest `{`, `}`, `<`, `>`, `\` or line break before it is a `{`, even for `{}`.
+    fn attributes(&self, text: Range<usize>) -> Option<Range<usize>> {
+        if !self.options.heading_ids {
+            return None;
+        }
+        let end = self.skip_back(text.end, text.start, b" \t\r\n");
+        if end == text.start || self.byte(end - 1) != Some(b'}') {
+            return None;
+        }
+        let open = self.text.as_bytes()[text.start..end - 1]
+            .iter()
+            .rposition(|b| matches!(b, b'{' | b'}' | b'<' | b'>' | b'\\' | b'\n' | b'\r'))
+            .map(|i| text.start + i)
+            .filter(|&i| self.byte(i) == Some(b'{'))?;
+        Some(self.skip_back(open, text.start, b" \t")..end)
+    }
+
+    fn block_quote(&mut self, range: Range<usize>, kind: Option<BlockQuoteKind>) {
         let range = self.trim(range);
         let parent = self.quotes.last().copied();
         let mut markers = Vec::new();
@@ -223,8 +297,33 @@ impl Builder<'_> {
         }
         let content_start = markers.first().map_or(range.start, |m| m.end);
         let content = content_start..range.end;
-        let index = self.push(DecorationKind::BlockQuote, range, content, markers);
+        let index = self.push(DecorationKind::BlockQuote, range.clone(), content, markers);
         self.quotes.push(index);
+        if let Some(kind) = kind {
+            self.callout(kind, range, content_start);
+        }
+    }
+
+    /// The alert of the quote `range` whose first line's text, from `tag_start`, is the alert's tag
+    /// (pulldown-cmark only reports a kind where it is). Pushed after the quote, with the same range.
+    fn callout(&mut self, kind: BlockQuoteKind, range: Range<usize>, tag_start: usize) {
+        let line_end = self.text[tag_start..range.end]
+            .find('\n')
+            .map_or(range.end, |i| tag_start + i);
+        if !self.text[tag_start..line_end].starts_with("[!") {
+            return;
+        }
+        let kind = DecorationKind::Callout {
+            kind: match kind {
+                BlockQuoteKind::Note => CalloutKind::Note,
+                BlockQuoteKind::Tip => CalloutKind::Tip,
+                BlockQuoteKind::Important => CalloutKind::Important,
+                BlockQuoteKind::Warning => CalloutKind::Warning,
+                BlockQuoteKind::Caution => CalloutKind::Caution,
+            },
+        };
+        let content = (line_end + 1).min(range.end)..range.end;
+        self.push(kind, range, content, vec![tag_start..line_end]);
     }
 
     fn code_block(&mut self, kind: CodeBlockKind<'_>, range: Range<usize>) {
@@ -323,19 +422,25 @@ impl Builder<'_> {
             return;
         };
         let range = self.decorations[index].range.start.0..self.decorations[index].range.end.0;
-        if range.len() < 2 {
+        // Images open with `![`.
+        let opener = if self.byte(range.start) == Some(b'!') {
+            2
+        } else {
+            1
+        };
+        if range.len() <= opener {
             return;
         }
-        // Autolinks are `<url>`; inline links are `[text](destination "title")`.
+        // Autolinks are `<url>`; inline links are `[text](destination "title")`, images `![alt](source)`.
         let text_end = if self.byte(range.start) == Some(b'<') {
             range.end - 1
         } else {
-            text_end.clamp(range.start + 1, range.end)
+            text_end.clamp(range.start + opener, range.end)
         };
         let decoration = &mut self.decorations[index];
-        decoration.content = offsets(range.start + 1..text_end);
+        decoration.content = offsets(range.start + opener..text_end);
         decoration.markers = vec![
-            offsets(range.start..range.start + 1),
+            offsets(range.start..range.start + opener),
             offsets(text_end..range.end),
         ];
     }

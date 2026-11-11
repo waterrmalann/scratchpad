@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use gpui::{App, Global, Task};
 use scratchpad_core::{Config, ThemePreference};
+use scratchpad_editor::markdown::MarkdownOptions;
 
 use crate::theme::{self, ActiveTheme, ThemeMode};
 
@@ -87,6 +88,25 @@ pub fn save_now(cx: &mut App) {
         Ok(()) => tracing::debug!(path = %path.display(), "saved settings"),
         Err(error) => tracing::warn!(%error, "could not save settings"),
     }
+}
+
+/// The Markdown options remembered in `config`, with the defaults for those never changed.
+pub fn markdown_options(config: &Config) -> MarkdownOptions {
+    let default = MarkdownOptions::default();
+    MarkdownOptions {
+        callouts: config.markdown_callouts.unwrap_or(default.callouts),
+        superscript: config.markdown_superscript.unwrap_or(default.superscript),
+        subscript: config.markdown_subscript.unwrap_or(default.subscript),
+        heading_ids: config.markdown_heading_ids.unwrap_or(default.heading_ids),
+    }
+}
+
+/// Remembers `options` in `config`.
+pub fn store_markdown_options(config: &mut Config, options: MarkdownOptions) {
+    config.markdown_callouts = Some(options.callouts);
+    config.markdown_superscript = Some(options.superscript);
+    config.markdown_subscript = Some(options.subscript);
+    config.markdown_heading_ids = Some(options.heading_ids);
 }
 
 pub fn theme_mode(preference: ThemePreference) -> ThemeMode {

@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-use super::{Decoration, DecorationKind, MarkdownState};
+use super::{CalloutKind, Decoration, DecorationKind, MarkdownState};
 use crate::buffer::Buffer;
 use crate::coords::{Bias, ByteOffset};
 use crate::selection::Selection;
@@ -21,22 +21,32 @@ pub struct SpanStyle {
     pub code: bool,
     pub link: bool,
     pub quote: bool,
+    /// The kind of the alert the quote is, for its accent colour; set with `quote`.
+    pub callout: Option<CalloutKind>,
     pub code_block: bool,
+    pub superscript: bool,
+    pub subscript: bool,
 }
 
 /// Which syntax a marker span belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MarkerKind {
-    /// `#`s with their spaces, a closing `#` sequence or a setext underline.
+    /// `#`s with their spaces, a closing `#` sequence, a setext underline or an attribute block (`{#id}`).
     Heading,
-    /// `*`, `_`, `**`, `__`, `~` or `~~` around emphasis, strong or strikethrough text.
+    /// `*`, `_`, `**`, `__`, `~` or `~~` around emphasis, strong or strikethrough text, and `^` or `~` around
+    /// superscript or subscript text.
     Emphasis,
     /// Backticks around inline code.
     Code,
-    /// `[`, `](destination)`, `<` or `>` of a link.
+    /// `[`, `](destination)`, `<` or `>` of a link, or `![` and `](source)` of an image.
     Link,
     /// `>` and the space after it.
     Quote,
+    /// An alert's tag, e.g. `[!NOTE]`, up to the end of its line. Never hidden: a renderer may show the kind's
+    /// [label](CalloutKind::label) in its place while the selection is off its line.
+    Callout {
+        kind: CalloutKind,
+    },
     ListBullet,
     ListNumber,
     TaskBox {
@@ -55,8 +65,8 @@ pub struct StyledSpan {
     pub style: SpanStyle,
     /// Set if the span is (part of) a syntax marker.
     pub marker: Option<MarkerKind>,
-    /// Live preview hides this marker: it takes no space and is not drawn. List bullets, numbers and task boxes
-    /// are never hidden; a renderer may draw them differently instead (e.g. `•` for `-`).
+    /// Live preview hides this marker: it takes no space and is not drawn. List bullets, numbers, task boxes and
+    /// alert tags are never hidden; a renderer may draw them differently instead (e.g. `•` for `-`).
     pub hidden: bool,
 }
 
@@ -168,6 +178,7 @@ fn style_line(
             d.kind,
             DecorationKind::Heading { .. }
                 | DecorationKind::BlockQuote
+                | DecorationKind::Callout { .. }
                 | DecorationKind::CodeBlock { .. }
         );
         // Blocks inside list items and quotes start after their markers, mid-line.
@@ -262,6 +273,9 @@ fn apply(kind: &DecorationKind, style: &mut SpanStyle) {
         DecorationKind::InlineCode => style.code = true,
         DecorationKind::Link { .. } => style.link = true,
         DecorationKind::BlockQuote => style.quote = true,
+        DecorationKind::Callout { kind } => style.callout = Some(*kind),
+        DecorationKind::Superscript => style.superscript = true,
+        DecorationKind::Subscript => style.subscript = true,
         DecorationKind::CodeBlock { .. } => style.code_block = true,
         DecorationKind::ListItem { .. }
         | DecorationKind::Task { .. }
@@ -272,12 +286,15 @@ fn apply(kind: &DecorationKind, style: &mut SpanStyle) {
 fn marker_kind(kind: &DecorationKind) -> MarkerKind {
     match kind {
         DecorationKind::Heading { .. } => MarkerKind::Heading,
-        DecorationKind::Strong | DecorationKind::Emphasis | DecorationKind::Strikethrough => {
-            MarkerKind::Emphasis
-        }
+        DecorationKind::Strong
+        | DecorationKind::Emphasis
+        | DecorationKind::Strikethrough
+        | DecorationKind::Superscript
+        | DecorationKind::Subscript => MarkerKind::Emphasis,
         DecorationKind::InlineCode => MarkerKind::Code,
         DecorationKind::Link { .. } => MarkerKind::Link,
         DecorationKind::BlockQuote => MarkerKind::Quote,
+        DecorationKind::Callout { kind } => MarkerKind::Callout { kind: *kind },
         DecorationKind::ListItem { ordered: false } => MarkerKind::ListBullet,
         DecorationKind::ListItem { ordered: true } => MarkerKind::ListNumber,
         DecorationKind::Task { checked } => MarkerKind::TaskBox { checked: *checked },
@@ -286,11 +303,14 @@ fn marker_kind(kind: &DecorationKind) -> MarkerKind {
     }
 }
 
-/// List bullets, numbers and task boxes stay in place: hiding them would shift the item text.
+/// List bullets, numbers and task boxes stay in place: hiding them would shift the item text. An alert's tag is
+/// shown as its label rather than hidden.
 fn hideable(kind: &DecorationKind) -> bool {
     !matches!(
         kind,
-        DecorationKind::ListItem { .. } | DecorationKind::Task { .. }
+        DecorationKind::ListItem { .. }
+            | DecorationKind::Task { .. }
+            | DecorationKind::Callout { .. }
     )
 }
 
@@ -310,9 +330,12 @@ fn reveals(
         DecorationKind::Strong
         | DecorationKind::Emphasis
         | DecorationKind::Strikethrough
+        | DecorationKind::Superscript
+        | DecorationKind::Subscript
         | DecorationKind::InlineCode
         | DecorationKind::Link { .. } => decoration.range.clone(),
         DecorationKind::BlockQuote
+        | DecorationKind::Callout { .. }
         | DecorationKind::ListItem { .. }
         | DecorationKind::Task { .. } => lines_of(marker),
         DecorationKind::Heading { .. }

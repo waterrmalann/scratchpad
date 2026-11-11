@@ -13,7 +13,9 @@ use gpui::{
     Bounds, Font, FontStyle, FontWeight, Hsla, PathBuilder, Pixels, Point, SharedString, TextRun,
     Window, WindowTextSystem, fill, font, point, px, quad, size, transparent_black,
 };
-use scratchpad_editor::markdown::{MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan};
+use scratchpad_editor::markdown::{
+    CalloutKind, MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan,
+};
 use scratchpad_editor::{Bias, Buffer, Selection};
 
 use super::geometry::{Glyph, Indents, LineGeometry, expand_tabs, set_span_width, unwrapped_x};
@@ -43,6 +45,13 @@ const INLINE_CODE_RADIUS: Pixels = px(3.);
 /// Quote text sits this far right of the quote's bar, at the normal text size.
 const QUOTE_INDENT: Pixels = px(18.);
 const QUOTE_BAR_WIDTH: Pixels = px(3.);
+/// Superscript and subscript text size, and how far their baseline moves up or down, in multiples
+/// of the line's text size.
+const SCRIPT_SCALE: f32 = 0.75;
+const SUPERSCRIPT_RISE: f32 = 0.33;
+const SUBSCRIPT_DROP: f32 = 0.15;
+/// Room after a callout's label, in multiples of the font size.
+const CALLOUT_LABEL_GAP: f32 = 0.5;
 /// Width of a bullet, and of a task box, with the space after it, in multiples of the font size.
 const BULLET_WIDTH: f32 = 1.15;
 const TASK_BOX_WIDTH: f32 = 1.6;
@@ -78,7 +87,8 @@ impl BaseStyle {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct LineKey {
     pub styled: StyledLine,
-    /// Draws list bullets and task boxes as shapes rather than as the characters typed.
+    /// Draws list bullets and task boxes as shapes, and a callout's tag as its label, rather than
+    /// as the characters typed.
     pub widgets: bool,
 }
 
@@ -97,10 +107,18 @@ impl LineKey {
             .pop()
             .unwrap_or_default();
         let line_start = buffer.line_start(line).0;
+        let line_end = buffer.line_end(line).0;
         let widgets = selection.is_some_and(|selection| {
-            !widgets(&styled).iter().any(|widget| {
-                selection.start().0 < line_start + widget.columns.end
-                    && selection.end().0 > line_start + widget.columns.start
+            !widgets(&styled).iter().any(|widget| match widget.kind {
+                // A callout's label shows while the selection is off its line, as the quote's
+                // `>` does: the tag is typed text the cursor may want to edit.
+                WidgetKind::Callout { .. } => {
+                    selection.start().0 <= line_end && selection.end().0 >= line_start
+                }
+                _ => {
+                    selection.start().0 < line_start + widget.columns.end
+                        && selection.end().0 > line_start + widget.columns.start
+                }
             })
         });
         Self { styled, widgets }
@@ -136,16 +154,23 @@ enum WidgetKind {
         checked: bool,
         column: usize,
     },
+    /// A callout's `[!TAG]`, drawn as the kind's label.
+    Callout {
+        kind: CalloutKind,
+    },
 }
 
-/// A list marker drawn as a shape in live preview.
+/// A list marker drawn as a shape, or a callout tag drawn as its label, in live preview.
 struct Widget {
     kind: WidgetKind,
     /// Buffer columns at first, display columns once the line is laid out.
     columns: Range<usize>,
+    /// A callout's label, shaped with the line.
+    label: Option<Arc<gpui::LineLayout>>,
 }
 
-/// The line's bullets and task boxes. A bullet followed by a task box is drawn as just the box.
+/// The line's bullets, task boxes and callout tags. A bullet followed by a task box is drawn as
+/// just the box.
 fn widgets(styled: &StyledLine) -> Vec<Widget> {
     let mut widgets: Vec<Widget> = Vec::new();
     for span in &styled.spans {
@@ -155,6 +180,7 @@ fn widgets(styled: &StyledLine) -> Vec<Widget> {
                 checked,
                 column: span.columns.start,
             },
+            Some(MarkerKind::Callout { kind }) => WidgetKind::Callout { kind },
             _ => continue,
         };
         match widgets.last_mut() {
@@ -167,6 +193,7 @@ fn widgets(styled: &StyledLine) -> Vec<Widget> {
             _ => widgets.push(Widget {
                 kind,
                 columns: span.columns.clone(),
+                label: None,
             }),
         }
     }
@@ -181,6 +208,8 @@ struct Run {
     marker: bool,
     font: Font,
     size: Pixels,
+    /// How far the baseline is moved down (up if negative): superscript and subscript.
+    shift: Pixels,
     color: Hsla,
 }
 
@@ -201,6 +230,14 @@ enum Shape {
         /// Buffer column of the box's `[`.
         column: usize,
     },
+    /// Text that is not in the buffer: a callout's label. `bounds` is its row's box.
+    Label {
+        bounds: Bounds<Pixels>,
+        baseline: Pixels,
+        shaped: Arc<gpui::LineLayout>,
+        font_size: Pixels,
+        color: Hsla,
+    },
 }
 
 impl Shape {
@@ -214,7 +251,9 @@ impl Shape {
 
     fn bounds(&self) -> Bounds<Pixels> {
         match self {
-            Shape::Rect { bounds, .. } | Shape::TaskBox { bounds, .. } => *bounds,
+            Shape::Rect { bounds, .. }
+            | Shape::TaskBox { bounds, .. }
+            | Shape::Label { bounds, .. } => *bounds,
         }
     }
 
@@ -255,6 +294,22 @@ impl Shape {
                     }
                 }
             }
+            Shape::Label {
+                bounds,
+                baseline,
+                ref shaped,
+                font_size,
+                color,
+            } => {
+                let origin = bounds.origin + origin + point(px(0.), baseline);
+                for run in &shaped.runs {
+                    for glyph in &run.glyphs {
+                        let at = origin + point(glyph.position.x, px(0.));
+                        // A glyph that fails to rasterise is skipped rather than failing the frame.
+                        let _ = window.paint_glyph(at, run.font_id, glyph.id, font_size, color);
+                    }
+                }
+            }
         }
     }
 }
@@ -267,6 +322,8 @@ struct Segment {
     /// Index of the segment's first glyph in the line's geometry.
     first_glyph: usize,
     font_size: Pixels,
+    /// How far its baseline is moved down (up if negative).
+    shift: Pixels,
 }
 
 /// Font and spacing of a whole line, from its block style.
@@ -362,6 +419,12 @@ impl LineLayout {
             let scale = match widget.kind {
                 WidgetKind::Bullet => BULLET_WIDTH,
                 WidgetKind::TaskBox { .. } => TASK_BOX_WIDTH,
+                WidgetKind::Callout { kind } => {
+                    let label = callout_label(kind, &line_font, text_system);
+                    let scale = label.width / line_font.size + CALLOUT_LABEL_GAP;
+                    widget.label = Some(label);
+                    scale
+                }
             };
             let span_width = (line_font.size * scale).round();
             width = set_span_width(&mut glyphs, widget.columns.clone(), span_width, width);
@@ -536,6 +599,18 @@ impl LineLayout {
                         column,
                     }
                 }
+                WidgetKind::Callout { kind } => {
+                    let Some(shaped) = widget.label.clone() else {
+                        continue;
+                    };
+                    Shape::Label {
+                        bounds: Bounds::new(point(x, top), size(shaped.width, self.line_height)),
+                        baseline,
+                        shaped,
+                        font_size,
+                        color: theme.callouts.get(kind),
+                    }
+                }
             });
         }
 
@@ -551,9 +626,10 @@ impl LineLayout {
         }
         if key.styled.style.quote {
             let bounds = Bounds::new(point(px(0.), px(0.)), size(QUOTE_BAR_WIDTH, self.height()));
+            let callout = key.styled.style.callout;
             self.below.push(Shape::Rect {
                 bounds,
-                color: theme.border,
+                color: callout.map_or(theme.border, |kind| theme.callouts.get(kind)),
                 radius: QUOTE_BAR_WIDTH / 2.,
             });
         }
@@ -745,7 +821,8 @@ impl LineLayout {
                 {
                     let glyph = &run.glyphs[glyph_ix - run_glyphs.start];
                     let color = self.color_at(segment.column + glyph.index);
-                    // Bullets and task boxes are transparent: shapes are drawn in their place.
+                    // Bullets, task boxes and callout tags are transparent: shapes are drawn in
+                    // their place.
                     if color.a == 0. {
                         continue;
                     }
@@ -754,7 +831,7 @@ impl LineLayout {
                     }
                     let origin = point(
                         origin.x + self.geometry.glyph_x(row, glyph_ix),
-                        origin.y + self.row_top(row) + baseline,
+                        origin.y + self.row_top(row) + baseline + segment.shift,
                     );
                     // A glyph that fails to rasterise is skipped rather than failing the frame.
                     let _ = if glyph.is_emoji {
@@ -828,21 +905,32 @@ fn runs(key: &LineKey, widgets: &[Widget], line_font: &LineFont, base: &BaseStyl
         if style.italic {
             font.style = FontStyle::Italic;
         }
-        let size = if style.code && !style.code_block {
+        let mut size = if style.code && !style.code_block {
             line_font.size * CODE_SCALE
         } else {
             line_font.size
         };
+        let shift = if style.superscript {
+            -(line_font.size * SUPERSCRIPT_RISE).round()
+        } else if style.subscript {
+            (line_font.size * SUBSCRIPT_DROP).round()
+        } else {
+            px(0.)
+        };
+        if style.superscript || style.subscript {
+            size *= SCRIPT_SCALE;
+        }
         let in_widget = widgets
             .iter()
             .any(|widget| widget.columns.contains(&span.columns.start));
-        // Markers, quotes and done tasks recede; the text of the note stays in front.
+        // Markers, quotes and done tasks recede; the text of the note stays in front, also in
+        // callouts, which are there to be read.
         let color = if in_widget {
             transparent_black()
         } else if span.marker.is_some()
             || after_checked_box
             || style.strikethrough
-            || style.quote
+            || style.quote && style.callout.is_none()
             || style.heading == 6
         {
             theme.muted
@@ -858,6 +946,7 @@ fn runs(key: &LineKey, widgets: &[Widget], line_font: &LineFont, base: &BaseStyl
             marker: span.marker.is_some(),
             font,
             size,
+            shift,
             color,
         });
     }
@@ -876,8 +965,8 @@ fn shape_runs(
     let mut glyphs = Vec::new();
     let mut width = px(0.);
     // One segment per font: GPUI 0.2.2's `layout_line` gives a run the previous run's font when
-    // only the font changes between them, which would lose bold and italic.
-    for group in runs.chunk_by(|a, b| a.size == b.size && a.font == b.font) {
+    // only the font changes between them, which would lose bold and italic. And one per baseline.
+    for group in runs.chunk_by(|a, b| a.size == b.size && a.font == b.font && a.shift == b.shift) {
         let columns = group[0].columns.start..group[group.len() - 1].columns.end;
         let text_runs: Vec<TextRun> = group
             .iter()
@@ -909,9 +998,31 @@ fn shape_runs(
             column: columns.start,
             first_glyph,
             font_size: size,
+            shift: group[0].shift,
         });
     }
     (segments, glyphs, width)
+}
+
+/// A callout's label, e.g. `Note`, in the line's font made semibold.
+fn callout_label(
+    kind: CalloutKind,
+    line_font: &LineFont,
+    text_system: &WindowTextSystem,
+) -> Arc<gpui::LineLayout> {
+    let label = kind.label();
+    let run = TextRun {
+        len: label.len(),
+        font: Font {
+            weight: FontWeight::SEMIBOLD,
+            ..line_font.font.clone()
+        },
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    text_system.layout_line(label, line_font.size, &[run], None)
 }
 
 /// Display ranges of consecutive runs for which `include` holds.

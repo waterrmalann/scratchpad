@@ -2,12 +2,16 @@
 
 use std::ops::Range;
 
-use scratchpad_editor::markdown::{Decoration, DecorationKind, MarkdownState};
+use scratchpad_editor::markdown::{Decoration, DecorationKind, MarkdownOptions, MarkdownState};
 use scratchpad_editor::{Buffer, ByteOffset};
 
 fn decorations(text: &str) -> Vec<Decoration> {
+    decorations_with(text, MarkdownOptions::default())
+}
+
+fn decorations_with(text: &str, options: MarkdownOptions) -> Vec<Decoration> {
     let buffer = Buffer::from_text(text);
-    MarkdownState::new(&buffer).decorations(&buffer, ByteOffset(0)..buffer.end())
+    MarkdownState::with_options(&buffer, options).decorations(&buffer, ByteOffset(0)..buffer.end())
 }
 
 /// A decoration described by the text its ranges cover, which pins down exact byte ranges while staying
@@ -15,9 +19,13 @@ fn decorations(text: &str) -> Vec<Decoration> {
 type Described = (String, String, String, Vec<String>);
 
 fn describe(text: &str) -> Vec<Described> {
+    describe_with(text, MarkdownOptions::default())
+}
+
+fn describe_with(text: &str, options: MarkdownOptions) -> Vec<Described> {
     let buffer = Buffer::from_text(text);
     let slice = |r: &Range<ByteOffset>| buffer.text_for_range(r.clone()).into_owned();
-    decorations(text)
+    decorations_with(text, options)
         .iter()
         .map(|d| {
             let kind = match &d.kind {
@@ -114,6 +122,7 @@ fn links_mark_brackets_and_destination() {
                 &["<", ">"]
             ),
             d("Link e", "[](e)", "", &["[", "](e)"]),
+            d("Link i.png", "![img](i.png)", "img", &["![", "](i.png)"]),
         ]
     );
 }
@@ -274,11 +283,10 @@ fn malformed_markdown_degrades_to_plain_text() {
 }
 
 #[test]
-fn escapes_html_images_and_tables_stay_plain_text() {
+fn escapes_html_and_tables_stay_plain_text() {
     for text in [
         r"\*not emphasis\* \`not code\` \[not](a link)",
         "<!-- *hidden* -->",
-        "![alt](pic.png)",
         "| a | b |\n| --- | --- |\n| 1 | 2 |",
         "bare a@b.c www.x.y http://plain.url",
     ] {
@@ -365,5 +373,167 @@ fn a_task_whose_text_is_a_setext_heading_keeps_document_order() {
             d("Task false", "[ ] a\n  ---", "a\n  ---", &["[ ] "]),
             d("H2", "a\n  ---", "a", &["---"]),
         ]
+    );
+}
+
+#[test]
+fn inline_images_are_marked_like_links() {
+    assert_eq!(
+        describe(r#"![alt *x*](a.png "t") [![i](b.png)](https://c.d) ![](e) ![r][ref]"#),
+        [
+            d(
+                "Link a.png",
+                r#"![alt *x*](a.png "t")"#,
+                "alt *x*",
+                &["![", r#"](a.png "t")"#]
+            ),
+            d("Emphasis", "*x*", "x", &["*", "*"]),
+            d(
+                "Link https://c.d",
+                "[![i](b.png)](https://c.d)",
+                "![i](b.png)",
+                &["[", "](https://c.d)"]
+            ),
+            d("Link b.png", "![i](b.png)", "i", &["![", "](b.png)"]),
+            d("Link e", "![](e)", "", &["![", "](e)"]),
+        ]
+    );
+    // Opened like a link: the destination is what Ctrl+click is given, to check like any other.
+    let buffer = Buffer::from_text("![x](https://a.b/p.png)");
+    let mut markdown = MarkdownState::new(&buffer);
+    assert_eq!(
+        markdown.link_at(&buffer, ByteOffset(2)).as_deref(),
+        Some("https://a.b/p.png")
+    );
+}
+
+#[test]
+fn callouts_are_block_quotes_with_a_kind_and_their_tag_as_marker() {
+    let note = "> [!NOTE]\n> Body *b*\n\n>[!tip]  \n> x\n\n> [!WARNING] title\n\n> > [!CAUTION]";
+    assert_eq!(
+        describe(note),
+        [
+            d(
+                "BlockQuote",
+                "> [!NOTE]\n> Body *b*",
+                "[!NOTE]\n> Body *b*",
+                &["> ", "> "]
+            ),
+            d(
+                "Callout { kind: Note }",
+                "> [!NOTE]\n> Body *b*",
+                "> Body *b*",
+                &["[!NOTE]"]
+            ),
+            d("Emphasis", "*b*", "b", &["*", "*"]),
+            d(
+                "BlockQuote",
+                ">[!tip]  \n> x",
+                "[!tip]  \n> x",
+                &[">", "> "]
+            ),
+            d(
+                "Callout { kind: Tip }",
+                ">[!tip]  \n> x",
+                "> x",
+                &["[!tip]  "]
+            ),
+            // Text after the tag makes it an ordinary quote, as on GitHub.
+            d(
+                "BlockQuote",
+                "> [!WARNING] title",
+                "[!WARNING] title",
+                &["> "]
+            ),
+            d("BlockQuote", "> > [!CAUTION]", "> [!CAUTION]", &["> "]),
+            d("BlockQuote", "> [!CAUTION]", "[!CAUTION]", &["> "]),
+            d(
+                "Callout { kind: Caution }",
+                "> [!CAUTION]",
+                "",
+                &["[!CAUTION]"]
+            ),
+        ]
+    );
+    // Turned off, they are ordinary quotes.
+    let off = MarkdownOptions {
+        callouts: false,
+        ..MarkdownOptions::default()
+    };
+    assert!(
+        decorations_with(note, off)
+            .iter()
+            .all(|d| !matches!(d.kind, DecorationKind::Callout { .. }))
+    );
+}
+
+#[test]
+fn superscript_and_subscript_with_their_options() {
+    let text = "^a^ ~b~ ~~c~~ ^^d^^ ^^^e^^^";
+    assert_eq!(
+        describe_with(text, MarkdownOptions::ALL),
+        [
+            d("Superscript", "^a^", "a", &["^", "^"]),
+            d("Subscript", "~b~", "b", &["~", "~"]),
+            d("Strikethrough", "~~c~~", "c", &["~~", "~~"]),
+            d("Superscript", "^^d^^", "d", &["^^", "^^"]),
+            d("Superscript", "^^^e^^^", "^^e^^", &["^", "^"]),
+            d("Superscript", "^^e^^", "e", &["^^", "^^"]),
+        ]
+    );
+    // Off (the default), `^` is text and a single `~` is strikethrough.
+    assert_eq!(
+        describe(text),
+        [
+            d("Strikethrough", "~b~", "b", &["~", "~"]),
+            d("Strikethrough", "~~c~~", "c", &["~~", "~~"]),
+        ]
+    );
+}
+
+#[test]
+fn heading_attribute_blocks_are_markers_with_heading_ids() {
+    // An escaped `}` is not the block's end, but an escaped `{` is text before it, as pulldown-cmark reads them.
+    let text = "# Title {#id .c}\n## T ## {#x}  \n# {}\n# a {b\\}\n# c \\{d}\nSetext {#s}\n===";
+    let ids = MarkdownOptions {
+        heading_ids: true,
+        ..MarkdownOptions::default()
+    };
+    assert_eq!(
+        describe_with(text, ids),
+        [
+            d("H1", "# Title {#id .c}", "Title", &["# ", " {#id .c}"]),
+            d("H2", "## T ## {#x}  ", "T", &["## ", " ##", " {#x}  "]),
+            d("H1", "# {}", "", &["# ", "{}"]),
+            d("H1", r"# a {b\}", r"a {b\}", &["# "]),
+            d("H1", r"# c \{d}", r"c \", &["# ", "{d}"]),
+            d("H1", "Setext {#s}\n===", "Setext", &[" {#s}", "==="]),
+        ]
+    );
+    // Off (the default), the block is heading text.
+    assert_eq!(
+        describe("# Title {#id}"),
+        [d("H1", "# Title {#id}", "Title {#id}", &["# "])]
+    );
+}
+
+#[test]
+fn changing_the_options_reparses_lazily() {
+    let buffer = Buffer::from_text("^a^\n\n~b~");
+    let mut markdown = MarkdownState::new(&buffer);
+    let kinds = |markdown: &mut MarkdownState| -> Vec<DecorationKind> {
+        markdown
+            .decorations(&buffer, ByteOffset(0)..buffer.end())
+            .into_iter()
+            .map(|d| d.kind)
+            .collect()
+    };
+    assert_eq!(kinds(&mut markdown), [DecorationKind::Strikethrough]);
+    assert!(!markdown.set_options(MarkdownOptions::default()));
+    assert!(markdown.set_options(MarkdownOptions::ALL));
+    assert_eq!(markdown.options(), MarkdownOptions::ALL);
+    assert_eq!(
+        kinds(&mut markdown),
+        [DecorationKind::Superscript, DecorationKind::Subscript]
     );
 }

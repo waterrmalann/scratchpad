@@ -5,6 +5,7 @@
 //! [`ThemeMode`] preference and, for [`ThemeMode::System`], the OS appearance.
 
 use gpui::{App, Global, Hsla, Pixels, Rgba, WindowAppearance, px, rgb, rgba};
+use scratchpad_editor::markdown::CalloutKind;
 
 /// The user's theme preference.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -53,6 +54,31 @@ pub struct Theme {
     pub selection: Hsla,
     /// The wavy underline of misspelled words, red as everywhere else.
     pub misspelling: Hsla,
+    /// Accents of Markdown callouts (GFM alerts), for their bar and label: blue, green, purple,
+    /// amber and red, as on GitHub, and readable as text on the page.
+    pub callouts: CalloutColors,
+}
+
+/// One accent per [`CalloutKind`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CalloutColors {
+    pub note: Hsla,
+    pub tip: Hsla,
+    pub important: Hsla,
+    pub warning: Hsla,
+    pub caution: Hsla,
+}
+
+impl CalloutColors {
+    pub fn get(&self, kind: CalloutKind) -> Hsla {
+        match kind {
+            CalloutKind::Note => self.note,
+            CalloutKind::Tip => self.tip,
+            CalloutKind::Important => self.important,
+            CalloutKind::Warning => self.warning,
+            CalloutKind::Caution => self.caution,
+        }
+    }
 }
 
 impl Theme {
@@ -67,6 +93,13 @@ impl Theme {
             accent: color(rgb(0xd99a00)),
             selection: color(rgba(0xf2c14e66)),
             misspelling: color(rgb(0xd93025)),
+            callouts: CalloutColors {
+                note: color(rgb(0x0969da)),
+                tip: color(rgb(0x1a7f37)),
+                important: color(rgb(0x8250df)),
+                warning: color(rgb(0x8a5d00)),
+                caution: color(rgb(0xcf222e)),
+            },
         }
     }
 
@@ -81,6 +114,13 @@ impl Theme {
             accent: color(rgb(0xf2b32a)),
             selection: color(rgba(0xf2b32a4d)),
             misspelling: color(rgb(0xff6b5f)),
+            callouts: CalloutColors {
+                note: color(rgb(0x4493f8)),
+                tip: color(rgb(0x3fb950)),
+                important: color(rgb(0xab7df8)),
+                warning: color(rgb(0xd29922)),
+                caution: color(rgb(0xf85149)),
+            },
         }
     }
 
@@ -240,6 +280,20 @@ mod tests {
                     "{:?} muted contrast {muted}",
                     theme.appearance
                 );
+                for kind in [
+                    CalloutKind::Note,
+                    CalloutKind::Tip,
+                    CalloutKind::Important,
+                    CalloutKind::Warning,
+                    CalloutKind::Caution,
+                ] {
+                    let callout = contrast(theme.callouts.get(kind), bg);
+                    assert!(
+                        callout >= 4.5,
+                        "{:?} {kind:?} callout contrast {callout}",
+                        theme.appearance
+                    );
+                }
             }
         }
     }

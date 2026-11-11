@@ -19,8 +19,8 @@ use gpui::{
 
 use crate::actions::editor::{Copy, Cut, Delete, Paste, Redo, SelectAll, ToggleSourceMode, Undo};
 use crate::actions::view::{
-    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleSpellCheck, ToggleWordWrap, ZoomIn,
-    ZoomOut,
+    ResetZoom, ToggleAutoReplace, ToggleAutocorrect, ToggleCallouts, ToggleHeadingIds,
+    ToggleSpellCheck, ToggleSubscript, ToggleSuperscript, ToggleWordWrap, ZoomIn, ZoomOut,
 };
 use crate::actions::{
     NewNote, OpenFile, OpenSettings, Quit, SaveAs, SaveNote, ToggleSidebar, ToggleStatusBar,
@@ -86,6 +86,17 @@ fn item(label: &'static str, action: impl Action) -> Item {
     Item {
         label,
         command: Command::Action(Box::new(action)),
+        enabled: true,
+        checked: None,
+        on_note: false,
+    }
+}
+
+/// An item that opens `entries` beside the menu.
+fn submenu(label: &'static str, entries: Vec<Entry>) -> Item {
+    Item {
+        label,
+        command: Command::Submenu(entries),
         enabled: true,
         checked: None,
         on_note: false,
@@ -261,17 +272,14 @@ impl MenuBar {
                 ]
             }
             _ => vec![
-                Item {
-                    label: "Zoom",
-                    command: Command::Submenu(vec![
+                submenu(
+                    "Zoom",
+                    vec![
                         item("Zoom in", ZoomIn).into(),
                         item("Zoom out", ZoomOut).into(),
                         item("Restore default zoom", ResetZoom).into(),
-                    ]),
-                    enabled: true,
-                    checked: None,
-                    on_note: false,
-                }
+                    ],
+                )
                 .into(),
                 item("Status bar", ToggleStatusBar)
                     .checked(!settings::get(cx).status_bar_hidden)
@@ -290,6 +298,27 @@ impl MenuBar {
                 item("Auto-replace symbols", ToggleAutoReplace)
                     .checked(self.editor.read(cx).auto_replace())
                     .into(),
+                {
+                    let options = self.editor.read(cx).markdown_options();
+                    submenu(
+                        "Markdown features",
+                        vec![
+                            item("Callouts", ToggleCallouts)
+                                .checked(options.callouts)
+                                .into(),
+                            item("Superscript", ToggleSuperscript)
+                                .checked(options.superscript)
+                                .into(),
+                            item("Subscript", ToggleSubscript)
+                                .checked(options.subscript)
+                                .into(),
+                            item("Heading IDs", ToggleHeadingIds)
+                                .checked(options.heading_ids)
+                                .into(),
+                        ],
+                    )
+                    .into()
+                },
                 edit("Source mode", ToggleSourceMode)
                     .checked(self.editor.read(cx).source_mode())
                     .into(),
