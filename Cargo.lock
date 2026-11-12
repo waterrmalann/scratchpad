@@ -5087,7 +5087,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scratchpad"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "dirs 7.0.0",
@@ -5106,7 +5106,7 @@ dependencies = [
 
 [[package]]
 name = "scratchpad-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "criterion",
@@ -5123,7 +5123,7 @@ dependencies = [
 
 [[package]]
 name = "scratchpad-editor"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "criterion",
  "emojis",
@@ -5135,7 +5135,7 @@ dependencies = [
 
 [[package]]
 name = "scratchpad-spell"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "flume",
  "spellbook",
