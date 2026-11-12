@@ -129,7 +129,16 @@ A note with a 200-row, 3-column table with bold, emphasis, code and escaped pipe
 The whole table is one region, so a keystroke in it reparses all of it; no grid is laid out while
 the cursor is in the table. Measuring a grid also shapes each row once.
 
+## Markdown extensions (ADR 0190)
+
+Highlights and emoji shortcodes (on by default) cost one more pass over each text run; a run without
+`=` or `:` allocates nothing. Release, `cargo bench -p scratchpad-editor -- markdown`, 2026-11-12,
+before → after: 1 MB of prose 12.6 → 13.0 ms, the mixed 1 MB document 31.0 → 32.8 ms, two
+keystrokes in 10 MB 36 → 38 µs, styling 50 lines 29 → 30 µs. With every option on, 1 MB dense with
+highlights, math and shortcodes parses in 30.4 ms and 50 such lines style in 95 µs.
+
 ## Binary
 
 `target/release/scratchpad.exe` is 8.0 MB (icon and version resource ~12 KB); the MSI is ~2.9 MB
-(release 1.0.0, measured 2026-11-11).
+(release 1.0.0, measured 2026-11-11). The highlights, math and emoji shortcodes of ADR 0190 add
+113 KB (8,490,496 → 8,606,208 bytes): the shortcode table and the new code.

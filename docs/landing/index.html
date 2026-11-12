@@ -112,6 +112,40 @@
       </div>
     </section>
 
+    <section id="markdown">
+      <h2>Markdown from GitHub and Obsidian</h2>
+      <p class="section-lead">
+        Notes pasted from a README, a wiki or a vault look the way they did there. The file keeps
+        exactly what you typed; only the way it is drawn changes.
+      </p>
+      <div class="feature-grid">
+        <div class="feature">
+          <h3>Tables</h3>
+          <p>GitHub tables are drawn as an aligned grid, with a bold header, column lines and each column aligned as its <code>:--:</code> row says. With the caret in a table it shows as typed, ready to edit. Tables over 500 lines, and grids wider than the window with word wrap on, stay as typed.</p>
+        </div>
+        <div class="feature">
+          <h3>Callouts</h3>
+          <p>GitHub alerts such as <code>&gt; [!NOTE]</code>, <code>[!TIP]</code> and <code>[!WARNING]</code> get a coloured bar and a label in place of the tag.</p>
+        </div>
+        <div class="feature">
+          <h3>Wikilinks</h3>
+          <p><code>[[Page]]</code> and <code>[[Page|label]]</code> link to a note in the same folder. <kbd>Ctrl</kbd>+click opens it, or creates it if it is not there yet; links to missing pages are dimmer, with a dashed underline.</p>
+        </div>
+        <div class="feature">
+          <h3>Links without the brackets</h3>
+          <p>Bare <code>https://</code>, <code>www.</code> and e-mail addresses are links, and <kbd>Ctrl</kbd>+click opens them. Images look and open like links; nothing is downloaded.</p>
+        </div>
+        <div class="feature">
+          <h3>Highlights, emoji and math</h3>
+          <p><code>==text==</code> gets a highlighter's background, and <code>:smile:</code> shows as &#x1F604; until the caret touches it. Math between <code>$</code> or <code>$$</code> is set in its own font and colour, not typeset.</p>
+        </div>
+        <div class="feature">
+          <h3>Markdown Extensions menu</h3>
+          <p>View &gt; Markdown Extensions switches each one and remembers it. Callouts, wikilinks, highlights and emoji are on; superscript (<code>^x^</code>), subscript (<code>~x~</code>), heading IDs (<code>{#id}</code>) and math start off. Tables and links are always on.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="how">
       <h2>Your notes are just files</h2>
       <ol>
@@ -130,7 +164,7 @@
         <li><strong>Incremental Markdown parsing.</strong> An edit re-parses only the blocks around it.</li>
         <li><strong>Virtualised rendering.</strong> Only visible lines are laid out, so text appears about 4.5 ms after a keystroke (median), even in a 10 MB note.</li>
         <li><strong>Atomic saves.</strong> Each save writes a temporary file, flushes it and renames it over the note, so a crash never leaves a half-written file.</li>
-        <li><strong>Tested and written down.</strong> Over 700 automated tests, including end-to-end tests that drive the real UI headlessly, and <a href="https://github.com/waterrmalann/scratchpad/tree/main/docs/adrs">70 decision records</a> explaining why it works the way it does.</li>
+        <li><strong>Tested and written down.</strong> Over 800 automated tests, including end-to-end tests that drive the real UI headlessly, and <a href="https://github.com/waterrmalann/scratchpad/tree/main/docs/adrs">75 decision records</a> explaining why it works the way it does.</li>
       </ul>
     </section>
 
