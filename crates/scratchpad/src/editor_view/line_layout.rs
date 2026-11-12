@@ -551,6 +551,8 @@ impl LineLayout {
             width = set_span_width(&mut glyphs, columns, indent.round(), width);
         }
 
+        // Where a grid row's table starts, before indents (see `table::position`).
+        let mut grid_left = px(0.);
         if let Some(grid) = &key.grid {
             // A table in a list item: indentation lines its later rows up with the first, which has the
             // bullet, as above.
@@ -562,7 +564,10 @@ impl LineLayout {
                 let indent = line_font.size * BULLET_WIDTH / 2. * spaces as f32;
                 width = set_span_width(&mut glyphs, 0..display_of(spaces), indent.round(), width);
             }
-            width = table::position(&key.styled, &display, &mut glyphs, width, grid);
+            let (new_width, left) =
+                table::position(&key.styled, &display, &mut glyphs, width, grid);
+            width = new_width;
+            grid_left = left;
         }
 
         let mut indents = Indents::default();
@@ -594,6 +599,8 @@ impl LineLayout {
             indents.first -= markers.min(base.hang_room);
         }
 
+        // A grid row is never wrapped, so its table starts `grid_left` past the first row's indent.
+        let grid_left = indents.first + grid_left;
         let font_id = text_system.resolve_font(&line_font.font);
         let mut layout = Self {
             segments,
@@ -618,7 +625,7 @@ impl LineLayout {
             ascent: text_system.ascent(font_id, line_font.size),
             descent: -text_system.descent(font_id, line_font.size),
         };
-        layout.add_shapes(&display, &runs, &widgets, key, base);
+        layout.add_shapes(&display, &runs, &widgets, key, base, grid_left);
         layout
     }
 
@@ -645,6 +652,7 @@ impl LineLayout {
         widgets: &[Widget],
         key: &LineKey,
         base: &BaseStyle,
+        grid_left: Pixels,
     ) {
         let theme = &base.theme;
         let font_size = self.font_size;
@@ -793,8 +801,7 @@ impl LineLayout {
             self.above.push(Shape::rect(bounds, theme.border));
         }
         if let Some(grid) = &key.grid {
-            let left = self.geometry.x_for(table::row_start(&key.styled));
-            for (bounds, color) in table::shapes(grid, left, self.line_height, theme) {
+            for (bounds, color) in table::shapes(grid, grid_left, self.line_height, theme) {
                 self.below.push(Shape::rect(bounds, color));
             }
         }

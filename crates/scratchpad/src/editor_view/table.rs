@@ -279,14 +279,15 @@ pub(super) fn row_start(styled: &StyledLine) -> usize {
 
 /// Moves the cells of a row laid out as part of `grid` to their columns by widening the room before each
 /// cell's text (`glyphs` of the unwrapped line `width` wide), and makes the row as wide as the grid. Returns
-/// the new width.
+/// the new width and the x the grid starts at. That x is read before the row is widened: a row with no text
+/// shown after its start (the delimiter row, drawn as a rule) has no glyph there to read it from afterwards.
 pub(super) fn position(
     styled: &StyledLine,
     display: &str,
     glyphs: &mut [Glyph],
     mut width: Pixels,
     grid: &GridKey,
-) -> Pixels {
+) -> (Pixels, Pixels) {
     let columns = &grid.columns;
     let start = row_start(styled);
     let left = unwrapped_x(glyphs, start, width);
@@ -305,7 +306,7 @@ pub(super) fn position(
         at = text.end;
     }
     let room = (left + columns.width() - unwrapped_x(glyphs, at, width)).max(px(0.));
-    set_span_width(glyphs, at..display.len(), room, width)
+    (set_span_width(glyphs, at..display.len(), room, width), left)
 }
 
 /// The rectangles drawn under a grid row whose table starts at `left` in a line `height` tall: the header's
@@ -343,4 +344,69 @@ pub(super) fn shapes(
         ));
     }
     shapes
+}
+
+#[cfg(test)]
+mod tests {
+    use scratchpad_editor::markdown::MarkdownState;
+    use scratchpad_editor::{Buffer, ByteOffset, Selection};
+
+    use super::*;
+
+    /// The rows of `text`'s table with the cursor off it, as live preview styles them.
+    fn styled(text: &str) -> Vec<StyledLine> {
+        let buffer = Buffer::from_text(text);
+        let mut markdown = MarkdownState::new(&buffer);
+        let away = Some(Selection::cursor(ByteOffset(buffer.len())));
+        markdown.styled_lines(&buffer, 0..buffer.line_count(), away)
+    }
+
+    /// The delimiter row shows no text, so its widened row has no glyph to read the grid's left edge from;
+    /// its rule and column lines once started a whole grid width to the right of the table.
+    #[test]
+    fn a_rows_grid_starts_where_its_text_starts_even_with_no_text_shown() {
+        let columns = Arc::new(Columns::new(
+            vec![px(30.), px(40.)],
+            vec![TableAlignment::None; 2],
+            px(15.),
+        ));
+        // A quote's `>` is hidden too; the line layout adds the quote's indent to the grid's left edge.
+        for prefix in ["", "> "] {
+            let text = format!(
+                "{prefix}| a | b |
+{prefix}|---|---|
+{prefix}| 1 | 2 |
+
+after"
+            );
+            let lines = styled(&text);
+            let delimiter = &lines[1];
+            let display: String = delimiter
+                .spans
+                .iter()
+                .filter(|span| !span.hidden)
+                .map(|span| &text.lines().nth(1).unwrap()[span.columns.clone()])
+                .collect();
+            // 9 px a char; the hidden pipes and dashes have no glyphs.
+            let mut glyphs: Vec<Glyph> = (0..display.len())
+                .map(|column| Glyph {
+                    column,
+                    x: px(9.) * column as f32,
+                })
+                .collect();
+            let width = px(9.) * display.len() as f32;
+            let grid = GridKey {
+                row: TableRowKind::Delimiter,
+                columns: columns.clone(),
+            };
+            let (new_width, grid_left) = position(delimiter, &display, &mut glyphs, width, &grid);
+            assert_eq!(grid_left, px(0.), "{prefix:?}");
+            assert_eq!(new_width, columns.width(), "{prefix:?}");
+            // What painting used to read: the widened row's end, a grid width too far right.
+            assert_eq!(
+                unwrapped_x(&glyphs, row_start(delimiter), new_width),
+                columns.width()
+            );
+        }
+    }
 }
