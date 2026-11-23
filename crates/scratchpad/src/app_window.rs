@@ -191,6 +191,17 @@ impl AppWindow {
                         this.hide_sidebar_overlay(window, cx);
                     }
                 }
+                // Go to the match, not just to the note.
+                SidebarEvent::HitOpened => {
+                    let notes = this.notes.read(cx);
+                    if notes.is_searching()
+                        && let Selection::Note(path) = notes.selection().clone()
+                    {
+                        let query = notes.query().to_owned();
+                        this.session
+                            .update(cx, |session, cx| session.reveal_in(&path, &query, cx));
+                    }
+                }
             }),
             // Clicking the note, Escape in the search field, Ctrl+N...: the user is done with
             // the sidebar. Another window becoming active (e.g. the delete confirmation) is not.

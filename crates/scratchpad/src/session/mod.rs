@@ -193,6 +193,8 @@ pub struct Session {
     /// Watches the open file from outside the notes folder.
     file_watcher: Option<Task<()>>,
     save_as: Option<SaveAs>,
+    /// A note being opened from a search hit, and the query to select in it once it is read.
+    reveal: Option<(PathBuf, String)>,
     _find_recovered: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -244,6 +246,7 @@ impl Session {
             watcher,
             file_watcher: None,
             save_as: None,
+            reveal: None,
             _find_recovered: find_recovered,
             _subscriptions: subscriptions,
         }
@@ -269,6 +272,26 @@ impl Session {
     /// Calls `callback` once, when the first note opened is in the editor.
     pub fn on_first_load(&mut self, callback: impl FnOnce() + 'static) {
         self.first_load = Some(Box::new(callback));
+    }
+
+    /// Selects the first occurrence of `query` in the note at `path`: now if it is open, or
+    /// once it is read if it is being opened. A search hit chosen in the sidebar leads to the
+    /// match, not just to the note.
+    pub fn reveal_in(&mut self, path: &Path, query: &str, cx: &mut Context<Self>) {
+        let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
+        if query.is_empty() {
+            return;
+        }
+        match &self.doc.target {
+            Target::Note(open) if open == path => {
+                self.editor
+                    .update(cx, |editor, cx| editor.select_first_occurrence(&query, cx));
+            }
+            Target::Loading(loading) if loading == path => {
+                self.reveal = Some((path.to_owned(), query));
+            }
+            _ => {}
+        }
     }
 
     /// The decisions waiting for the user.
@@ -347,6 +370,7 @@ impl Session {
             ..Document::new(Target::Loading(path.clone()))
         };
         self.save_as = None;
+        self.reveal = None;
         self.watch_file(external.then_some(&path), cx);
         self.editor
             .update(cx, |editor, cx| editor.set_read_only(true, cx));
@@ -392,6 +416,10 @@ impl Session {
                     .take_if(|r| r.into_note && r.offer.note_path == path)
                 {
                     self.apply_restore(restore, cx);
+                }
+                if let Some((_, query)) = self.reveal.take().filter(|(p, _)| *p == path) {
+                    self.editor
+                        .update(cx, |editor, cx| editor.select_first_occurrence(&query, cx));
                 }
                 if let Some(first_load) = self.first_load.take() {
                     first_load();

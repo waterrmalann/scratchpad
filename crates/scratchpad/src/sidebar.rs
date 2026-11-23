@@ -119,6 +119,8 @@ pub enum SidebarEvent {
     /// A note was opened by clicking it or with Enter in the search field (not by browsing
     /// with the arrow keys).
     NoteChosen,
+    /// A search hit was opened, by any means: the editor should show its match.
+    HitOpened,
 }
 
 pub struct Sidebar {
@@ -279,6 +281,9 @@ impl Sidebar {
     fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.list_focus);
         self.notes.update(cx, |notes, cx| notes.select(&path, cx));
+        if self.notes.read(cx).is_searching() {
+            cx.emit(SidebarEvent::HitOpened);
+        }
     }
 
     /// Opens the note `delta` rows below (or above) the open one and scrolls it into view.

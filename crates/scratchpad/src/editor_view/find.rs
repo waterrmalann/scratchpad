@@ -216,6 +216,21 @@ impl EditorView {
         }
     }
 
+    /// Selects the first case-insensitive occurrence of `query` and scrolls it into view, without
+    /// highlighting the other matches. Returns whether there was one. Used when a note is opened
+    /// from a search hit in the sidebar.
+    pub fn select_first_occurrence(&mut self, query: &str, cx: &mut Context<Self>) -> bool {
+        let text = self.editor.buffer().normalized_text();
+        let Some(found) = search::find_all(&text, query, CaseSensitivity::Insensitive)
+            .into_iter()
+            .next()
+        else {
+            return false;
+        };
+        self.select_found(found, cx);
+        true
+    }
+
     /// Number of searches that ran on the background executor.
     #[cfg(feature = "test-support")]
     pub fn background_search_count(&self) -> usize {

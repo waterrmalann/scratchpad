@@ -171,3 +171,80 @@ fn enter_opens_the_first_hit_and_a_new_note_leaves_search(cx: &mut TestAppContex
     );
     common::center_of("note:draft", cx);
 }
+
+/// The selected byte range in the editor.
+fn editor_selection(
+    root: &Entity<AppWindow>,
+    cx: &mut VisualTestContext,
+) -> std::ops::Range<usize> {
+    common::editor(root, cx).read_with(cx, |editor, _| {
+        let range = editor.editor().selection().range();
+        range.start.0..range.end.0
+    })
+}
+
+// A hit leads to its first match, as in VS Code's search, not just to the top of the note.
+#[gpui::test]
+fn choosing_a_hit_selects_its_first_match(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_notes(dir.path());
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+
+    cx.simulate_keystrokes("ctrl-shift-f");
+    cx.simulate_input("AUTHENTICATION");
+    common::click("hit:Meeting Notes", cx);
+    cx.run_until_parked();
+    let text = common::editor_text(&root, cx);
+    let start = text.find("authentication").unwrap();
+    assert_eq!(
+        editor_selection(&root, cx),
+        start..start + "authentication".len()
+    );
+
+    // Enter in the search field does the same, also for a note opened before.
+    cx.simulate_keystrokes("ctrl-shift-f");
+    cx.simulate_input("eggs");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let text = common::editor_text(&root, cx);
+    assert!(text.contains("Milk, eggs"));
+    let start = text.find("eggs").unwrap();
+    assert_eq!(editor_selection(&root, cx), start..start + 4);
+    common::click("hit:Groceries", cx);
+    cx.run_until_parked();
+    assert_eq!(editor_selection(&root, cx), start..start + 4);
+}
+
+// Browsing the hits with the arrow keys shows each one's match too.
+#[gpui::test]
+fn arrow_keys_through_hits_select_their_matches(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_notes(dir.path());
+    let (root, cx) = common::open_main_window_in(dir.path(), cx);
+    let notes = common::notes(&root, cx);
+
+    cx.simulate_keystrokes("ctrl-shift-f");
+    cx.simulate_input("at");
+    assert_eq!(
+        hit_titles(&notes, cx),
+        Some(vec!["Auth gateway".into(), "Meeting Notes".into()])
+    );
+    let first_match = |root: &Entity<AppWindow>, cx: &mut VisualTestContext| {
+        let start = common::editor_text(root, cx).find("at").unwrap();
+        start..start + 2
+    };
+
+    common::click("hit:Auth gateway", cx);
+    cx.run_until_parked();
+    assert_eq!(editor_selection(&root, cx), first_match(&root, cx));
+
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    assert!(common::editor_text(&root, cx).contains("authentication"));
+    assert_eq!(editor_selection(&root, cx), first_match(&root, cx));
+
+    cx.simulate_keystrokes("up");
+    cx.run_until_parked();
+    assert!(common::editor_text(&root, cx).contains("Tokens"));
+    assert_eq!(editor_selection(&root, cx), first_match(&root, cx));
+}
