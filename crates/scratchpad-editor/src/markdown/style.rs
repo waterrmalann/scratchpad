@@ -279,6 +279,8 @@ fn style_line(
     let mut markers = BTreeSet::new();
     let mut edges = edges.into_iter().peekable();
     let mut spans: Vec<StyledSpan> = Vec::new();
+    // The decoration and marker index of the last span's innermost marker.
+    let mut last_marker = None;
     let mut at = line_start;
     while at < line_end {
         while let Some((_, edge)) = edges.next_if(|(offset, _)| *offset == at) {
@@ -298,9 +300,9 @@ fn style_line(
             span_style.missing_page |= missing[index];
         }
         // The innermost marker: decorations are ordered with enclosing ones first.
-        let marker = markers
-            .last()
-            .map(|&(index, m)| (on_line[index], &on_line[index].markers[m]))
+        let innermost = markers.last().copied();
+        let marker = innermost
+            .map(|(index, m)| (on_line[index], &on_line[index].markers[m]))
             // An emoji shortcode is shown as typed where the selection touches it, and in source mode.
             .filter(|&(d, m)| {
                 !matches!(d.kind, DecorationKind::Emoji { .. })
@@ -320,18 +322,31 @@ fn style_line(
             marker: marker.map(|(d, _)| marker_kind(&d.kind)),
             hidden,
         };
+        // A marker a renderer draws as a shape or label of its own (a bullet, task box, emoji, ...) or one that
+        // starts an item stays one span per marker: `- - a` opens two items, so it has two bullets, and `:a::a:`
+        // two emoji.
+        let own_span = matches!(
+            span.marker,
+            Some(
+                MarkerKind::ListBullet
+                    | MarkerKind::ListNumber
+                    | MarkerKind::TaskBox { .. }
+                    | MarkerKind::Callout { .. }
+                    | MarkerKind::Emoji { .. }
+            )
+        );
         match spans.last_mut() {
-            // Each shortcode is drawn as its own emoji, also next to the same one.
             Some(last)
                 if last.style == span.style
                     && last.marker == span.marker
                     && last.hidden == span.hidden
-                    && !matches!(span.marker, Some(MarkerKind::Emoji { .. })) =>
+                    && (!own_span || last_marker == innermost) =>
             {
                 last.columns.end = span.columns.end;
             }
             _ => spans.push(span),
         }
+        last_marker = innermost;
     }
     StyledLine { style, spans }
 }

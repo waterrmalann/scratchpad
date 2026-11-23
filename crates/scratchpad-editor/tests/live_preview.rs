@@ -448,3 +448,62 @@ fn wikilinks_to_missing_pages_are_marked_and_only_links_are_asked_about() {
     });
     assert!(asked.borrow().is_empty());
 }
+
+#[test]
+fn items_opened_on_one_line_each_report_their_own_marker() {
+    // Each bullet is drawn as its own dot, so `- - a` (an item in an item) must not be one marker span.
+    assert_eq!(
+        spans("- - hello", 0),
+        [
+            span("- ", "ListBullet"),
+            span("- ", "ListBullet"),
+            span("hello", "")
+        ]
+    );
+    assert_eq!(
+        spans("- - - - hello", 0),
+        [
+            span("- ", "ListBullet"),
+            span("- ", "ListBullet"),
+            span("- ", "ListBullet"),
+            span("- ", "ListBullet"),
+            span("hello", ""),
+        ]
+    );
+    assert_eq!(
+        spans("* + -   hello", 0),
+        [
+            span("* ", "ListBullet"),
+            span("+ ", "ListBullet"),
+            span("-   ", "ListBullet"),
+            span("hello", ""),
+        ]
+    );
+    assert_eq!(
+        spans("1. 2) hello", 0),
+        [
+            span("1. ", "ListNumber"),
+            span("2) ", "ListNumber"),
+            span("hello", "")
+        ]
+    );
+    // Only the innermost bullet gives way to the task box.
+    assert_eq!(
+        spans("- - [ ] hello", 0),
+        [
+            span("- ", "ListBullet"),
+            span("- ", "ListBullet"),
+            span("[ ] ", "TaskBox { checked: false }"),
+            span("hello", ""),
+        ]
+    );
+    assert_eq!(
+        spans("> - - hello", 0),
+        [
+            span("> ", "quote Quote"),
+            span("- ", "quote ListBullet"),
+            span("- ", "quote ListBullet"),
+            span("hello", "quote"),
+        ]
+    );
+}

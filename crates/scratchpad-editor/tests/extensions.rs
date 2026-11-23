@@ -296,6 +296,14 @@ fn styles_mark_highlighted_and_math_text_and_emoji_shortcodes() {
         .collect();
     assert_eq!(emoji.len(), 2);
     assert!(emoji.iter().all(|s| !s.hidden && s.columns.len() == 7));
+    // Also with nothing between them.
+    let ed = editor(":smile::smile:\nnext|");
+    let buffer = ed.buffer();
+    let line = MarkdownState::with_options(buffer, MarkdownOptions::ALL)
+        .styled_lines(buffer, 0..1, Some(ed.selection()))
+        .remove(0);
+    let columns: Vec<_> = line.spans.iter().map(|s| s.columns.clone()).collect();
+    assert_eq!(columns, [0..7, 7..14]);
 
     // With the cursor on one, it is text; the other is still an emoji. In source mode both are text.
     let ed = editor(":smile:| :smile:");

@@ -323,16 +323,28 @@ proptest! {
         for (plain, marked) in plain.iter().zip(&marked) {
             prop_assert!(marked.spans.iter().all(|s| !s.style.missing_page || s.style.link));
             // The flag may split a span that runs from one link into the next (`[[A]][[B]]`, the `]][[`
-            // markers): without it, the spans merge back into those of `styled_lines`.
+            // markers): without it, the spans merge back into those of `styled_lines`. Markers drawn on their own
+            // (bullets, numbers, task boxes, callout tags, emoji) never merge, and the flag never splits one.
             let mut unmarked: Vec<StyledSpan> = Vec::new();
             for span in &marked.spans {
                 let mut span = span.clone();
                 span.style.missing_page = false;
+                let own_span = matches!(
+                    span.marker,
+                    Some(
+                        MarkerKind::ListBullet
+                            | MarkerKind::ListNumber
+                            | MarkerKind::TaskBox { .. }
+                            | MarkerKind::Callout { .. }
+                            | MarkerKind::Emoji { .. }
+                    )
+                );
                 match unmarked.last_mut() {
                     Some(last)
                         if last.style == span.style
                             && last.marker == span.marker
-                            && last.hidden == span.hidden =>
+                            && last.hidden == span.hidden
+                            && !own_span =>
                     {
                         last.columns.end = span.columns.end;
                     }
