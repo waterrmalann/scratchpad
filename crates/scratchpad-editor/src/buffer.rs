@@ -124,6 +124,25 @@ impl Buffer {
         char_at(range.end).saturating_sub(char_at(range.start))
     }
 
+    /// Number of words in `range` (clamped and rounded as for [`Buffer::char_count_in`]): runs of
+    /// non-whitespace with a letter or digit in them, so `-` and `—` between spaces are no word and
+    /// `don't` and `e-mail` are one. Linear in the range's length.
+    pub fn word_count_in(&self, range: Range<ByteOffset>) -> usize {
+        let char_at = |offset: ByteOffset| self.rope.byte_to_char(offset.0.min(self.len()));
+        let (start, end) = (char_at(range.start), char_at(range.end));
+        let mut words = 0;
+        let mut in_word = false;
+        for c in self.rope.slice(start..end.max(start)).chars() {
+            if c.is_whitespace() {
+                in_word = false;
+            } else if !in_word && c.is_alphanumeric() {
+                in_word = true;
+                words += 1;
+            }
+        }
+        words
+    }
+
     /// Number of lines. Always at least 1; text ending in `\n` has an empty last line.
     pub fn line_count(&self) -> usize {
         self.rope.len_lines()

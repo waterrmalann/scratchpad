@@ -47,8 +47,10 @@ const LEFT_PADDING_EMS: f32 = 2.8;
 const RIGHT_PADDING: Pixels = px(24.);
 const TOP_PADDING: Pixels = px(32.);
 /// The text size range, in percent of the normal size, and the step of Ctrl+= and Ctrl+-.
-const MIN_ZOOM: u16 = 50;
-const MAX_ZOOM: u16 = 400;
+/// How long the checked task boxes shimmer when the last open one is ticked.
+const SHIMMER: Duration = Duration::from_millis(450);
+pub(crate) const MIN_ZOOM: u16 = 50;
+pub(crate) const MAX_ZOOM: u16 = 400;
 const ZOOM_STEP: u16 = 10;
 /// Ctrl+wheel distance per zoom step: one notch of a mouse wheel at Windows' default of three
 /// lines. A precision touchpad sends fractions of a notch, which add up.
@@ -143,6 +145,12 @@ pub struct EditorView {
     /// The pages of the note's folder, for drawing wikilinks to missing ones differently; `None`
     /// while not known, when every wikilink is drawn as found (ADR 0188).
     pages: Option<Arc<PageIndex>>,
+    /// A note whose first line is `.LOG`, as in Notepad, was opened: the buffer version then. The
+    /// first edit made at the end of it while nothing else changed starts with a timestamp line.
+    log_stamp: Option<u64>,
+    /// When the last open task of the note was ticked with a click: its checked boxes shimmer
+    /// for [`SHIMMER`].
+    shimmer: Option<Instant>,
 }
 
 /// How the next layout brings the cursor into view.
@@ -239,6 +247,8 @@ impl EditorView {
             match_highlights: Vec::new(),
             _subscriptions: subscriptions,
             pages: None,
+            log_stamp: None,
+            shimmer: None,
         }
     }
 
@@ -256,6 +266,11 @@ impl EditorView {
         self.click_offset = None;
         self.find_text_changed(true, cx);
         self.spell_text_changed(true, cx);
+        self.log_stamp = None;
+        if is_log(text) {
+            self.move_cursor_to_end(cx);
+            self.log_stamp = Some(self.editor.buffer().version());
+        }
         cx.notify();
     }
 
@@ -276,6 +291,8 @@ impl EditorView {
             .offset_to_point(self.editor.selection().head);
         let scroll = self.scroll;
         self.set_text(text, cx);
+        // Changed elsewhere, not opened: no new entry.
+        self.log_stamp = None;
         let offset = self.editor.buffer().point_to_offset(cursor);
         self.editor.move_to(offset, false);
         // Clamped to the new document when it is next laid out.
@@ -527,6 +544,42 @@ impl EditorView {
         }
         self.autoscroll = Some(Autoscroll::Cursor);
         self.selection_changed(cx);
+    }
+
+    /// Before text is first typed, pasted or a line broken in a `.LOG` note: while nothing changed
+    /// since it opened and the cursor is still at its end, adds the time and date on a line of their
+    /// own, as its own undo step. Opening a log changes nothing on its own; the entry is dated when
+    /// its writing starts.
+    fn stamp_log(&mut self) {
+        if self.read_only {
+            return;
+        }
+        let Some(version) = self.log_stamp.take() else {
+            return;
+        };
+        let editor = &mut self.editor;
+        let end = editor.buffer().end();
+        let selection = editor.selection();
+        if editor.buffer().version() != version || !selection.is_empty() || selection.head != end {
+            return;
+        }
+        let ends_line = end.0 == 0
+            || editor.buffer().text_for_range(ByteOffset(end.0 - 1)..end)
+                == "
+";
+        let stamp = log_stamp(chrono::Local::now().naive_local());
+        editor.break_undo_group();
+        editor.insert_text(&format!(
+            "{}{stamp}
+",
+            if ends_line {
+                ""
+            } else {
+                "
+"
+            }
+        ));
+        editor.break_undo_group();
     }
 
     /// A command that writes Markdown, such as Ctrl+B: plain text ignores it.
@@ -797,6 +850,7 @@ impl EditorView {
 
     fn paste(&mut self, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.stamp_log();
             self.edit(cx, |editor| editor.paste(&text));
         }
     }
@@ -922,6 +976,25 @@ impl EditorView {
             })
         });
         self.autoscroll = None;
+        if !checked && !self.read_only && !has_open_task(self.editor.buffer()) {
+            self.shimmer = Some(Instant::now());
+        }
+    }
+
+    /// Whether the shimmer runs for the last ticked task, for tests.
+    #[cfg(feature = "test-support")]
+    pub fn shimmering(&self) -> bool {
+        self.shimmer.is_some()
+    }
+
+    /// How far the shimmer has got, from 0 to 1, while it runs.
+    fn shimmer_progress(&mut self) -> Option<f32> {
+        let progress = self.shimmer?.elapsed().as_secs_f32() / SHIMMER.as_secs_f32();
+        if progress >= 1. {
+            self.shimmer = None;
+            return None;
+        }
+        Some(progress)
     }
 
     /// Extends a mouse selection to the pointer, by the unit the drag started with.
@@ -1243,13 +1316,17 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &DeleteWordRight, _, cx| {
                 this.edit(cx, Editor::delete_word_forward)
             }))
-            .on_action(cx.listener(|this, _: &Newline, _, cx| match this.plain {
-                true => this.edit(cx, Editor::insert_newline),
-                false => this.edit_markdown(cx, Editor::insert_markdown_newline),
+            .on_action(cx.listener(|this, _: &Newline, _, cx| {
+                this.stamp_log();
+                match this.plain {
+                    true => this.edit(cx, Editor::insert_newline),
+                    false => this.edit_markdown(cx, Editor::insert_markdown_newline),
+                }
             }))
-            .on_action(
-                cx.listener(|this, _: &PlainNewline, _, cx| this.edit(cx, Editor::insert_newline)),
-            )
+            .on_action(cx.listener(|this, _: &PlainNewline, _, cx| {
+                this.stamp_log();
+                this.edit(cx, Editor::insert_newline)
+            }))
             .on_action(cx.listener(|this, _: &Tab, _, cx| match this.plain {
                 true => this.edit(cx, |editor| editor.insert_text(TAB)),
                 false => this.edit_markdown(cx, |editor, markdown| {
@@ -1359,6 +1436,9 @@ impl EntityInputHandler for EditorView {
             return;
         }
         let range = range_utf16.map(|range| self.range_from_utf16(&range));
+        if range.is_none() && marked.is_none() {
+            self.stamp_log();
+        }
         let plain = self.plain;
         let keystroke = range.is_none() && marked.is_none() && !plain;
         self.edit_markdown(cx, |editor, markdown| match range {
@@ -1596,6 +1676,35 @@ fn vertical_target(
 /// A new document's engine and Markdown structure. The only place either is created: a
 /// [`MarkdownState`] left over from another buffer could pass for current (same version and
 /// length) and style the new text with the old document's markers.
+/// Whether a line of `buffer` is a list item with an open task box, `- [ ]`, also in a quote.
+/// Read only after a box is ticked; code blocks are not told apart, so a `- [ ]` in one counts.
+fn has_open_task(buffer: &Buffer) -> bool {
+    (0..buffer.line_count()).any(|line| {
+        let text = buffer.line_text(line);
+        let text = text.trim_start_matches(|c: char| c == '>' || c.is_whitespace());
+        let after_marker = if let Some(rest) = text.strip_prefix(['-', '*', '+']) {
+            rest
+        } else {
+            let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+            match text[digits..].strip_prefix(['.', ')']) {
+                Some(rest) if digits > 0 => rest,
+                _ => return false,
+            }
+        };
+        after_marker.starts_with(' ') && after_marker.trim_start().starts_with("[ ]")
+    })
+}
+
+/// Whether a note opened with `text` is a log: its first line is `.LOG`, as Notepad has it.
+pub(crate) fn is_log(text: &str) -> bool {
+    text.lines().next().is_some_and(|line| line == ".LOG")
+}
+
+/// The line a log entry starts with, e.g. `2026-11-26 14:05`.
+pub(crate) fn log_stamp(now: chrono::NaiveDateTime) -> String {
+    now.format("%Y-%m-%d %H:%M").to_string()
+}
+
 fn open_document(text: &str, options: MarkdownOptions) -> (Editor, MarkdownState) {
     let editor = Editor::from_text(text);
     let markdown = MarkdownState::with_options(editor.buffer(), options);
@@ -1700,6 +1809,59 @@ fn utf16_to_byte(text: &str, utf16: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_tasks_are_list_items_with_an_empty_box() {
+        let open = |text: &str| has_open_task(&Buffer::from_text(text));
+        assert!(open("- [ ] milk"));
+        assert!(open("done\n  * [ ] nested"));
+        assert!(open("> 1. [ ] quoted"));
+        assert!(open("3) [ ] numbered"));
+        for text in [
+            "",
+            "- [x] done",
+            "- [X] done",
+            "[ ] no list",
+            "-[ ] no space",
+            "1 [ ]",
+        ] {
+            assert!(!open(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_log_starts_with_a_line_of_dot_log() {
+        assert!(is_log(".LOG"));
+        assert!(is_log(
+            ".LOG
+09:00 first
+"
+        ));
+        assert!(is_log(
+            ".LOG
+entry"
+        ));
+        for text in [
+            "",
+            ".log
+",
+            " .LOG
+",
+            ".LOG book
+",
+            "# .LOG
+",
+            "x
+.LOG
+",
+        ] {
+            assert!(!is_log(text), "{text:?}");
+        }
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 11, 26)
+            .and_then(|day| day.and_hms_opt(9, 5, 0))
+            .expect("a valid time");
+        assert_eq!(log_stamp(at), "2026-11-26 09:05");
+    }
 
     #[test]
     fn only_web_and_mail_links_are_opened() {

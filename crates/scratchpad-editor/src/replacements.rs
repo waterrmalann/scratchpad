@@ -33,6 +33,9 @@ pub enum Guard {
     Symbol(Option<&'static str>),
     /// Not right after this char, so `C++-style` keeps its `+-`.
     NotAfter(char),
+    /// Only at the start of a word, as [`Guard::Symbol`], and taken back when a letter or digit is typed right
+    /// after it, as a `--` that starts a word is: `<30` and `/shrugged` stay as typed.
+    Word,
 }
 
 const fn rule(from: &'static str, to: &'static str) -> Rule {
@@ -80,6 +83,24 @@ pub const RULES: &[Rule] = &[
         to: "±",
         guard: Guard::NotAfter('+'),
     },
+    // Not in the menu or the README's table: found, not announced.
+    Rule {
+        from: "<3",
+        to: "♥",
+        guard: Guard::Word,
+    },
+    Rule {
+        from: "(/)",
+        to: "✓",
+        guard: Guard::Symbol(None),
+    },
+    // Slack's command, as `:shrug:` is already GitHub's 🤷 shortcode. Live preview shows backslashes as typed,
+    // so the arm is one backslash, not the escaped `\\\_` other renderers need.
+    Rule {
+        from: "/shrug",
+        to: r"¯\_(ツ)_/¯",
+        guard: Guard::Word,
+    },
 ];
 
 /// How far back from the cursor the text is read to decide on a rule: the line before and the cursor's line, cut
@@ -117,12 +138,18 @@ pub fn find(before: &str) -> Option<&'static Rule> {
         .find(|(_, c)| c.is_whitespace())
         .map_or(0, |(i, c)| i + c.len_utf8());
     let run = &line[run_start..];
-    if looks_like_address(run) {
-        return None;
-    }
     RULES
         .iter()
         .filter(|rule| line.ends_with(rule.from))
+        // A rule with a slash of its own (`(/)`, `/shrug`) asks only of the text before it.
+        .filter(|rule| {
+            let own_slash = rule.from.contains('/') && run.len() >= rule.from.len();
+            !looks_like_address(if own_slash {
+                &run[..run.len() - rule.from.len()]
+            } else {
+                run
+            })
+        })
         .filter(|rule| {
             let start = line.len() - rule.from.len();
             let line_before = &line[..start];
@@ -147,6 +174,7 @@ fn guard_allows(guard: Guard, before: &str, line_before: &str) -> bool {
                 && previous.is_none_or(|previous| !before.contains(previous))
         }
         Guard::NotAfter(not) => !line_before.ends_with(not),
+        Guard::Word => starts_word(line_before.chars().next_back()),
     }
 }
 
@@ -341,7 +369,7 @@ impl Editor {
         // A rule that covers all of what the last replacement replaced, and `c`.
         let longer =
             find(&extended).is_some_and(|rule| extended.len() - rule.from.len() <= context.len());
-        let flag = last.rule.guard == Guard::Dash
+        let flag = matches!(last.rule.guard, Guard::Dash | Guard::Word)
             && c.is_alphanumeric()
             && starts_word(context.chars().next_back());
         if longer || flag {
@@ -512,7 +540,7 @@ mod tests {
 
     #[test]
     fn triggers_are_the_last_chars_of_rules() {
-        for c in ['>', '-', '=', '.', ')'] {
+        for c in ['>', '-', '=', '.', ')', '3', 'g'] {
             assert!(triggers(c), "{c}");
         }
         for c in ['a', '<', '(', ' ', '!', '+'] {
@@ -602,6 +630,20 @@ mod tests {
         assert_eq!(to("[x](a)->"), Some("→"));
         // Brackets that are not a link.
         assert_eq!(to("[x] (a ->"), Some("→"));
+    }
+
+    #[test]
+    fn hidden_extras_start_a_word() {
+        assert_eq!(to("I <3"), Some("♥"));
+        assert_eq!(to("<3"), Some("♥"));
+        assert_eq!(to("x<3"), None);
+        assert_eq!(to("done (/)"), Some("✓"));
+        assert_eq!(to("f(/)"), None);
+        assert_eq!(to("src/(/)"), None);
+        assert_eq!(to("oh well /shrug"), Some(r"¯\_(ツ)_/¯"));
+        assert_eq!(to("a/shrug"), None);
+        assert_eq!(to("https://example.com/shrug"), None);
+        assert_eq!(to("[x](/shrug"), None);
     }
 
     #[test]

@@ -11,11 +11,12 @@ use std::sync::Arc;
 
 use gpui::{
     Bounds, Font, FontStyle, FontWeight, Hsla, PathBuilder, Pixels, Point, SharedString, TextRun,
-    Window, WindowTextSystem, fill, font, point, px, quad, size, transparent_black,
+    Window, WindowTextSystem, fill, font, point, px, quad, rgb, size, transparent_black,
 };
 use scratchpad_core::PageIndex;
 use scratchpad_editor::markdown::{
-    CalloutKind, MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan, TableRowKind,
+    APP_ICON, CalloutKind, MarkdownState, MarkerKind, SpanStyle, StyledLine, StyledSpan,
+    TableRowKind,
 };
 use scratchpad_editor::{Bias, Buffer, Selection};
 
@@ -64,6 +65,10 @@ const BULLET_WIDTH: f32 = 1.15;
 const TASK_BOX_WIDTH: f32 = 1.6;
 /// Side of a task box, in multiples of the font size.
 const TASK_BOX_SIZE: f32 = 0.92;
+/// Width of `:scratchpad:`'s icon with room either side, and the icon's side, in multiples of the
+/// font size.
+const APP_ICON_WIDTH: f32 = 1.2;
+const APP_ICON_SIZE: f32 = 1.0;
 
 /// Text settings shared by every line: fonts and colours from the theme and the text column width.
 #[derive(Clone, Debug, PartialEq)]
@@ -522,6 +527,7 @@ impl LineLayout {
                     widget.label = Some(label);
                     scale
                 }
+                WidgetKind::Emoji { emoji } if emoji == APP_ICON => APP_ICON_WIDTH,
                 WidgetKind::Emoji { emoji } => {
                     let label = emoji_label(emoji, line_font.size, text_system);
                     let scale = label.width / line_font.size;
@@ -742,6 +748,14 @@ impl LineLayout {
         for widget in widgets {
             let x = self.geometry.x_for(widget.columns.start);
             let top = self.row_top(self.geometry.row_of(widget.columns.start));
+            if widget.kind == (WidgetKind::Emoji { emoji: APP_ICON }) {
+                let side = (font_size * APP_ICON_SIZE).round();
+                let room = (font_size * APP_ICON_WIDTH).round() - side;
+                let origin = point(x + room / 2., (top + middle - side / 2.).round());
+                self.above
+                    .extend(app_icon(Bounds::new(origin, size(side, side))));
+                continue;
+            }
             self.above.push(match widget.kind {
                 WidgetKind::Bullet => {
                     let diameter = (font_size * 0.3).round();
@@ -911,6 +925,18 @@ impl LineLayout {
             Shape::TaskBox { bounds, column, .. } if bounds.dilate(px(3.)).contains(&position) => {
                 Some(*column)
             }
+            _ => None,
+        })
+    }
+
+    /// Where the checked task boxes are drawn, relative to the line's top-left corner.
+    pub fn checked_task_boxes(&self) -> impl Iterator<Item = Bounds<Pixels>> + '_ {
+        self.above.iter().filter_map(|shape| match shape {
+            Shape::TaskBox {
+                bounds,
+                checked: true,
+                ..
+            } => Some(*bounds),
             _ => None,
         })
     }
@@ -1221,6 +1247,30 @@ fn callout_label(
 }
 
 /// An emoji, e.g. `😄`, in Windows' colour emoji font at the line's size.
+/// The app's icon (`assets/icons/scratchpad.svg`) in `bounds`, for `:scratchpad:`: the amber tile,
+/// the page and its lines of text, without the folded corner and the gradient, which are lost at
+/// text size anyway.
+fn app_icon(bounds: Bounds<Pixels>) -> Vec<Shape> {
+    // The SVG's 256-unit grid.
+    let unit = bounds.size.width / 256.;
+    let rect = |x: f32, y: f32, w: f32, h: f32, r: f32, color: u32| Shape::Rect {
+        bounds: Bounds::new(
+            bounds.origin + point(unit * x, unit * y),
+            size(unit * w, (unit * h).max(px(1.))),
+        ),
+        color: rgb(color).into(),
+        radius: unit * r,
+    };
+    vec![
+        rect(6., 6., 244., 244., 56., 0xe8b02b),
+        rect(64., 44., 128., 168., 14., 0xffffff),
+        rect(90., 92., 70., 14., 7., 0x3a3326),
+        rect(90., 126., 76., 10., 5., 0xb9b2a0),
+        rect(90., 150., 76., 10., 5., 0xb9b2a0),
+        rect(90., 174., 44., 10., 5., 0xb9b2a0),
+    ]
+}
+
 fn emoji_label(emoji: &str, size: Pixels, text_system: &WindowTextSystem) -> Arc<gpui::LineLayout> {
     let run = TextRun {
         len: emoji.len(),
@@ -1270,7 +1320,11 @@ pub(super) fn measure_cells(
         };
         let columns =
             styled.display_column(widget.columns.start)..styled.display_column(widget.columns.end);
-        let emoji_width = emoji_label(emoji, line_font.size, text_system).width;
+        let emoji_width = if emoji == APP_ICON {
+            line_font.size * APP_ICON_WIDTH
+        } else {
+            emoji_label(emoji, line_font.size, text_system).width
+        };
         width = set_span_width(&mut glyphs, columns, emoji_width.round(), width);
     }
     for (column, columns) in table::cells(styled, &display) {

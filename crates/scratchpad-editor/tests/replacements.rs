@@ -24,6 +24,14 @@ fn typed(marked: &str, keys: &str) -> String {
 }
 
 #[test]
+fn hidden_extras_are_taken_back_when_a_word_goes_on() {
+    assert_eq!(typed("|", "I <3 tea"), "I ♥ tea|");
+    assert_eq!(typed("|", "<30 minutes"), "<30 minutes|");
+    assert_eq!(typed("|", "/shrugged"), "/shrugged|");
+    assert_eq!(typed("|", "ok /shrug."), r"ok ¯\_(ツ)_/¯.|");
+}
+
+#[test]
 fn every_rule_is_replaced_on_its_last_typed_char() {
     let table = [
         ("->", "→"),
@@ -40,6 +48,9 @@ fn every_rule_is_replaced_on_its_last_typed_char() {
         ("(r)", "®"),
         ("(tm)", "™"),
         ("+-", "±"),
+        ("<3", "♥"),
+        ("(/)", "✓"),
+        ("/shrug", r"¯\_(ツ)_/¯"),
     ];
     assert_eq!(table.len(), RULES.len(), "every rule is in this table");
     for (from, to) in table {

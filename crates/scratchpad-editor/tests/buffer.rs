@@ -25,6 +25,24 @@ fn windows_file_round_trips_and_edits_keep_crlf() {
 }
 
 #[test]
+fn words_are_runs_of_text_with_a_letter_or_digit() {
+    let count = |text: &str| {
+        let buffer = Buffer::from_text(text);
+        buffer.word_count_in(ByteOffset(0)..buffer.end())
+    };
+    assert_eq!(count(""), 0);
+    assert_eq!(count("  \n\t "), 0);
+    // Markers are no words, but a ticked box's `[x]` is one, as a word processor counts it.
+    assert_eq!(count("# Groceries\r\n- milk\r\n- [ ] eggs"), 3);
+    assert_eq!(count("- [x] eggs"), 2);
+    assert_eq!(count("don't e-mail — 42 times"), 4);
+    assert_eq!(count("wörld 😀 ✓"), 1);
+    let buffer = Buffer::from_text("one two three");
+    assert_eq!(buffer.word_count_in(ByteOffset(4)..ByteOffset(7)), 1);
+    assert_eq!(buffer.word_count_in(ByteOffset(5)..ByteOffset(99)), 2);
+}
+
+#[test]
 fn a_snapshot_keeps_the_text_from_when_it_was_taken() {
     let file = "# Plan\r\n- draft\r\n";
     let mut editor = Editor::from_text(file);

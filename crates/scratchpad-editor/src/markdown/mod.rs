@@ -19,7 +19,7 @@ mod table;
 mod text_runs;
 mod wikilinks;
 
-pub use emoji::emoji_for_shortcode;
+pub use emoji::{APP_ICON, emoji_for_shortcode};
 pub use front_matter::{FrontMatter, MAX_FRONT_MATTER_BYTES, MAX_FRONT_MATTER_LINES, front_matter};
 pub use style::{MarkerKind, SpanStyle, StyledLine, StyledSpan};
 pub use table::{Table, TableAlignment, TableRowKind};

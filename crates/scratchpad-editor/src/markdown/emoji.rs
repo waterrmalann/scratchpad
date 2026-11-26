@@ -14,6 +14,10 @@ use crate::coords::ByteOffset;
 #[rustfmt::skip]
 mod table;
 
+/// What `:scratchpad:` shows: the app's own icon, which no font has. A renderer draws the icon where this
+/// stands (a private-use char, so no real emoji is mistaken for it); text that only shapes it gets no glyph.
+pub const APP_ICON: &str = "\u{e000}";
+
 /// The longest name worth looking up, in bytes. gemoji's longest is shorter.
 const MAX_NAME: usize = 64;
 
@@ -68,7 +72,12 @@ pub(super) fn shortcode_at(
     {
         return None;
     }
-    let emoji = emoji_for_shortcode(&text[name_start..close])?;
+    let name = &text[name_start..close];
+    let emoji = if name == "scratchpad" {
+        APP_ICON
+    } else {
+        emoji_for_shortcode(name)?
+    };
     Some((colon..close + 1, emoji))
 }
 
@@ -109,6 +118,7 @@ mod tests {
         assert_eq!(at(":smile:"), Some((0..7, "😄")));
         assert_eq!(at("(:+1:)"), Some((1..5, "👍")));
         assert_eq!(at("é :tada:!"), Some((3..9, "🎉")));
+        assert_eq!(at("made with :scratchpad:"), Some((10..22, APP_ICON)));
         for text in [
             "a:smile:",
             ":smile:s",

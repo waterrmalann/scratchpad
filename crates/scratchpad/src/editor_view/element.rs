@@ -8,8 +8,8 @@ use gpui::{
     App, Bounds, ContentMask, Context, CursorStyle, DispatchPhase, Element, ElementId,
     ElementInputHandler, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
     IntoElement, LayoutId, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, ScrollWheelEvent, Style, UnderlineStyle, Window, fill, point, px,
-    relative, size,
+    MouseUpEvent, Pixels, ScrollWheelEvent, Style, UnderlineStyle, Window, fill, point, px, quad,
+    relative, size, transparent_black,
 };
 use scratchpad_editor::ByteOffset;
 
@@ -107,6 +107,8 @@ pub(super) struct Frame {
     cursor: Option<Bounds<Pixels>>,
     scrollbar: Option<ScrollbarLayout>,
     hscrollbar: Option<HScrollbarLayout>,
+    /// How far the shimmer over the checked task boxes has got, from 0 to 1, while it runs.
+    shimmer: Option<f32>,
     colors: FrameColors,
 }
 
@@ -118,6 +120,7 @@ struct FrameColors {
     composition: Hsla,
     misspelling: Hsla,
     scrollbar: Hsla,
+    shimmer: Hsla,
 }
 
 pub(super) struct PrepaintState {
@@ -156,6 +159,7 @@ impl EditorView {
             .map(|found| found.range.clone())
             .collect();
 
+        let shimmer = self.shimmer_progress();
         let (mut lines, scroll) = self.lines(window);
         let buffer = lines.buffer;
         *scroll = match autoscroll {
@@ -211,6 +215,7 @@ impl EditorView {
             cursor: None,
             scrollbar: None,
             hscrollbar: None,
+            shimmer,
             colors: FrameColors {
                 code_block: cx.theme().surface,
                 // A lighter shade of the selection: the selected match stands out among them.
@@ -220,6 +225,7 @@ impl EditorView {
                 composition: cx.theme().foreground,
                 misspelling: cx.theme().misspelling,
                 scrollbar: cx.theme().muted.opacity(0.45),
+                shimmer: cx.theme().accent,
             },
         };
         let mut y = -anchor.offset;
@@ -361,6 +367,40 @@ impl EditorView {
 
 /// The horizontal scroll offset that shows `x` (from the text column's left edge) at least
 /// `margin` inside the column, scrolling as little as possible.
+/// How much later the shimmer reaches the bottom of the editor than its top, as a share of its
+/// run: it washes down the list rather than flashing every box at once.
+const SHIMMER_SPREAD: f32 = 0.6;
+
+/// The shimmer when the last open task is ticked, `progress` (0 to 1) of the way through: each
+/// checked box glints white and sends out a fading ring of the accent colour, the higher boxes
+/// first.
+fn paint_shimmer(frame: &Frame, progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
+    for (layout, origin) in &frame.lines {
+        for task_box in layout.checked_task_boxes() {
+            let task_box = task_box + *origin;
+            let down = ((task_box.top() - bounds.top()) / bounds.size.height).clamp(0., 1.);
+            let local = progress * (1. + SHIMMER_SPREAD) - down * SHIMMER_SPREAD;
+            if !(0. ..1.).contains(&local) {
+                continue;
+            }
+            let side = task_box.size.width;
+            let ring = task_box.dilate(side * 0.45 * local);
+            window.paint_quad(quad(
+                ring,
+                ring.size.width * 0.3,
+                transparent_black(),
+                px(1.5),
+                frame.colors.shimmer.opacity(0.5 * (1. - local)),
+                Default::default(),
+            ));
+            let glint = (local * std::f32::consts::PI).sin();
+            window.paint_quad(
+                fill(task_box, gpui::white().opacity(0.55 * glint)).corner_radii(side * 0.22),
+            );
+        }
+    }
+}
+
 fn revealing_x(scroll_x: Pixels, x: Pixels, width: Pixels, margin: Pixels) -> Pixels {
     if x - margin < scroll_x {
         (x - margin).max(px(0.))
@@ -586,6 +626,10 @@ impl Element for EditorElement {
             }
             for underline in &frame.marked {
                 window.paint_quad(fill(*underline, frame.colors.composition));
+            }
+            if let Some(progress) = frame.shimmer {
+                paint_shimmer(frame, progress, bounds, window);
+                window.request_animation_frame();
             }
             if let Some(cursor) = frame.cursor.filter(|_| show_caret) {
                 window.paint_quad(fill(cursor, frame.colors.caret));

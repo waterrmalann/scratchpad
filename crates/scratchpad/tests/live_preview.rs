@@ -501,6 +501,30 @@ fn a_typed_underscore_replaces_the_selection_in_code(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn ticking_the_last_open_task_makes_the_boxes_shimmer(cx: &mut TestAppContext) {
+    let (editor, cx) = open_editor(cx, "- [ ] one\n- [x] two\n- [ ] three\n");
+    let tick = |offset: usize, cx: &mut VisualTestContext| {
+        let task = bounds(&editor, offset..offset, cx);
+        click(
+            point(task.left() + px(7.), task.center().y),
+            Modifiers::none(),
+            cx,
+        );
+    };
+    let shimmering = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.shimmering());
+
+    tick(0, cx);
+    assert!(!shimmering(cx), "a task is still open");
+    // Unticking one is no reason to celebrate either.
+    tick(10, cx);
+    tick(10, cx);
+    assert!(!shimmering(cx));
+    tick(20, cx);
+    assert_eq!(text(&editor, cx), "- [x] one\n- [x] two\n- [x] three\n");
+    assert!(shimmering(cx));
+}
+
+#[gpui::test]
 fn clicking_a_task_box_toggles_it_without_moving_the_cursor(cx: &mut TestAppContext) {
     let (editor, cx) = open_editor(cx, "- [ ] task\n- [x] done\nnext");
     cx.simulate_keystrokes("ctrl-end");
