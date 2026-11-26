@@ -29,6 +29,10 @@
       </File>
       <RegistryValue Root="HKCU" Key="Software\Scratchpad" Name="Installed" Type="integer"
                      Value="1" KeyPath="yes" />
+      <!-- App Paths lets the shell (Win+R, `start scratchpad`, Explorer's address bar) find the
+           exe without it being on PATH. Typing it at a cmd or PowerShell prompt still needs PATH. -->
+      <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\scratchpad.exe"
+                     Type="string" Value="[INSTALLFOLDER]scratchpad.exe" />
       <!-- Folders in the user profile are not cleaned up automatically (ICE64). Only empty folders
            are removed, so a Programs folder shared with other apps survives. -->
       <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />

@@ -106,7 +106,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 
 Get the latest release from [GitHub Releases](https://github.com/waterrmalann/scratchpad/releases/latest). It needs Windows 10 or 11 (x64).
 
-- **Installer** — `Scratchpad-<version>-x64.msi`. A per-user install: no administrator rights, installs to `%LOCALAPPDATA%\Programs\Scratchpad`, adds a Start Menu shortcut and an uninstall entry, and a newer MSI upgrades in place. Uninstalling leaves your notes and settings alone.
+- **Installer** — `Scratchpad-<version>-x64.msi`. A per-user install: no administrator rights, installs to `%LOCALAPPDATA%\Programs\Scratchpad`, adds a Start Menu shortcut and an uninstall entry, lets you start it by typing `scratchpad` in Win+R (a terminal still needs it on PATH), and a newer MSI upgrades in place. Uninstalling leaves your notes and settings alone.
 - **Portable** — `Scratchpad-<version>-x64-portable.zip`: `scratchpad.exe` with the licence and this readme. Unzip it anywhere and run it. Notes and settings still live in the usual folders (below), not next to the exe.
 
 `SHA256SUMS.txt` lists the checksums of both: compare with `Get-FileHash <file>`.

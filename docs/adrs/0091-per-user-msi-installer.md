@@ -23,6 +23,10 @@ repo and must not require installing software system-wide.
   rebuilt MSI replaces an earlier build) and refuses downgrades. The one
   component is keyed on an `HKCU` registry value, as per-user components must be, and removes
   the (then empty) install folders on uninstall, which ICE64 requires for the user profile.
+- The component also writes `HKCU\Software\Microsoft\Windows\CurrentVersion\App Paths\scratchpad.exe`
+  (default value: the installed exe), so Win+R, `start scratchpad` and Explorer's address bar
+  launch the app by name. That only covers the shell: a cmd or PowerShell prompt still needs the
+  exe on PATH, which the installer leaves alone. Windows Installer removes the key on uninstall.
 - The package has no UI sequence: a double-click shows only Windows Installer's progress
   dialog. A wizard needs the WiX UI extension, which is not worth another dependency for an
   app with no install options.
@@ -32,5 +36,6 @@ repo and must not require installing software system-wide.
 
 ## Consequences
 - The MSI is not code-signed, so SmartScreen may warn on first run. Signing is future work.
-- No code or build step touches the registry beyond the installer's own keys.
+- No code or build step touches the registry beyond the installer's own keys (its `Installed`
+  marker and the App Paths entry).
 - The build machine needs the .NET SDK (6.0 or newer) and network access the first time.
