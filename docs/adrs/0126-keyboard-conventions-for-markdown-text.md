@@ -18,7 +18,10 @@ item inserted spaces in its text, and Ctrl+Left stopped at `**` that live previe
   code. Tab indents an item by the width of its own marker (`- ` 2, `1. ` 3), which is what
   CommonMark needs to put it under the item above; Shift+Tab goes back to the parent item's
   indentation. Lines indented further below an item (its children; after a blank line, those
-  indented to its text) move with it. Elsewhere Tab still inserts four spaces (amends ADR 0031)
+  indented to its text) move with it. A moved item takes the marker of the list it joins (the next
+  number, or that list's bullet; a new nested ordered list starts at 1), its children realign to
+  the new marker's width, and the ordered lists it leaves and joins are renumbered; after
+  Shift+Tab the items below it in its old list are its children, numbered from 1. Elsewhere Tab still inserts four spaces (amends ADR 0031)
   and Shift+Tab does nothing. One undo step.
 - Ctrl+Left/Right (and with Shift) move on over runs of hidden markers instead of stopping at
   them, as if the markers were not there. Markers the cursor has revealed are stops like any

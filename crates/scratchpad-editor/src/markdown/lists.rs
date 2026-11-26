@@ -93,6 +93,8 @@ impl Editor {
         }
         // Where each changed line's indentation starts, and the spaces added (or removed if negative).
         let mut edits: Vec<(ByteOffset, isize)> = Vec::new();
+        // Each item moved: its line, the end of the lines that moved with it, and its shift.
+        let mut moved: Vec<(usize, usize, isize)> = Vec::new();
         // Shift+Tab: the parent indentation of the item handled last, with its indentation and quotes. The
         // next item at the same level has the same parent, since only its children are between them;
         // looking it up again for every item would be quadratic in a long list.
@@ -131,6 +133,7 @@ impl Editor {
             // as far as its text still belong to it.
             let text_column = indent + marker_width(&text, indent);
             let mut after_blank = false;
+            let item_line = line;
             line += 1;
             while line < buffer.line_count() {
                 let child = buffer.line_text(line);
@@ -148,6 +151,9 @@ impl Editor {
                 let start = ByteOffset(buffer.line_start(line).0 + child_quotes);
                 edits.push((start, shift.max(-available)));
                 line += 1;
+            }
+            if shift != 0 {
+                moved.push((item_line, line, shift));
             }
         }
         if edits.is_empty() {
@@ -174,9 +180,207 @@ impl Editor {
                 }
             }
             editor.set_selection(after);
+            fix_markers(editor, &moved, deeper);
         });
         true
     }
+}
+
+/// A list marker: a bullet (`-`, `*` or `+`) or a number with its delimiter (`.` or `)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    Bullet(u8),
+    Ordered(u64, u8),
+}
+
+impl Marker {
+    fn text(self) -> String {
+        match self {
+            Marker::Bullet(bullet) => char::from(bullet).to_string(),
+            Marker::Ordered(number, delimiter) => format!("{number}{}", char::from(delimiter)),
+        }
+    }
+}
+
+/// The list item a line starts with: where its marker starts, the marker and the marker's length.
+fn list_item(line: &str) -> Option<(usize, Marker, usize)> {
+    let indent = continuation(line)?.item_indent?;
+    let bytes = line.as_bytes();
+    let digits = count(&bytes[indent..], |b| b.is_ascii_digit());
+    if digits == 0 {
+        return Some((indent, Marker::Bullet(bytes[indent]), 1));
+    }
+    let number = line[indent..indent + digits].parse().ok()?;
+    Some((indent, Marker::Ordered(number, bytes[indent + digits]), digits + 1))
+}
+
+/// The item before `line` in the list whose markers start at `indent` inside `quotes`, with only lines
+/// indented further (the items' text and children) between them.
+fn previous_sibling(
+    buffer: &Buffer,
+    line: usize,
+    indent: usize,
+    quotes: &str,
+) -> Option<(usize, Marker)> {
+    for above in (0..line).rev() {
+        let text = buffer.line_text(above);
+        if text.trim().is_empty() {
+            continue;
+        }
+        if !text.starts_with(quotes) || quotes_end(&text) != quotes.len() {
+            return None;
+        }
+        let at = blanks(text.as_bytes(), quotes.len());
+        if at > indent {
+            continue;
+        }
+        if at < indent {
+            return None;
+        }
+        return list_item(&text)
+            .filter(|&(i, ..)| i == indent)
+            .map(|(_, marker, _)| (above, marker));
+    }
+    None
+}
+
+/// Whether the ordered item on `line` repeats the number of the item before it, as in a list numbered `1.`
+/// throughout, which is then continued with the same number.
+fn repeats_number(buffer: &Buffer, line: usize, indent: usize, quotes: &str, marker: Marker) -> bool {
+    matches!(marker, Marker::Ordered(..))
+        && previous_sibling(buffer, line, indent, quotes).is_some_and(|(_, m)| m == marker)
+}
+
+/// Replaces `range` and keeps `selection` on the same text.
+fn edit(editor: &mut Editor, selection: &mut Selection, range: std::ops::Range<usize>, text: &str) {
+    let map = |offset: ByteOffset| {
+        if offset.0 >= range.end {
+            ByteOffset(offset.0 - range.end + range.start + text.len())
+        } else if offset.0 > range.start {
+            ByteOffset(range.start + (offset.0 - range.start).min(text.len()))
+        } else {
+            offset
+        }
+    };
+    *selection = Selection::new(map(selection.anchor), map(selection.head));
+    editor.replace_range(ByteOffset(range.start)..ByteOffset(range.end), text);
+}
+
+/// Renumbers the items after the ordered item on `line` in its list, each one more than the one before (the
+/// same in a list that repeats one number), until one already has its number.
+fn renumber_from(editor: &mut Editor, selection: &mut Selection, line: usize) {
+    let text = editor.buffer().line_text(line).into_owned();
+    let Some((indent, marker @ Marker::Ordered(mut number, delimiter), _)) = list_item(&text) else {
+        return;
+    };
+    let quotes = &text[..quotes_end(&text)];
+    let step = u64::from(!repeats_number(editor.buffer(), line, indent, quotes, marker));
+    for below in line + 1..editor.buffer().line_count() {
+        let text = editor.buffer().line_text(below).into_owned();
+        if text.trim().is_empty() {
+            continue;
+        }
+        if !text.starts_with(quotes) || quotes_end(&text) != quotes.len() {
+            return;
+        }
+        let at = blanks(text.as_bytes(), quotes.len());
+        if at > indent {
+            continue;
+        }
+        let Some((i, Marker::Ordered(n, d), len)) = list_item(&text) else {
+            return;
+        };
+        number += step;
+        if i != indent || d != delimiter || n == number {
+            return;
+        }
+        let start = editor.buffer().line_start(below).0 + indent;
+        edit(editor, selection, start..start + len - 1, &number.to_string());
+    }
+}
+
+/// After Tab or Shift+Tab moved items to another list, gives each the kind of marker of the list it is in now
+/// (the next number after an ordered item, the bullet of a bullet item; a new nested ordered list starts at 1),
+/// realigns the lines that moved with it to the new marker's width, and renumbers the ordered lists it left
+/// and joined. Shift+Tab makes the items after it in its old list its children, which then start at 1.
+fn fix_markers(editor: &mut Editor, moved: &[(usize, usize, isize)], deeper: bool) {
+    let mut selection = editor.selection();
+    for &(line, end, shift) in moved {
+        let text = editor.buffer().line_text(line).into_owned();
+        let Some((indent, marker, len)) = list_item(&text) else {
+            continue;
+        };
+        let quotes = text[..quotes_end(&text)].to_string();
+        let buffer = editor.buffer();
+        let wanted = match previous_sibling(buffer, line, indent, &quotes) {
+            Some((above, previous @ Marker::Ordered(number, delimiter))) => {
+                let repeat = repeats_number(buffer, above, indent, &quotes, previous);
+                Marker::Ordered(number + u64::from(!repeat), delimiter)
+            }
+            Some((_, bullet)) => bullet,
+            None => match marker {
+                Marker::Ordered(_, delimiter) if deeper => Marker::Ordered(1, delimiter),
+                _ => marker,
+            },
+        };
+        let wanted_text = wanted.text();
+        if wanted_text != text[indent..indent + len] {
+            let start = buffer.line_start(line).0 + indent;
+            edit(editor, &mut selection, start..start + len, &wanted_text);
+            let delta = wanted_text.len() as isize - len as isize;
+            for child in line + 1..end {
+                let child_text = editor.buffer().line_text(child);
+                if child_text.trim().is_empty() {
+                    continue;
+                }
+                let child_quotes = quotes_end(&child_text);
+                let available = blanks(child_text.as_bytes(), child_quotes) - child_quotes;
+                let at = editor.buffer().line_start(child).0 + child_quotes;
+                if delta > 0 {
+                    edit(editor, &mut selection, at..at, &" ".repeat(delta as usize));
+                } else {
+                    let remove = delta.unsigned_abs().min(available);
+                    edit(editor, &mut selection, at..at + remove, "");
+                }
+            }
+        }
+        renumber_from(editor, &mut selection, line);
+
+        let old_indent = (indent as isize - shift) as usize;
+        if deeper {
+            // The list it left: the items after it follow the item above it now.
+            if let Some((above, _)) = previous_sibling(editor.buffer(), line, old_indent, &quotes) {
+                renumber_from(editor, &mut selection, above);
+            }
+            continue;
+        }
+        // Shift+Tab: the items after it in its old list are its children now, the first of them first in its list.
+        let Some(next) = (end..editor.buffer().line_count())
+            .find(|&l| !editor.buffer().line_text(l).trim().is_empty())
+        else {
+            continue;
+        };
+        let next_text = editor.buffer().line_text(next).into_owned();
+        if !next_text.starts_with(&quotes) || quotes_end(&next_text) != quotes.len() {
+            continue;
+        }
+        if let Some((i, Marker::Ordered(number, _), len)) = list_item(&next_text) {
+            if i != old_indent {
+                continue;
+            }
+            match previous_sibling(editor.buffer(), next, old_indent, &quotes) {
+                Some((above, _)) => renumber_from(editor, &mut selection, above),
+                None => {
+                    if number != 1 {
+                        let start = editor.buffer().line_start(next).0 + i;
+                        edit(editor, &mut selection, start..start + len - 1, "1");
+                    }
+                    renumber_from(editor, &mut selection, next);
+                }
+            }
+        }
+    }
+    editor.set_selection(selection);
 }
 
 /// The width of the list marker starting at `start` with the spaces after it, e.g. 2 for `- ` and

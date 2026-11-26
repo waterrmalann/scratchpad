@@ -156,8 +156,9 @@ fn nest(marked: &str, deeper: bool) -> Option<String> {
 fn tab_nests_a_list_item_under_the_one_above_and_shift_tab_moves_it_back() {
     assert_eq!(nest("- a\n- b|", true).as_deref(), Some("- a\n  - b|"));
     assert_eq!(nest("- a\n  - b|", false).as_deref(), Some("- a\n- b|"));
-    // By the width of the item's own marker; the cursor can be anywhere on the line.
-    assert_eq!(nest("1. a\n2. |b", true).as_deref(), Some("1. a\n   2. |b"));
+    // By the width of the item's own marker; the cursor can be anywhere on the line. A new nested
+    // ordered list starts at 1.
+    assert_eq!(nest("1. a\n2. |b", true).as_deref(), Some("1. a\n   1. |b"));
     assert_eq!(
         nest("> - [ ] a\n> - [ ] |b", true).as_deref(),
         Some("> - [ ] a\n>   - [ ] |b")
@@ -213,6 +214,74 @@ fn the_text_of_an_item_after_a_blank_line_moves_with_it() {
     assert_eq!(
         nest("1. a|\n\n  - b", true).as_deref(),
         Some("   1. a|\n\n  - b")
+    );
+}
+
+#[test]
+fn shift_tab_gives_an_item_the_marker_of_the_list_it_moves_to() {
+    // A bullet moved out under a numbered item continues the numbering, and the items after it follow.
+    assert_eq!(
+        nest("1. a\n   - b\n   - |\n2. c", false).as_deref(),
+        Some("1. a\n   - b\n2. |\n3. c")
+    );
+    assert_eq!(nest("- a\n  1. b|\n- c", false).as_deref(), Some("- a\n- b|\n- c"));
+    assert_eq!(
+        nest("1. a\n   1. b|\n2. c", false).as_deref(),
+        Some("1. a\n2. b|\n3. c")
+    );
+    // The task box stays; quotes and selections of several items work alike.
+    assert_eq!(
+        nest("1. a\n   - [ ] b|", false).as_deref(),
+        Some("1. a\n2. [ ] b|")
+    );
+    assert_eq!(
+        nest("> 1. a\n>    - b|\n> 2. c", false).as_deref(),
+        Some("> 1. a\n> 2. b|\n> 3. c")
+    );
+    assert_eq!(
+        nest("1. a\n   - ^b\n   - c|\n2. d", false).as_deref(),
+        Some("1. a\n2. ^b\n3. c|\n4. d")
+    );
+    // Its children line up with the wider marker.
+    assert_eq!(
+        nest("1. a\n   - b|\n     - x\n2. c", false).as_deref(),
+        Some("1. a\n2. b|\n   - x\n3. c")
+    );
+    // The items after it in its old list become its children, numbered from 1.
+    assert_eq!(
+        nest("1. a\n   1. b\n   2. c|\n   3. d\n2. e", false).as_deref(),
+        Some("1. a\n   1. b\n2. c|\n   1. d\n3. e")
+    );
+    // A list numbered 1. throughout stays so.
+    assert_eq!(
+        nest("1. a\n1. b\n   - c|", false).as_deref(),
+        Some("1. a\n1. b\n1. c|")
+    );
+}
+
+#[test]
+fn tab_gives_an_item_the_marker_of_the_list_it_moves_to() {
+    // A new nested list starts at 1, and the list it left is renumbered.
+    assert_eq!(
+        nest("1. a\n2. b|\n3. c", true).as_deref(),
+        Some("1. a\n   1. b|\n2. c")
+    );
+    // Under an item with children it joins their list, with their kind of marker.
+    assert_eq!(
+        nest("1. a\n   - x\n2. b|\n   more", true).as_deref(),
+        Some("1. a\n   - x\n   - b|\n     more")
+    );
+    assert_eq!(
+        nest("1. a\n   1. x\n2. b|", true).as_deref(),
+        Some("1. a\n   1. x\n   2. b|")
+    );
+    assert_eq!(
+        nest("- a\n  1. x\n- b|", true).as_deref(),
+        Some("- a\n  1. x\n  2. b|")
+    );
+    assert_eq!(
+        nest("1. a\n2. ^b\n3. c|\n4. d", true).as_deref(),
+        Some("1. a\n   1. ^b\n   2. c|\n2. d")
     );
 }
 
