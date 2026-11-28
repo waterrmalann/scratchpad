@@ -49,7 +49,8 @@ with every new ADR.
 | [0082](0082-config-dir-override.md) | SCRATCHPAD_CONFIG_DIR keeps trial runs away from the user's settings | Accepted |
 | [0090](0090-app-icon-and-executable-resources.md) | App icon and executable resources | Accepted |
 | [0091](0091-per-user-msi-installer.md) | Per-user MSI installer built with WiX | Accepted |
-| [0092](0092-file-associations-deferred.md) | File associations are deferred until the app opens file arguments | Accepted; amended by 0145 |
+| [0092](0092-file-associations-deferred.md) | File associations are deferred until the app opens file arguments | Accepted; amended by 0145, 0095 |
+| [0095](0095-open-with-for-markdown-and-text-files.md) | The installer offers Scratchpad in "Open with" for .md, .markdown and .txt | Accepted; amends 0092 |
 | [0100](0100-find-in-the-open-note.md) | Find in the open note | Accepted |
 | [0110](0110-startup-time-is-gpui-platform-init.md) | Startup time is GPUI's platform initialisation; load fonts alongside it | Accepted |
 | [0111](0111-saves-and-recovery-snapshots-share-the-rope.md) | Saves and recovery snapshots share the rope instead of copying the text | Accepted |

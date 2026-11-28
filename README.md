@@ -106,7 +106,7 @@ The usual Windows editing keys work as in Notepad: arrows, Home/End, Ctrl+arrows
 
 Get the latest release from [GitHub Releases](https://github.com/waterrmalann/scratchpad/releases/latest). It needs Windows 10 or 11 (x64).
 
-- **Installer** — `Scratchpad-<version>-x64.msi`. A per-user install: no administrator rights, installs to `%LOCALAPPDATA%\Programs\Scratchpad`, adds a Start Menu shortcut and an uninstall entry, lets you start it by typing `scratchpad` in Win+R (a terminal still needs it on PATH), and a newer MSI upgrades in place. Uninstalling leaves your notes and settings alone.
+- **Installer** — `Scratchpad-<version>-x64.msi`. A per-user install: no administrator rights, installs to `%LOCALAPPDATA%\Programs\Scratchpad`, adds a Start Menu shortcut and an uninstall entry, lets you start it by typing `scratchpad` in Win+R (a terminal still needs it on PATH), offers Scratchpad in "Open with" for `.md`, `.markdown` and `.txt` files, and a newer MSI upgrades in place. Uninstalling leaves your notes and settings alone.
 - **Portable** — `Scratchpad-<version>-x64-portable.zip`: `scratchpad.exe` with the licence and this readme. Unzip it anywhere and run it. Notes and settings still live in the usual folders (below), not next to the exe.
 
 `SHA256SUMS.txt` lists the checksums of both: compare with `Get-FileHash <file>`.
@@ -116,7 +116,7 @@ Get the latest release from [GitHub Releases](https://github.com/waterrmalann/sc
 - **Notes** — `Documents\Scratchpad`. Change the folder in Settings (`Ctrl+,`).
 - **Settings** — Theme and notes folder, in `%APPDATA%\Scratchpad\config.json`. The window's size and place, zoom, word wrap, spell check, autocorrect, symbol replacement, Markdown extensions, status bar, sidebar, pinned notes and last note are remembered there too.
 - **Environment** — `SCRATCHPAD_NOTES_DIR` uses another notes folder (Settings then cannot change it) and `SCRATCHPAD_CONFIG_DIR` another folder for the config, recovery snapshots and log. Set both to try the app on a scratch folder.
-- **Command line** — `scratchpad.exe <file>` opens that file, as File > Open does. The installer registers no file associations yet, so use "Open with" and pick `scratchpad.exe`.
+- **Command line** — `scratchpad.exe <file>` opens that file, as File > Open does. The installer adds Scratchpad to "Open with" for `.md`, `.markdown` and `.txt` files without making it the default (choose "Always" there, or Settings > Default apps, to do that); with the portable zip, use "Open with" > "Choose another app" and pick `scratchpad.exe`. Each file opened this way gets its own window, also while the app is running.
 
 ## How it's built
 

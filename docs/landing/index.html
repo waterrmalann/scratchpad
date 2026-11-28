@@ -190,7 +190,8 @@
 <span class="cmd-prompt">&gt;</span> powershell -File packaging/build-installer.ps1</code></pre>
         <p class="install-note">
           Runs on Windows 10 or 11 (x64). The MSI installs for your user only, without administrator
-          rights, and uninstalling leaves your notes and settings alone. The portable zip holds
+          rights, adds Scratchpad to &ldquo;Open with&rdquo; for <code>.md</code>, <code>.markdown</code> and
+          <code>.txt</code> files, and uninstalling leaves your notes and settings alone. The portable zip holds
           <code>scratchpad.exe</code> and its licence: unzip and run. Building needs the Rust toolchain (MSVC) and the Windows SDK.
         </p>
       </div>
